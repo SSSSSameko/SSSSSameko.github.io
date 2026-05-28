@@ -19,6 +19,7 @@ const jobTtlMs = Math.max(60_000, Number(process.env.JOB_TTL_MS || 10 * 60_000))
 const maxActiveJobs = Math.max(1, Number(process.env.MAX_ACTIVE_JOBS || 2));
 const rateLimitWindowMs = Math.max(1000, Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000));
 const rateLimitMax = Math.max(1, Number(process.env.RATE_LIMIT_MAX || 240));
+const disableCookieStore = /^(1|true|yes)$/i.test(String(process.env.DISABLE_COOKIE_STORE || '').trim());
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
   .map((origin) => origin.trim().replace(/\/+$/, ''))
@@ -479,6 +480,7 @@ function normalizeCookieEntries(payload) {
 }
 
 async function readCookieStore() {
+  if (disableCookieStore) return { version: 2, activeId: '', updatedAt: '', cookies: [] };
   try {
     const payload = JSON.parse(await fs.readFile(cookieStoreFile, 'utf8'));
     const cookies = normalizeCookieEntries(payload);
@@ -497,8 +499,6 @@ async function readCookieStore() {
 }
 
 async function writeCookieStore(store) {
-  await fs.mkdir(authDir, { recursive: true, mode: 0o700 });
-  await fs.chmod(authDir, 0o700).catch(() => {});
   const cookies = normalizeCookieEntries({ cookies: store.cookies || [] });
   const activeId = cookies.some((entry) => entry.id === store.activeId)
     ? store.activeId
@@ -509,6 +509,9 @@ async function writeCookieStore(store) {
     activeId,
     cookies,
   };
+  if (disableCookieStore) return payload;
+  await fs.mkdir(authDir, { recursive: true, mode: 0o700 });
+  await fs.chmod(authDir, 0o700).catch(() => {});
   await fs.writeFile(cookieStoreFile, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   await fs.chmod(cookieStoreFile, 0o600).catch(() => {});
   return payload;
@@ -596,6 +599,7 @@ async function upsertStoredCookie(cookie, validation = {}) {
     lastValidAt: validation.lastValidAt || existing?.lastValidAt || '',
     lastError: validation.ok === false ? validation.message || 'Cookie 校验失败' : '',
   };
+  if (disableCookieStore) return entry;
   const cookies = [entry, ...store.cookies.filter((item) => item.id !== id)];
   await writeCookieStore({ ...store, activeId: id, cookies });
   return entry;
@@ -615,6 +619,9 @@ async function removeStoredCookie(idOrCookie) {
 }
 
 async function validateStoredCookies(reportProgress) {
+  if (disableCookieStore) {
+    return cookieStoreSummary({ version: 2, activeId: '', updatedAt: '', cookies: [] }, { cookieStoreDisabled: true });
+  }
   const store = await readCookieStore();
   const kept = [];
   let removedCount = 0;
@@ -656,6 +663,7 @@ async function validateStoredCookies(reportProgress) {
 async function prepareCookieCandidates(body, reportProgress) {
   const failures = [];
   let preferredId = '';
+  let inlineCandidate = null;
   const supplied = cleanCookieHeader(body.mobileCookie);
 
   if (supplied) {
@@ -664,6 +672,7 @@ async function prepareCookieCandidates(body, reportProgress) {
     if (validation.ok) {
       const saved = await upsertStoredCookie(supplied, validation);
       preferredId = saved.id;
+      if (disableCookieStore) inlineCandidate = saved;
     } else {
       await removeStoredCookie(supplied);
       failures.push(`输入的 Cookie 无效：${validation.message}`);
@@ -671,6 +680,17 @@ async function prepareCookieCandidates(body, reportProgress) {
   }
 
   const summary = await validateStoredCookies(reportProgress);
+  if (disableCookieStore) {
+    return {
+      candidates: inlineCandidate ? [inlineCandidate] : [],
+      failures,
+      summary: {
+        ...summary,
+        hasCookie: Boolean(inlineCandidate),
+        cookieCount: inlineCandidate ? 1 : 0,
+      },
+    };
+  }
   const store = await readCookieStore();
   const candidates = sortCookieEntries(store.cookies, preferredId || store.activeId);
   return { candidates, failures, summary };
@@ -1574,6 +1594,7 @@ const server = http.createServer(async (req, res) => {
         activeJobs: activeJobCount(),
         maxActiveJobs,
         apiKeyRequired: Boolean(apiKey),
+        cookieStoreDisabled: disableCookieStore,
       });
     }
     if (req.method === 'GET' && url.pathname === '/api/weibo/draw-count') {
