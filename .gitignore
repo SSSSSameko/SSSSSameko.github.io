@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+
+# Sensitive local browser/session data.
+profiles/
+output/
+
+# Keep these comments here as a reminder:
+# output/auth/ contains Weibo Cookie state.
+# profiles/ may contain browser login sessions.

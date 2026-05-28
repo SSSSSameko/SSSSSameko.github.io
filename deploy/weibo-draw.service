@@ -1,0 +1,27 @@
+[Unit]
+Description=Weibo Draw Studio
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/weibo-redpacket-probe
+Environment=NODE_ENV=production
+Environment=PORT=4173
+# Set this in production to prevent strangers from using your API.
+# Environment=API_KEY=replace-with-a-long-random-secret
+Environment=MAX_ACTIVE_JOBS=2
+Environment=FETCH_TIMEOUT_MS=20000
+ExecStart=/usr/bin/node /opt/weibo-redpacket-probe/server.mjs
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/weibo-redpacket-probe/output
+MemoryMax=900M
+
+[Install]
+WantedBy=multi-user.target
