@@ -1129,10 +1129,10 @@ function App() {
       <main className="share-capture flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
           <div className="lg:col-span-3 space-y-5">
-            <section className="glass p-5 sm:p-6 border-glow">
+            <section className="glass hero-panel p-5 sm:p-6 border-glow">
               <div className="mb-5 flex flex-col gap-4">
                 <div>
-                  <h2 className="text-3xl sm:text-4xl font-semibold text-white leading-tight">微博转发抽奖助手</h2>
+                  <h2 className="hero-title text-[28px] sm:text-4xl font-semibold text-white leading-tight">微博转发抽奖助手</h2>
                 </div>
                 <div className="grid grid-cols-3 gap-2 text-[11px] text-gray-500">
                   <div className="hard-chip px-3 py-2">
@@ -1163,18 +1163,22 @@ function App() {
                     placeholder="https://m.weibo.cn/detail/5301073099358898"
                     className="input-field px-4 py-3.5 text-white placeholder-gray-600 w-full text-[15px]" />
                 </label>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                  <button onClick={loadCandidates} disabled={isLoading} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap">
-                    {isLoading ? '载入中...' : '1. 载入候选'}
+                <div className="action-grid grid grid-cols-1 sm:grid-cols-4 gap-3">
+                  <button onClick={loadCandidates} disabled={isLoading} className="btn-ghost action-btn px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap">
+                    <span className="action-icon">{I.users}</span>
+                    <span>{isLoading ? '载入中...' : '1. 载入候选'}</span>
                   </button>
-                  <button onClick={openPrizeSettings} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold flex items-center justify-center gap-1.5 whitespace-nowrap">
-                    {I.gift} 2. 填写奖项
+                  <button onClick={openPrizeSettings} className="btn-ghost action-btn px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap">
+                    <span className="action-icon">{I.gift}</span>
+                    <span>2. 填写奖项</span>
                   </button>
-                  <button onClick={drawAll} disabled={isDrawing || isLoading} className="btn-primary px-4 py-3.5 font-bold relative z-10 breathe">
-                    <span className="relative z-10 flex items-center justify-center gap-2 whitespace-nowrap">{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '3. 一键开奖'} {!isDrawing && !isLoading && I.bolt}</span>
+                  <button onClick={drawAll} disabled={isDrawing || isLoading} className="btn-primary action-btn action-btn-primary px-4 py-3.5 font-bold relative z-10 breathe">
+                    <span className="action-icon action-icon-primary">{I.bolt}</span>
+                    <span>{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '3. 一键开奖'}</span>
                   </button>
-                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !results.length} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold flex items-center justify-center gap-1.5 whitespace-nowrap">
-                    {I.image} {isCapturing ? '生成中' : '4. 记录图'}
+                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !results.length} className="btn-ghost action-btn px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap">
+                    <span className="action-icon">{I.image}</span>
+                    <span>{isCapturing ? '生成中' : '4. 记录图'}</span>
                   </button>
                 </div>
               </div>
