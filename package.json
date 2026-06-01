@@ -13,11 +13,7 @@
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server.mjs",
     "web": "npm run build && node server.mjs",
-    "start:windows": "powershell -ExecutionPolicy Bypass -File scripts/windows-start.ps1",
-    "probe": "node scripts/probe-mobile-redpacket.mjs",
-    "probe:iphone": "node scripts/probe-mobile-redpacket.mjs --device iphone",
-    "probe:android": "node scripts/probe-mobile-redpacket.mjs --device android",
-    "login": "node scripts/login-web-profile.mjs"
+    "start:windows": "powershell -ExecutionPolicy Bypass -File scripts/windows-start.ps1"
   },
   "dependencies": {},
   "devDependencies": {

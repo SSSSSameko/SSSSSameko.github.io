@@ -1,12 +1,12 @@
-# All-in-one deployment: Caddy terminates HTTPS and forwards to Node.
+# Caddy terminates HTTPS and forwards requests to the local Node service.
 # Replace draw.example.com with your own domain.
 draw.example.com {
   encode zstd gzip
   reverse_proxy 127.0.0.1:4173
 }
 
-# Split deployment: GitHub Pages serves the frontend, this server only exposes API.
-# Set CORS_ORIGINS=https://yourname.github.io before starting the Node service.
+# If GitHub Pages serves the frontend, keep CORS_ORIGINS on the Node service
+# limited to your Pages URL.
 # api.example.com {
 #   encode zstd gzip
 #   reverse_proxy 127.0.0.1:4173

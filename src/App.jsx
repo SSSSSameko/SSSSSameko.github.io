@@ -384,59 +384,6 @@ const I = {
   image: <Image className="w-4 h-4" strokeWidth={1.8} />,
 };
 
-function Particles() {
-  const cRef = useRef(null);
-  useEffect(() => {
-    const c = cRef.current;
-    const ctx = c.getContext('2d');
-    let id;
-    const dots = [];
-    const particleColors = ['10,132,255', '94,92,230', '48,209,88', '142,142,147', '255,255,255'];
-    const resize = () => { c.width = innerWidth; c.height = innerHeight; };
-    resize();
-    addEventListener('resize', resize);
-    for (let i = 0; i < 42; i += 1) {
-      dots.push({
-        x: Math.random() * c.width,
-        y: Math.random() * c.height,
-        r: Math.random() * 1.8 + 0.45,
-        vx: (Math.random() - 0.5) * 0.12,
-        vy: (Math.random() - 0.5) * 0.12,
-        o: Math.random() * 0.11 + 0.035,
-        color: particleColors[i % particleColors.length],
-        phase: Math.random() * Math.PI * 2,
-      });
-    }
-    const loop = () => {
-      ctx.clearRect(0, 0, c.width, c.height);
-      const now = performance.now() / 900;
-      dots.forEach((d) => {
-        d.x += d.vx; d.y += d.vy;
-        if (d.x < 0) d.x = c.width; if (d.x > c.width) d.x = 0;
-        if (d.y < 0) d.y = c.height; if (d.y > c.height) d.y = 0;
-        const scale = 0.76 + Math.sin(now + d.phase) * 0.18;
-        ctx.beginPath(); ctx.arc(d.x, d.y, Math.max(0.5, d.r * scale), 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${d.color},${d.o})`; ctx.fill();
-      });
-      for (let i = 0; i < dots.length; i += 1) {
-        for (let j = i + 1; j < dots.length; j += 1) {
-          const dx = dots[i].x - dots[j].x;
-          const dy = dots[i].y - dots[j].y;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist < 150) {
-            ctx.beginPath(); ctx.moveTo(dots[i].x, dots[i].y); ctx.lineTo(dots[j].x, dots[j].y);
-            ctx.strokeStyle = `rgba(10,132,255,${0.018 * (1 - dist / 150)})`; ctx.stroke();
-          }
-        }
-      }
-      id = requestAnimationFrame(loop);
-    };
-    loop();
-    return () => { cancelAnimationFrame(id); removeEventListener('resize', resize); };
-  }, []);
-  return <canvas ref={cRef} className="fixed inset-0 z-0 pointer-events-none" />;
-}
-
 function StatCard({ value, label, gradient, delay }) {
   return (
     <div className={`glass px-3 py-3 text-left slide-up min-w-0 ${delay}`}>
@@ -1158,7 +1105,6 @@ function App() {
     : currentStatusId ? `微博 mid：${currentStatusId}` : '点击开始开奖才会计数';
   return (
     <div className="relative z-10 min-h-screen flex flex-col app-shell">
-      <Particles />
       <header className="glass-subtle sticky top-0 z-40">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
@@ -1210,25 +1156,27 @@ function App() {
                 <RollingBox isRolling={isDrawing} name={rollingName} phase={phase || '开奖中'} />
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_128px_132px_148px_132px] xl:items-end">
-                <label className="grid gap-2 sm:col-span-2 xl:col-span-1">
+              <div className="grid gap-3">
+                <label className="grid gap-2">
                   <span className="text-[12px] text-gray-500 font-semibold">微博链接 / mid / bid</span>
                   <input value={statusUrl} onChange={(event) => { setStatusUrl(event.target.value); setCurrentStatusUrl(event.target.value); }}
                     placeholder="https://m.weibo.cn/detail/5301073099358898"
                     className="input-field px-4 py-3.5 text-white placeholder-gray-600 w-full text-[15px]" />
                 </label>
-                <button onClick={loadCandidates} disabled={isLoading} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold">
-                  {isLoading ? '载入中...' : '1. 载入候选'}
-                </button>
-                <button onClick={openPrizeSettings} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold flex items-center justify-center gap-1.5">
-                  {I.gift} 2. 填写奖项
-                </button>
-                <button onClick={drawAll} disabled={isDrawing || isLoading} className="btn-primary px-4 py-3.5 font-bold relative z-10 breathe">
-                  <span className="relative z-10 flex items-center justify-center gap-2">{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '3. 一键开奖'} {!isDrawing && !isLoading && I.bolt}</span>
-                </button>
-                <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !results.length} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold flex items-center justify-center gap-1.5">
-                  {I.image} {isCapturing ? '生成中' : '4. 记录图'}
-                </button>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <button onClick={loadCandidates} disabled={isLoading} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap">
+                    {isLoading ? '载入中...' : '1. 载入候选'}
+                  </button>
+                  <button onClick={openPrizeSettings} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold flex items-center justify-center gap-1.5 whitespace-nowrap">
+                    {I.gift} 2. 填写奖项
+                  </button>
+                  <button onClick={drawAll} disabled={isDrawing || isLoading} className="btn-primary px-4 py-3.5 font-bold relative z-10 breathe">
+                    <span className="relative z-10 flex items-center justify-center gap-2 whitespace-nowrap">{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '3. 一键开奖'} {!isDrawing && !isLoading && I.bolt}</span>
+                  </button>
+                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !results.length} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold flex items-center justify-center gap-1.5 whitespace-nowrap">
+                    {I.image} {isCapturing ? '生成中' : '4. 记录图'}
+                  </button>
+                </div>
               </div>
 
               {progress && (
@@ -1411,10 +1359,10 @@ function App() {
             </section>
 
             <section className="glass p-5">
-              <h3 className="text-sm font-semibold text-white mb-3">审计信息</h3>
+              <h3 className="text-sm font-semibold text-white mb-3">开奖校验</h3>
               <div className="grid gap-2 text-[12px]">
-                <div className="flex justify-between gap-3"><span className="text-gray-600">随机种子</span><strong className="text-gray-300 truncate">{lastAudit?.seed || '未开奖'}</strong></div>
-                <div className="flex justify-between gap-3"><span className="text-gray-600">可抽池摘要</span><strong className="text-gray-300 truncate">{lastAudit?.candidateDigest?.slice(0, 16) || '未生成'}</strong></div>
+                <div className="flex justify-between gap-3"><span className="text-gray-600">公开种子</span><strong className="text-gray-300 truncate">{lastAudit?.seed || '未开奖'}</strong></div>
+                <div className="flex justify-between gap-3"><span className="text-gray-600">名单摘要</span><strong className="text-gray-300 truncate">{lastAudit?.candidateDigest?.slice(0, 16) || '未生成'}</strong></div>
                 <div className="flex justify-between gap-3"><span className="text-gray-600">抽奖次数</span><strong className="text-gray-300 truncate">{drawCountText}</strong></div>
                 <div className="text-gray-600 truncate">{drawCountMeta}</div>
               </div>

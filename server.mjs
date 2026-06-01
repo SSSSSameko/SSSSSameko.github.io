@@ -104,7 +104,6 @@ function isApiPath(pathname) {
 function isAllowedCorsOrigin(origin) {
   if (!origin) return true;
   const normalized = String(origin).replace(/\/+$/, '');
-  if (configuredCorsOrigins.includes('*')) return true;
   if (configuredCorsOrigins.includes(normalized)) return true;
   return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(normalized);
 }
@@ -1652,7 +1651,7 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const corsOk = applyCors(req, res, url.pathname);
     if (req.method === 'OPTIONS' && isApiPath(url.pathname)) {
-      res.writeHead(corsOk ? 204 : 403);
+      res.writeHead(corsOk ? 204 : 403, securityHeaders());
       return res.end();
     }
     if (!corsOk) {
@@ -1669,7 +1668,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/health') {
       return sendJson(res, 200, {
         ok: true,
-        service: 'weibo-draw-studio',
+        service: 'sameko-weibo-lottery',
         staticDir: path.basename(staticDir),
         frontendBuilt: hasBuiltFrontend,
         activeJobs: activeJobCount(),
@@ -1705,7 +1704,7 @@ const server = http.createServer(async (req, res) => {
     return sendText(res, 405, 'Method Not Allowed');
   } catch (error) {
     const normalized = safeError(error);
-    return sendJson(res, normalized.status, { ok: false, error: normalized.message, details: error.weibo });
+    return sendJson(res, normalized.status, { ok: false, error: normalized.message });
   }
 });
 
@@ -1714,6 +1713,6 @@ server.headersTimeout = 65_000;
 server.keepAliveTimeout = 5_000;
 
 server.listen(port, host || undefined, () => {
-  console.log(`Weibo Draw Studio running at http://${host || 'localhost'}:${port}`);
+  console.log(`Sameko Weibo Lottery running at http://${host || 'localhost'}:${port}`);
   console.log(`Serving static files from ${staticDir}`);
 });
