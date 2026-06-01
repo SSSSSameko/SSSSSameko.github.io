@@ -13,6 +13,7 @@ const authDir = path.join(rootDir, 'output', 'auth');
 const cookieStoreFile = path.join(authDir, 'weibo-cookie.json');
 const drawAttemptsFile = path.join(rootDir, 'output', 'draw-attempts.jsonl');
 const port = Number(process.env.PORT || 4173);
+const host = String(process.env.HOST || '').trim();
 const apiKey = String(process.env.API_KEY || '').trim();
 const fetchTimeoutMs = Math.max(1000, Number(process.env.FETCH_TIMEOUT_MS || 20_000));
 const jobTtlMs = Math.max(60_000, Number(process.env.JOB_TTL_MS || 10 * 60_000));
@@ -1631,7 +1632,7 @@ server.requestTimeout = 120_000;
 server.headersTimeout = 65_000;
 server.keepAliveTimeout = 5_000;
 
-server.listen(port, () => {
-  console.log(`Weibo Draw Studio running at http://localhost:${port}`);
+server.listen(port, host || undefined, () => {
+  console.log(`Weibo Draw Studio running at http://${host || 'localhost'}:${port}`);
   console.log(`Serving static files from ${staticDir}`);
 });
