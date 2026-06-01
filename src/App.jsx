@@ -23,9 +23,39 @@ const publicAsset = (name) => `${import.meta.env.BASE_URL}${name}`;
 function cleanApiBase(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }
+function configuredApiBases() {
+  const configured = [
+    window.WEIBO_DRAW_API_BASE,
+    ...(Array.isArray(window.WEIBO_DRAW_ALLOWED_API_BASES) ? window.WEIBO_DRAW_ALLOWED_API_BASES : []),
+  ];
+  return [...new Set(configured.map(cleanApiBase).filter(Boolean))];
+}
+function isLocalApiBase(value) {
+  try {
+    const url = new URL(cleanApiBase(value));
+    return ['http:', 'https:'].includes(url.protocol)
+      && /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(url.hostname);
+  } catch {
+    return false;
+  }
+}
+function isTrustedApiBase(value) {
+  const cleaned = cleanApiBase(value);
+  if (!cleaned) return true;
+  try {
+    const url = new URL(cleaned);
+    if (!['http:', 'https:'].includes(url.protocol)) return false;
+    if (isLocalApiBase(cleaned)) return true;
+    return configuredApiBases().includes(cleaned);
+  } catch {
+    return false;
+  }
+}
 function initialApiBase() {
-  const queryApi = new URLSearchParams(location.search).get('api');
-  return cleanApiBase(queryApi || localStorage.getItem('weibo-draw-api-base') || window.WEIBO_DRAW_API_BASE || '');
+  const storedApi = cleanApiBase(localStorage.getItem('weibo-draw-api-base') || '');
+  if (storedApi && isTrustedApiBase(storedApi)) return storedApi;
+  if (storedApi) localStorage.removeItem('weibo-draw-api-base');
+  return cleanApiBase(window.WEIBO_DRAW_API_BASE || '');
 }
 function isStaticHostedPage() {
   return /\.github\.io$/i.test(location.hostname) || location.protocol === 'file:';
@@ -78,8 +108,12 @@ function randomSeedHex() {
 }
 function toCsv(rows) {
   const headers = ['tier', 'uid', 'screenName', 'text', 'createdAt', 'source'];
-  const escape = (value) => `"${String(value ?? '').replace(/"/g, '""')}"`;
-  return [headers.join(','), ...rows.map((row) => headers.map((key) => escape(row[key])).join(','))].join('\n');
+  const escape = (value) => {
+    const raw = String(value ?? '');
+    const safe = /^[=+\-@\t\r\n]/.test(raw.trimStart()) ? `'${raw}` : raw;
+    return `"${safe.replace(/"/g, '""')}"`;
+  };
+  return [headers.map(escape).join(','), ...rows.map((row) => headers.map((key) => escape(row[key])).join(','))].join('\n');
 }
 function download(name, content, type = 'text/csv;charset=utf-8') {
   const blob = new Blob([content], { type });
@@ -613,7 +647,7 @@ function App() {
   const [recordImageUrl, setRecordImageUrl] = useState('');
   const [recordImageName, setRecordImageName] = useState('');
   const [apiBase, setApiBase] = useState(initialApiBase);
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem('weibo-draw-api-key') || '');
+  const [apiKey, setApiKey] = useState('');
 
   const sourceLabels = { mobile: 'H5 / Cookie', manual: '手动导入', official: '官方 token' };
   const totalSlots = prizes.reduce((sum, prize) => sum + Number(prize.count || 0), 0);
@@ -655,6 +689,9 @@ function App() {
     if (!apiBase && isStaticHostedPage()) {
       return Promise.reject(new Error('当前是静态前端，请先在设置里填写后端 API 地址，例如 https://api.example.com'));
     }
+    if (apiBase && !isTrustedApiBase(apiBase)) {
+      return Promise.reject(new Error('后端 API 地址不在可信列表里，请使用当前公开后端或本地地址。'));
+    }
     const headers = new Headers(options.headers || {});
     if (apiKey.trim()) headers.set('x-api-key', apiKey.trim());
     return fetch(apiPath(path), { ...options, headers });
@@ -684,7 +721,7 @@ function App() {
         } else {
           showStatus(json.hasCookie
             ? `服务器端已有 ${json.cookieCount || 1} 个可用 Cookie，失效项会自动删除。`
-            : '服务器端暂无可用 Cookie，请站长填写密钥后粘贴 Cookie 载入。');
+            : '服务器端暂无可用 Cookie，粘贴有效 Cookie 后载入即可保存。');
         }
       }
     } catch (error) {
@@ -726,14 +763,9 @@ function App() {
   useEffect(() => { loadCookieStatus(true); }, []);
   useEffect(() => {
     const cleaned = cleanApiBase(apiBase);
-    if (cleaned) localStorage.setItem('weibo-draw-api-base', cleaned);
+    if (cleaned && isTrustedApiBase(cleaned)) localStorage.setItem('weibo-draw-api-base', cleaned);
     else localStorage.removeItem('weibo-draw-api-base');
   }, [apiBase]);
-  useEffect(() => {
-    const cleaned = apiKey.trim();
-    if (cleaned) localStorage.setItem('weibo-draw-api-key', cleaned);
-    else localStorage.removeItem('weibo-draw-api-key');
-  }, [apiKey]);
   useEffect(() => {
     const timer = setTimeout(() => refreshDrawCount(statusUrl), 420);
     return () => clearTimeout(timer);
@@ -1342,10 +1374,10 @@ function App() {
                 className="input-field px-3 py-2.5 text-[13px] text-white placeholder-gray-600 w-full" />
             </label>
             <label className="grid gap-2 mt-3">
-              <span className="text-[12px] text-gray-500 font-semibold">站长密钥 / API Key</span>
+              <span className="text-[12px] text-gray-500 font-semibold">API Key（可选）</span>
               <input value={apiKey} onChange={(event) => setApiKey(event.target.value)}
                 type="password"
-                placeholder="保存服务器 Cookie 时填写"
+                placeholder="公开模式不用填写"
                 className="input-field px-3 py-2.5 text-[13px] text-white placeholder-gray-600 w-full" />
             </label>
             <div className="grid grid-cols-2 gap-2 mt-2">

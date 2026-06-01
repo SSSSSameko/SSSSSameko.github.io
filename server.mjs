@@ -12,15 +12,23 @@ const drawsDir = path.join(rootDir, 'output', 'draws');
 const authDir = path.join(rootDir, 'output', 'auth');
 const cookieStoreFile = path.join(authDir, 'weibo-cookie.json');
 const drawAttemptsFile = path.join(rootDir, 'output', 'draw-attempts.jsonl');
-const port = Number(process.env.PORT || 4173);
+
+function envNumber(name, fallback, minimum = 0) {
+  const value = Number(process.env[name] ?? fallback);
+  return Number.isFinite(value) ? Math.max(minimum, value) : fallback;
+}
+
+const port = envNumber('PORT', 4173, 1);
 const host = String(process.env.HOST || '').trim();
 const apiKey = String(process.env.API_KEY || '').trim();
 const cookieWriteKey = String(process.env.COOKIE_WRITE_KEY || '').trim();
-const fetchTimeoutMs = Math.max(1000, Number(process.env.FETCH_TIMEOUT_MS || 20_000));
-const jobTtlMs = Math.max(60_000, Number(process.env.JOB_TTL_MS || 10 * 60_000));
-const maxActiveJobs = Math.max(1, Number(process.env.MAX_ACTIVE_JOBS || 2));
-const rateLimitWindowMs = Math.max(1000, Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000));
-const rateLimitMax = Math.max(1, Number(process.env.RATE_LIMIT_MAX || 240));
+const fetchTimeoutMs = envNumber('FETCH_TIMEOUT_MS', 20_000, 1000);
+const jobTtlMs = envNumber('JOB_TTL_MS', 10 * 60_000, 60_000);
+const maxActiveJobs = envNumber('MAX_ACTIVE_JOBS', 2, 1);
+const rateLimitWindowMs = envNumber('RATE_LIMIT_WINDOW_MS', 60_000, 1000);
+const rateLimitMax = envNumber('RATE_LIMIT_MAX', 240, 1);
+const maxCookieBytes = envNumber('MAX_COOKIE_BYTES', 16_384, 1024);
+const maxStoredCookies = envNumber('MAX_STORED_COOKIES', 30, 1);
 const disableCookieStore = /^(1|true|yes)$/i.test(String(process.env.DISABLE_COOKIE_STORE || '').trim());
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
@@ -71,6 +79,17 @@ function sendText(res, status, text) {
 
 function securityHeaders() {
   return {
+    'content-security-policy': [
+      "default-src 'self'",
+      "script-src 'self'",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https:",
+      "connect-src 'self' https://111.228.11.206",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+    ].join('; '),
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
     'referrer-policy': 'no-referrer',
@@ -455,6 +474,25 @@ function cleanCookieHeader(value) {
     .trim();
 }
 
+function isCookieHeaderWithinLimit(cookie) {
+  return !/[\u0000-\u001F\u007F]/.test(cookie)
+    && Buffer.byteLength(cookie, 'utf8') <= maxCookieBytes;
+}
+
+function assertCookieHeaderInput(cookie) {
+  if (!cookie) return;
+  if (/[\u0000-\u001F\u007F]/.test(cookie)) {
+    const error = new Error('Cookie 包含不允许的控制字符');
+    error.status = 400;
+    throw error;
+  }
+  if (Buffer.byteLength(cookie, 'utf8') > maxCookieBytes) {
+    const error = new Error(`Cookie 内容过长，请确认只粘贴微博 Cookie（最多 ${maxCookieBytes} 字节）`);
+    error.status = 413;
+    throw error;
+  }
+}
+
 function cookieFingerprint(cookie) {
   return crypto.createHash('sha256').update(cleanCookieHeader(cookie)).digest('hex').slice(0, 16);
 }
@@ -470,6 +508,7 @@ function normalizeCookieEntries(payload) {
   for (const entry of rawEntries) {
     const cookie = cleanCookieHeader(entry?.cookie);
     if (!cookie) continue;
+    if (!isCookieHeaderWithinLimit(cookie)) continue;
     const id = entry.id || cookieFingerprint(cookie);
     entries.set(id, {
       id,
@@ -505,7 +544,7 @@ async function readCookieStore() {
 }
 
 async function writeCookieStore(store) {
-  const cookies = normalizeCookieEntries({ cookies: store.cookies || [] });
+  const cookies = sortCookieEntries(normalizeCookieEntries({ cookies: store.cookies || [] }), store.activeId).slice(0, maxStoredCookies);
   const activeId = cookies.some((entry) => entry.id === store.activeId)
     ? store.activeId
     : cookies[0]?.id || '';
@@ -592,6 +631,7 @@ async function checkCookieValidity(cookie) {
 async function upsertStoredCookie(cookie, validation = {}) {
   const cleaned = cleanCookieHeader(cookie);
   if (!cleaned) return { cookie: '', savedAt: '' };
+  assertCookieHeaderInput(cleaned);
   const now = new Date().toISOString();
   const id = cookieFingerprint(cleaned);
   const store = await readCookieStore();
@@ -675,6 +715,7 @@ async function prepareCookieCandidates(body, reportProgress, options = {}) {
   const supplied = cleanCookieHeader(body.mobileCookie);
 
   if (supplied) {
+    assertCookieHeaderInput(supplied);
     reportProgress?.({ phase: 'cookie-check', percent: 1, message: '校验本次输入的微博 Cookie' });
     const validation = await checkCookieValidity(supplied);
     if (validation.ok) {
@@ -868,6 +909,7 @@ function cookieRequired(mobileCookie) {
     error.status = 400;
     throw error;
   }
+  assertCookieHeaderInput(cookie);
   return cookie;
 }
 
