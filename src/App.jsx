@@ -671,26 +671,28 @@ function App() {
     return { keyword: keyword.trim().toLowerCase(), mentionMin: Math.max(0, Number(mentionMin || 0)), uniqueByUser, excludePrevious, blocked };
   }, [keyword, mentionMin, uniqueByUser, excludePrevious, blocklist]);
 
-  const { eligible, duplicateCount } = useMemo(() => {
+  function filterEligibleCandidates(sourceCandidates, activeRules = rules, activeHistoryUids = historyUids) {
     const seen = new Set();
     let duplicates = 0;
     const list = [];
-    for (const candidate of candidates) {
+    for (const candidate of sourceCandidates) {
       const identity = String(candidate.uid || candidate.screenName || candidate.id || '').toLowerCase();
       const name = String(candidate.screenName || '').toLowerCase();
-      if (rules.uniqueByUser && identity) {
+      if (activeRules.uniqueByUser && identity) {
         if (seen.has(identity)) { duplicates += 1; continue; }
         seen.add(identity);
       }
-      if (rules.excludePrevious && identity && historyUids.has(identity)) continue;
-      if (rules.blocked.has(identity) || rules.blocked.has(name)) continue;
-      if (rules.keyword && !String(candidate.text || '').toLowerCase().includes(rules.keyword)) continue;
+      if (activeRules.excludePrevious && identity && activeHistoryUids.has(identity)) continue;
+      if (activeRules.blocked.has(identity) || activeRules.blocked.has(name)) continue;
+      if (activeRules.keyword && !String(candidate.text || '').toLowerCase().includes(activeRules.keyword)) continue;
       const mentionCount = (String(candidate.text || '').match(/@[\p{L}\p{N}_\-\u4e00-\u9fa5]+/gu) || []).length;
-      if (rules.mentionMin && mentionCount < rules.mentionMin) continue;
+      if (activeRules.mentionMin && mentionCount < activeRules.mentionMin) continue;
       list.push(candidate);
     }
     return { eligible: list, duplicateCount: duplicates };
-  }, [candidates, rules, historyUids]);
+  }
+
+  const { eligible, duplicateCount } = useMemo(() => filterEligibleCandidates(candidates), [candidates, rules, historyUids]);
 
   const displayPool = lastPool || eligible;
   const winners = results.flatMap((item) => item.winners);
@@ -826,22 +828,30 @@ function App() {
     }
   }
 
-  async function loadCandidates() {
+  async function loadCandidates(options = {}) {
+    const { jumpAfterLoad = true } = options;
     setIsLoading(true);
     clearResult();
     try {
       if (source === 'manual') {
         const parsed = parseManualInput(manualInput);
+        const freshHistory = new Set();
         setCandidates(parsed);
         setCurrentStatusId('');
         setCurrentStatusUrl('');
         setDrawCount(null);
         setDrawCountLastAt('');
         setSourceMeta({ provider: 'manual' });
-        setHistoryUids(new Set());
+        setHistoryUids(freshHistory);
         showStatus(`已导入 ${parsed.length} 位候选用户，请确认奖项设置。`, 'success');
-        jumpToPrizeSettings();
-        return;
+        if (jumpAfterLoad) jumpToPrizeSettings();
+        return {
+          candidates: parsed,
+          eligible: filterEligibleCandidates(parsed, rules, freshHistory).eligible,
+          statusId: '',
+          statusUrl: '',
+          sourceMeta: { provider: 'manual' },
+        };
       }
       if (!statusUrl.trim()) throw new Error('请先粘贴微博正文链接、mid 或 bid。');
       if (source === 'official' && !accessToken.trim()) throw new Error('官方模式需要填写 access_token。');
@@ -855,39 +865,49 @@ function App() {
         mobileCookie: source === 'mobile' ? mobileCookie : '',
       });
       if (!json.ok) throw new Error(json.error || '微博数据拉取失败');
-      setCandidates(json.candidates || []);
+      const loadedCandidates = json.candidates || [];
+      const freshHistory = new Set();
+      setCandidates(loadedCandidates);
       setCurrentStatusId(json.statusId || '');
       setCurrentStatusUrl(json.statusUrl || statusUrl.trim());
       setDrawCount(json.drawCount ?? 0);
       setDrawCountLastAt(json.lastDrawnAt || '');
       setSourceMeta({ ...(json.meta || {}), statusId: json.statusId, statusUrl: json.statusUrl });
-      setHistoryUids(new Set());
+      setHistoryUids(freshHistory);
       if (source === 'mobile') await loadCookieStatus(false);
       const pageCount = Array.isArray(json.meta?.pages) ? json.meta.pages.length : 0;
       const totalNumber = Number(json.meta?.totalNumber);
       const totalText = Number.isFinite(totalNumber) ? `接口显示总转发约 ${totalNumber} 条。` : '';
       showStatus(`已载入 ${json.candidates?.length || 0} 条可见转发，扫描 ${pageCount} 页。${totalText ? `${totalText} ` : ''}请确认奖项设置。`, 'success');
-      jumpToPrizeSettings();
+      if (jumpAfterLoad) jumpToPrizeSettings();
+      return {
+        candidates: loadedCandidates,
+        eligible: filterEligibleCandidates(loadedCandidates, rules, freshHistory).eligible,
+        statusId: json.statusId || '',
+        statusUrl: json.statusUrl || statusUrl.trim(),
+        sourceMeta: { ...(json.meta || {}), statusId: json.statusId, statusUrl: json.statusUrl },
+      };
     } catch (error) {
       showStatus(error.message, 'error');
+      throw error;
     } finally {
       setIsLoading(false);
       setTimeout(() => setProgress(null), 1200);
     }
   }
 
-  async function recordDrawAttempt(seed, candidateDigest) {
+  async function recordDrawAttempt(seed, candidateDigest, drawEligible = eligible, drawCandidates = candidates, drawContext = {}) {
     if (source === 'manual') return null;
     const response = await apiFetch('/api/weibo/draw-attempts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         source,
-        statusId: currentStatusId,
-        statusUrl: currentStatusUrl || statusUrl.trim(),
+        statusId: drawContext.statusId || currentStatusId,
+        statusUrl: drawContext.statusUrl || currentStatusUrl || statusUrl.trim(),
         seed,
-        eligibleCount: eligible.length,
-        candidateCount: candidates.length,
+        eligibleCount: drawEligible.length,
+        candidateCount: drawCandidates.length,
         prizeCount: totalSlots,
         candidateDigest,
         rules: {
@@ -906,23 +926,45 @@ function App() {
   }
 
   async function drawAll() {
-    if (isDrawing) return;
+    if (isDrawing || isLoading) return;
     if (!ensurePrizeSettingsReady()) return;
-    if (!eligible.length) { showStatus('候选池为空，先载入或导入候选用户。', 'error'); return; }
-    if (totalSlots > eligible.length) {
-      showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${eligible.length}。`, 'error');
+    let drawCandidates = candidates;
+    let drawEligible = eligible;
+    let drawContext = { statusId: currentStatusId, statusUrl: currentStatusUrl };
+
+    if (!drawEligible.length) {
+      showStatus('正在先载入候选名单。');
+      try {
+        const loaded = await loadCandidates({ jumpAfterLoad: false });
+        drawCandidates = loaded?.candidates || [];
+        drawEligible = loaded?.eligible || [];
+        drawContext = {
+          statusId: loaded?.statusId || currentStatusId,
+          statusUrl: loaded?.statusUrl || currentStatusUrl || statusUrl.trim(),
+        };
+      } catch {
+        return;
+      }
+    }
+
+    if (!drawEligible.length) {
+      showStatus('没有可抽候选，请检查链接、Cookie 或筛选规则。', 'error');
+      return;
+    }
+    if (totalSlots > drawEligible.length) {
+      showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${drawEligible.length}。`, 'error');
       return;
     }
     setIsDrawing(true);
     setResults([]);
     try {
       const seed = randomSeedHex();
-      const candidateDigest = await digestCandidates(eligible);
+      const candidateDigest = await digestCandidates(drawEligible);
       if (source !== 'manual') {
         showStatus('正在登记本次开始抽奖次数。');
-        await recordDrawAttempt(seed, candidateDigest);
+        await recordDrawAttempt(seed, candidateDigest, drawEligible, drawCandidates, drawContext);
       }
-      const pool = await seededShuffle(eligible, `${seed}:${candidateDigest}`);
+      const pool = await seededShuffle(drawEligible, `${seed}:${candidateDigest}`);
       const rollingPool = pool.map((item) => item.screenName || item.uid || item.id).filter(Boolean);
       const all = [];
       let offset = 0;
@@ -954,15 +996,15 @@ function App() {
         if (identity) wonIds.add(identity);
       });
       setHistoryUids(wonIds);
-      setLastPool(eligible);
+      setLastPool(drawEligible);
       setLastAudit({
         seed,
         drawnAt: new Date().toISOString(),
-        statusId: currentStatusId,
-        statusUrl: currentStatusUrl,
+        statusId: drawContext.statusId || currentStatusId,
+        statusUrl: drawContext.statusUrl || currentStatusUrl,
         rules: { filters: { keyword, mentionMin: Number(mentionMin || 0), uniqueByUser, excludePrevious }, prizes: normalizedPrizes },
         candidateDigest,
-        eligibleCount: eligible.length,
+        eligibleCount: drawEligible.length,
       });
       const now = new Date();
       const time = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
@@ -1181,8 +1223,8 @@ function App() {
                 <button onClick={openPrizeSettings} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold flex items-center justify-center gap-1.5">
                   {I.gift} 2. 填写奖项
                 </button>
-                <button onClick={drawAll} disabled={isDrawing || !eligible.length} className="btn-primary px-4 py-3.5 font-bold relative z-10 breathe">
-                  <span className="relative z-10 flex items-center justify-center gap-2">{isDrawing ? '抽奖中...' : '3. 一键开奖'} {!isDrawing && I.bolt}</span>
+                <button onClick={drawAll} disabled={isDrawing || isLoading} className="btn-primary px-4 py-3.5 font-bold relative z-10 breathe">
+                  <span className="relative z-10 flex items-center justify-center gap-2">{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '3. 一键开奖'} {!isDrawing && !isLoading && I.bolt}</span>
                 </button>
                 <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !results.length} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold flex items-center justify-center gap-1.5">
                   {I.image} {isCapturing ? '生成中' : '4. 记录图'}
