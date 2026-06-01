@@ -1105,15 +1105,15 @@ function App() {
     : currentStatusId ? `微博 mid：${currentStatusId}` : '点击开始开奖才会计数';
   return (
     <div className="relative z-10 min-h-screen flex flex-col app-shell">
-      <header className="glass-subtle sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+      <header className="glass-subtle app-header sticky top-0 z-40">
+        <div className="app-header-inner max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-11 h-11 rounded-lg bg-white/80 p-1 shadow-md shadow-slate-300/50 ring-1 ring-black/10">
+            <div className="brand-avatar w-11 h-11 rounded-lg bg-white/80 p-1 shadow-md shadow-slate-300/50 ring-1 ring-black/10">
               <img src={publicAsset('avatar.jpg')} alt="sameko avatar" className="h-full w-full rounded-lg object-cover" />
             </div>
             <div className="leading-tight">
-              <h1 className="text-[14px] font-semibold text-white">微博转发抽奖助手</h1>
-              <div className="text-[10px] text-gray-500">by.sameko</div>
+              <h1 className="app-brand-title text-[14px] font-semibold text-white">微博转发抽奖助手</h1>
+              <div className="app-brand-subtitle text-[10px] text-gray-500">by.sameko</div>
             </div>
           </div>
           <div className="hidden md:flex items-center gap-2 text-[11px] text-gray-500">
@@ -1126,7 +1126,7 @@ function App() {
         </div>
       </header>
 
-      <main className="share-capture flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
+      <main className="share-capture app-main flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
           <div className="lg:col-span-3 space-y-5">
             <section className="glass hero-panel p-5 sm:p-6 border-glow">
@@ -1134,7 +1134,7 @@ function App() {
                 <div>
                   <h2 className="hero-title text-[28px] sm:text-4xl font-semibold text-white leading-tight">微博转发抽奖助手</h2>
                 </div>
-                <div className="grid grid-cols-3 gap-2 text-[11px] text-gray-500">
+                <div className="hero-metrics grid grid-cols-3 gap-2 text-[11px] text-gray-500">
                   <div className="hard-chip px-3 py-2">
                     <div>来源</div>
                     <strong className="mt-1 block text-white text-[12px]">{sourceLabels[source]}</strong>
@@ -1160,7 +1160,7 @@ function App() {
                 <label className="grid gap-2">
                   <span className="text-[12px] text-gray-500 font-semibold">微博链接 / mid / bid</span>
                   <input value={statusUrl} onChange={(event) => { setStatusUrl(event.target.value); setCurrentStatusUrl(event.target.value); }}
-                    placeholder="https://m.weibo.cn/detail/5301073099358898"
+                    placeholder="粘贴微博链接 / mid / bid"
                     className="input-field px-4 py-3.5 text-white placeholder-gray-600 w-full text-[15px]" />
                 </label>
                 <div className="action-grid grid grid-cols-1 sm:grid-cols-4 gap-3">
@@ -1195,7 +1195,7 @@ function App() {
                 </div>
               )}
 
-              <div className="mt-5 grid grid-cols-3 gap-2">
+              <div className="hero-stats mt-5 grid grid-cols-3 gap-2">
                 <StatCard value={displayPool.length} label="可抽人数" gradient="from-[#007aff] to-[#5ac8fa]" delay="d1" />
                 <StatCard value={totalSlots} label="中奖名额" gradient="from-[#5ac8fa] to-[#30d158]" delay="d2" />
                 <StatCard value={drawCount ?? 0} label="本链接已抽" gradient="from-[#5e5ce6] to-[#007aff]" delay="d3" />
@@ -1206,8 +1206,8 @@ function App() {
               </div>
             </section>
 
-            <section className="glass p-4">
-              <div className="grid grid-cols-4 gap-2">
+            <section className="glass pool-stats-panel p-4">
+              <div className="pool-stats-grid grid grid-cols-4 gap-2">
                 <StatCard value={candidates.length} label="候选" gradient="from-[#007aff] to-[#5ac8fa]" delay="d1" />
                 <StatCard value={eligible.length} label="可抽" gradient="from-[#5ac8fa] to-[#30d158]" delay="d2" />
                 <StatCard value={duplicateCount} label="去重" gradient="from-[#5e5ce6] to-[#007aff]" delay="d2" />
