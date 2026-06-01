@@ -355,11 +355,15 @@ function createRecordImage(payload) {
 }
 
 const COLORS = ['#007aff', '#30d158', '#ff9f0a', '#5e5ce6', '#64d2ff', '#ff375f'];
-const DEFAULT_PRIZES = [
-  { name: '一等奖', count: 1, color: COLORS[0] },
-  { name: '二等奖', count: 2, color: COLORS[1] },
-  { name: '幸运奖', count: 5, color: COLORS[2] },
-];
+const PRIZE_NAMES = ['一等奖', '二等奖', '三等奖', '幸运奖'];
+function defaultPrize(index = 0, count = 1) {
+  return {
+    name: PRIZE_NAMES[index] || `奖项${index + 1}`,
+    count,
+    color: COLORS[index % COLORS.length],
+  };
+}
+const DEFAULT_PRIZES = [defaultPrize(0, 1)];
 
 const I = {
   trophy: <Trophy className="w-5 h-5" strokeWidth={1.5} />,
@@ -648,9 +652,19 @@ function App() {
   const [recordImageName, setRecordImageName] = useState('');
   const [apiBase, setApiBase] = useState(initialApiBase);
   const [apiKey, setApiKey] = useState('');
+  const prizeSettingsRef = useRef(null);
+  const firstPrizeNameRef = useRef(null);
 
   const sourceLabels = { mobile: 'H5 / Cookie', manual: '手动导入', official: '官方 token' };
-  const totalSlots = prizes.reduce((sum, prize) => sum + Number(prize.count || 0), 0);
+  const normalizedPrizes = useMemo(() => prizes
+    .map((prize, index) => ({
+      ...prize,
+      name: String(prize.name || '').trim(),
+      count: Math.max(0, Math.floor(Number(prize.count || 0))),
+      color: prize.color || COLORS[index % COLORS.length],
+    }))
+    .filter((prize) => prize.name && prize.count > 0), [prizes]);
+  const totalSlots = normalizedPrizes.reduce((sum, prize) => sum + prize.count, 0);
 
   const rules = useMemo(() => {
     const blocked = new Set(blocklist.split(/\r?\n|,/).map((item) => item.trim().toLowerCase()).filter(Boolean));
@@ -707,6 +721,24 @@ function App() {
     setLastAudit(null);
     setRecordImageUrl('');
     setRecordImageName('');
+  }
+  function jumpToPrizeSettings() {
+    requestAnimationFrame(() => {
+      prizeSettingsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      window.setTimeout(() => firstPrizeNameRef.current?.focus(), 650);
+    });
+  }
+  function openPrizeSettings() {
+    jumpToPrizeSettings();
+    showStatus('填写奖项名称和中奖人数后，就可以开始开奖。');
+  }
+  function ensurePrizeSettingsReady() {
+    if (!normalizedPrizes.length || totalSlots < 1) {
+      showStatus('请先填写至少一个奖项名称和中奖人数。', 'error');
+      jumpToPrizeSettings();
+      return false;
+    }
+    return true;
   }
 
   async function loadCookieStatus(check = false) {
@@ -807,7 +839,8 @@ function App() {
         setDrawCountLastAt('');
         setSourceMeta({ provider: 'manual' });
         setHistoryUids(new Set());
-        showStatus(`已导入 ${parsed.length} 位候选用户。`, 'success');
+        showStatus(`已导入 ${parsed.length} 位候选用户，请确认奖项设置。`, 'success');
+        jumpToPrizeSettings();
         return;
       }
       if (!statusUrl.trim()) throw new Error('请先粘贴微博正文链接、mid 或 bid。');
@@ -833,7 +866,8 @@ function App() {
       const pageCount = Array.isArray(json.meta?.pages) ? json.meta.pages.length : 0;
       const totalNumber = Number(json.meta?.totalNumber);
       const totalText = Number.isFinite(totalNumber) ? `接口显示总转发约 ${totalNumber} 条。` : '';
-      showStatus(`已载入 ${json.candidates?.length || 0} 条可见转发，扫描 ${pageCount} 页。${totalText}`, 'success');
+      showStatus(`已载入 ${json.candidates?.length || 0} 条可见转发，扫描 ${pageCount} 页。${totalText ? `${totalText} ` : ''}请确认奖项设置。`, 'success');
+      jumpToPrizeSettings();
     } catch (error) {
       showStatus(error.message, 'error');
     } finally {
@@ -858,7 +892,7 @@ function App() {
         candidateDigest,
         rules: {
           filters: { keyword, mentionMin: Number(mentionMin || 0), uniqueByUser, excludePrevious },
-          prizes,
+          prizes: normalizedPrizes,
         },
       }),
     });
@@ -873,6 +907,7 @@ function App() {
 
   async function drawAll() {
     if (isDrawing) return;
+    if (!ensurePrizeSettingsReady()) return;
     if (!eligible.length) { showStatus('候选池为空，先载入或导入候选用户。', 'error'); return; }
     if (totalSlots > eligible.length) {
       showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${eligible.length}。`, 'error');
@@ -891,8 +926,8 @@ function App() {
       const rollingPool = pool.map((item) => item.screenName || item.uid || item.id).filter(Boolean);
       const all = [];
       let offset = 0;
-      for (let prizeIndex = 0; prizeIndex < prizes.length; prizeIndex += 1) {
-        const prize = prizes[prizeIndex];
+      for (let prizeIndex = 0; prizeIndex < normalizedPrizes.length; prizeIndex += 1) {
+        const prize = normalizedPrizes[prizeIndex];
         const prizeWinners = pool.slice(offset, offset + Number(prize.count || 0));
         offset += Number(prize.count || 0);
         setPhase(`正在抽取 ${prize.name}`);
@@ -911,7 +946,7 @@ function App() {
         await sleep(380);
         all.push({ prize, winners: prizeWinners });
         setResults([...all]);
-        if (prizeIndex < prizes.length - 1) await sleep(260);
+        if (prizeIndex < normalizedPrizes.length - 1) await sleep(260);
       }
       const wonIds = new Set(historyUids);
       all.flatMap((item) => item.winners).forEach((winner) => {
@@ -925,7 +960,7 @@ function App() {
         drawnAt: new Date().toISOString(),
         statusId: currentStatusId,
         statusUrl: currentStatusUrl,
-        rules: { filters: { keyword, mentionMin: Number(mentionMin || 0), uniqueByUser, excludePrevious }, prizes },
+        rules: { filters: { keyword, mentionMin: Number(mentionMin || 0), uniqueByUser, excludePrevious }, prizes: normalizedPrizes },
         candidateDigest,
         eligibleCount: eligible.length,
       });
@@ -1034,7 +1069,7 @@ function App() {
         totalNumber: sourceMeta?.totalNumber,
         providerText,
         filterSummary: buildFilterSummary({ keyword, mentionMin, uniqueByUser, excludePrevious }),
-        prizeSummary: prizes.map((prize) => `${prize.name} x ${Number(prize.count || 0)}`).join(' / '),
+        prizeSummary: normalizedPrizes.map((prize) => `${prize.name} x ${prize.count}`).join(' / '),
       });
       const imageUrl = canvas.toDataURL('image/png');
       const imageName = `weibo-draw-record-${Date.now()}.png`;
@@ -1133,8 +1168,8 @@ function App() {
                 <RollingBox isRolling={isDrawing} name={rollingName} phase={phase || '开奖中'} />
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-[1fr_128px_148px_132px] lg:items-end">
-                <label className="grid gap-2 sm:col-span-3 lg:col-span-1">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-[1fr_128px_132px_148px_132px] xl:items-end">
+                <label className="grid gap-2 sm:col-span-2 xl:col-span-1">
                   <span className="text-[12px] text-gray-500 font-semibold">微博链接 / mid / bid</span>
                   <input value={statusUrl} onChange={(event) => { setStatusUrl(event.target.value); setCurrentStatusUrl(event.target.value); }}
                     placeholder="https://m.weibo.cn/detail/5301073099358898"
@@ -1143,11 +1178,14 @@ function App() {
                 <button onClick={loadCandidates} disabled={isLoading} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold">
                   {isLoading ? '载入中...' : '1. 载入候选'}
                 </button>
+                <button onClick={openPrizeSettings} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold flex items-center justify-center gap-1.5">
+                  {I.gift} 2. 填写奖项
+                </button>
                 <button onClick={drawAll} disabled={isDrawing || !eligible.length} className="btn-primary px-4 py-3.5 font-bold relative z-10 breathe">
-                  <span className="relative z-10 flex items-center justify-center gap-2">{isDrawing ? '抽奖中...' : '2. 一键开奖'} {!isDrawing && I.bolt}</span>
+                  <span className="relative z-10 flex items-center justify-center gap-2">{isDrawing ? '抽奖中...' : '3. 一键开奖'} {!isDrawing && I.bolt}</span>
                 </button>
                 <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !results.length} className="btn-ghost px-4 py-3.5 text-gray-100 font-bold flex items-center justify-center gap-1.5">
-                  {I.image} {isCapturing ? '生成中' : '3. 记录图'}
+                  {I.image} {isCapturing ? '生成中' : '4. 记录图'}
                 </button>
               </div>
 
@@ -1281,26 +1319,26 @@ function App() {
               )}
             </section>
 
-            <section className="glass p-5">
+            <section ref={prizeSettingsRef} className="glass p-5 scroll-mt-8">
               <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">{I.gift} 奖项设置</h3>
               <div className="grid grid-cols-3 gap-2 mb-3">
-                <button onClick={() => setPrizes([{ name: '幸运奖', count: 1, color: COLORS[0] }])} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">抽 1 人</button>
-                <button onClick={() => setPrizes([...DEFAULT_PRIZES])} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">新手推荐</button>
-                <button onClick={() => setPrizes([{ name: '幸运奖', count: 10, color: COLORS[1] }])} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">抽 10 人</button>
+                <button onClick={() => { setPrizes([defaultPrize(0, 1)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">一等奖 1人</button>
+                <button onClick={() => { setPrizes([defaultPrize(0, 3)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">一等奖 3人</button>
+                <button onClick={() => { setPrizes([defaultPrize(0, 10)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">一等奖 10人</button>
               </div>
               <div className="space-y-2">
                 {prizes.map((prize, index) => (
                   <div key={index} className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: prize.color }} />
-                    <input value={prize.name} onChange={(event) => { const next = [...prizes]; next[index] = { ...next[index], name: event.target.value }; setPrizes(next); clearResult('奖项已更新，请重新开奖。'); }}
+                    <input ref={index === 0 ? firstPrizeNameRef : null} value={prize.name} onChange={(event) => { const next = [...prizes]; next[index] = { ...next[index], name: event.target.value }; setPrizes(next); clearResult('奖项已更新，请重新开奖。'); }}
                       className="input-field rounded-lg px-2.5 py-1.5 text-[13px] text-white flex-1 bg-transparent min-w-0" />
                     <input type="number" value={prize.count} min={1} onChange={(event) => { const next = [...prizes]; next[index] = { ...next[index], count: Math.max(1, parseInt(event.target.value, 10) || 1) }; setPrizes(next); clearResult('奖项已更新，请重新开奖。'); }}
                       className="input-field rounded-lg px-2 py-1.5 text-[13px] text-white w-14 text-center bg-transparent" />
-                    <button onClick={() => { setPrizes(prizes.filter((_, i) => i !== index)); clearResult('奖项已更新，请重新开奖。'); }} className="text-gray-500 hover:text-[#ff375f] transition flex-shrink-0">{I.trash}</button>
+                    <button onClick={() => { if (prizes.length <= 1) return; setPrizes(prizes.filter((_, i) => i !== index)); clearResult('奖项已更新，请重新开奖。'); }} disabled={prizes.length <= 1} className={`transition flex-shrink-0 ${prizes.length <= 1 ? 'text-gray-700 cursor-not-allowed' : 'text-gray-500 hover:text-[#ff375f]'}`}>{I.trash}</button>
                   </div>
                 ))}
               </div>
-              <button onClick={() => setPrizes([...prizes, { name: `奖品${prizes.length + 1}`, count: 1, color: COLORS[prizes.length % COLORS.length] }])}
+              <button onClick={() => { setPrizes([...prizes, defaultPrize(prizes.length, 1)]); clearResult('奖项已更新，请重新开奖。'); }}
                 className="mt-2.5 w-full border border-dashed border-white/[0.06] rounded-lg py-2 text-[12px] text-gray-600 hover:text-white hover:border-white/[0.12] transition flex items-center justify-center gap-1">{I.plus} 添加奖项</button>
             </section>
 
