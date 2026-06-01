@@ -397,22 +397,46 @@ function StatCard({ value, label, gradient, delay }) {
 }
 
 function RollingBox({ isRolling, name, phase }) {
+  const displayName = name || '抽取中';
   return (
     <div className={`stage-shell w-full h-40 sm:h-44 flex items-center justify-center relative overflow-hidden ${isRolling ? 'is-rolling' : ''}`}>
       <div className="stage-sparkles" aria-hidden="true">
         <i /><i /><i /><i />
       </div>
       <div className="absolute inset-0 shimmer-line pointer-events-none" />
+      <div className="reel-vignette" aria-hidden="true" />
+      <div className="reel-center-line" aria-hidden="true" />
       {isRolling ? (
         <div className="reel-window z-10">
-          <div className="reel-card roll-in" key={name}>
-            <div className="reel-name">{name}</div>
+          <div className="reel-card roll-in" key={displayName}>
+            <div className="reel-mask">
+              <div className="reel-track">
+                <span>{displayName}</span>
+                <span>{displayName}</span>
+                <span>{displayName}</span>
+              </div>
+            </div>
             <div className="reel-phase">{phase}</div>
           </div>
         </div>
       ) : (
-        <div className="reel-idle z-10">等待幸运名单</div>
+        <div className="reel-idle z-10">
+          <span className="reel-idle-icon">{I.star}</span>
+          <span>等待幸运名单</span>
+        </div>
       )}
+    </div>
+  );
+}
+
+function EmptyState({ icon, title, detail, compact = false }) {
+  return (
+    <div className={`empty-state ${compact ? 'empty-state-compact' : ''}`}>
+      <div className="empty-state-icon">{icon}</div>
+      <div>
+        <div className="empty-state-title">{title}</div>
+        {detail && <div className="empty-state-detail">{detail}</div>}
+      </div>
     </div>
   );
 }
@@ -484,10 +508,7 @@ function WinnerModal({ results, onClose, onCopyNames, onCopyPost, onCreateShareI
 function History({ list, onClear }) {
   if (!list.length) {
     return (
-      <div className="text-center py-8 text-gray-600">
-        <div className="text-2xl mb-2 opacity-40">-</div>
-        <p className="text-xs">暂无记录</p>
-      </div>
+      <EmptyState icon={I.clock} title="暂无开奖记录" detail="完成开奖后会自动留在这里，方便复查和保存。" compact />
     );
   }
   return (
@@ -1128,8 +1149,8 @@ function App() {
 
       <main className="share-capture app-main flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
-          <div className="lg:col-span-3 space-y-5">
-            <section className="glass hero-panel p-5 sm:p-6 border-glow">
+          <div className="main-column lg:col-span-3 space-y-5">
+            <section className="glass hero-panel hero-stage-panel p-5 sm:p-6 border-glow">
               <div className="mb-5 flex flex-col gap-4">
                 <div>
                   <h2 className="hero-title text-[28px] sm:text-4xl font-semibold text-white leading-tight">微博转发抽奖助手</h2>
@@ -1152,10 +1173,12 @@ function App() {
                 </div>
               </div>
 
-              <div className="mb-4">
+              <div className="stage-wrap">
                 <RollingBox isRolling={isDrawing} name={rollingName} phase={phase || '开奖中'} />
               </div>
+            </section>
 
+            <section className="glass action-panel p-5 sm:p-6">
               <div className="grid gap-3">
                 <label className="grid gap-2">
                   <span className="text-[12px] text-gray-500 font-semibold">微博链接 / mid / bid</span>
@@ -1164,21 +1187,25 @@ function App() {
                     className="input-field px-4 py-3.5 text-white placeholder-gray-600 w-full text-[15px]" />
                 </label>
                 <div className="action-grid grid grid-cols-1 sm:grid-cols-4 gap-3">
-                  <button onClick={loadCandidates} disabled={isLoading} className="btn-ghost action-btn px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap">
+                  <button onClick={loadCandidates} disabled={isLoading} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${displayPool.length ? 'action-step-done' : ''} ${isLoading ? 'action-step-active' : ''}`}>
+                    <span className="action-step-dot">1</span>
                     <span className="action-icon">{I.users}</span>
-                    <span>{isLoading ? '载入中...' : '1. 载入候选'}</span>
+                    <span>{isLoading ? '载入中...' : '载入候选'}</span>
                   </button>
-                  <button onClick={openPrizeSettings} className="btn-ghost action-btn px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap">
+                  <button onClick={openPrizeSettings} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${totalSlots > 0 ? 'action-step-done' : ''}`}>
+                    <span className="action-step-dot">2</span>
                     <span className="action-icon">{I.gift}</span>
-                    <span>2. 填写奖项</span>
+                    <span>填写奖项</span>
                   </button>
-                  <button onClick={drawAll} disabled={isDrawing || isLoading} className="btn-primary action-btn action-btn-primary px-4 py-3.5 font-bold relative z-10 breathe">
+                  <button onClick={drawAll} disabled={isDrawing || isLoading} className={`btn-primary action-btn action-step action-btn-primary px-4 py-3.5 font-bold relative z-10 breathe ${isDrawing ? 'action-step-active' : ''} ${results.length ? 'action-step-done' : ''}`}>
+                    <span className="action-step-dot">3</span>
                     <span className="action-icon action-icon-primary">{I.bolt}</span>
-                    <span>{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '3. 一键开奖'}</span>
+                    <span>{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '一键开奖'}</span>
                   </button>
-                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !results.length} className="btn-ghost action-btn px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap">
+                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !results.length} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${results.length ? 'action-step-ready' : 'action-step-muted'}`}>
+                    <span className="action-step-dot">4</span>
                     <span className="action-icon">{I.image}</span>
-                    <span>{isCapturing ? '生成中' : '4. 记录图'}</span>
+                    <span>{isCapturing ? '生成中' : '记录图'}</span>
                   </button>
                 </div>
               </div>
@@ -1256,7 +1283,7 @@ function App() {
                     <span className="text-[10px] text-gray-500 bg-white/[0.04] rounded-full px-2 py-0.5">{candidate.source || 'manual'}</span>
                   </div>
                 )) : (
-                  <div className="text-center py-12 text-gray-600 text-sm">还没有候选，先载入微博转发或手动导入名单</div>
+                  <EmptyState icon={I.users} title="候选名单为空" detail="载入微博转发后，候选用户会按可抽规则显示在这里。" />
                 )}
               </div>
               {displayPool.length > 0 && (
