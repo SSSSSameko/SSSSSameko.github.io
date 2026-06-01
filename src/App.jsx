@@ -679,9 +679,13 @@ function App() {
       if (!json.ok) throw new Error(json.error || '服务器 Cookie 状态读取失败');
       setCookieInfo(json);
       if (check) {
-        showStatus(json.hasCookie
-          ? `服务器端已有 ${json.cookieCount || 1} 个可用 Cookie，失效项会自动删除。`
-          : '服务器端暂无可用 Cookie，请粘贴一次微博 Cookie 后载入。');
+        if (json.checkSkipped) {
+          showStatus('服务器 Cookie 已受站长密钥保护，普通访客只能查看可用数量。');
+        } else {
+          showStatus(json.hasCookie
+            ? `服务器端已有 ${json.cookieCount || 1} 个可用 Cookie，失效项会自动删除。`
+            : '服务器端暂无可用 Cookie，请站长填写密钥后粘贴 Cookie 载入。');
+        }
       }
     } catch (error) {
       if (check) showStatus(error.message, 'error');
@@ -1338,10 +1342,10 @@ function App() {
                 className="input-field px-3 py-2.5 text-[13px] text-white placeholder-gray-600 w-full" />
             </label>
             <label className="grid gap-2 mt-3">
-              <span className="text-[12px] text-gray-500 font-semibold">API Key</span>
+              <span className="text-[12px] text-gray-500 font-semibold">站长密钥 / API Key</span>
               <input value={apiKey} onChange={(event) => setApiKey(event.target.value)}
                 type="password"
-                placeholder="服务器设置 API_KEY 后填写"
+                placeholder="保存服务器 Cookie 时填写"
                 className="input-field px-3 py-2.5 text-[13px] text-white placeholder-gray-600 w-full" />
             </label>
             <div className="grid grid-cols-2 gap-2 mt-2">

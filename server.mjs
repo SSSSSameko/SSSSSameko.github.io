@@ -15,6 +15,7 @@ const drawAttemptsFile = path.join(rootDir, 'output', 'draw-attempts.jsonl');
 const port = Number(process.env.PORT || 4173);
 const host = String(process.env.HOST || '').trim();
 const apiKey = String(process.env.API_KEY || '').trim();
+const cookieWriteKey = String(process.env.COOKIE_WRITE_KEY || '').trim();
 const fetchTimeoutMs = Math.max(1000, Number(process.env.FETCH_TIMEOUT_MS || 20_000));
 const jobTtlMs = Math.max(60_000, Number(process.env.JOB_TTL_MS || 10 * 60_000));
 const maxActiveJobs = Math.max(1, Number(process.env.MAX_ACTIVE_JOBS || 2));
@@ -119,6 +120,10 @@ function requestApiKey(req) {
 function isAuthorizedApiRequest(req, pathname) {
   if (!apiKey || req.method === 'OPTIONS' || pathname === '/api/health') return true;
   return timingSafeEqualText(requestApiKey(req), apiKey);
+}
+
+function canWriteCookieStore(req) {
+  return !cookieWriteKey || timingSafeEqualText(requestApiKey(req), cookieWriteKey);
 }
 
 function clientRateKey(req) {
@@ -661,8 +666,10 @@ async function validateStoredCookies(reportProgress) {
   });
 }
 
-async function prepareCookieCandidates(body, reportProgress) {
+async function prepareCookieCandidates(body, reportProgress, options = {}) {
   const failures = [];
+  const warnings = [];
+  const canSaveCookie = options.canWriteCookie !== false;
   let preferredId = '';
   let inlineCandidate = null;
   const supplied = cleanCookieHeader(body.mobileCookie);
@@ -671,9 +678,25 @@ async function prepareCookieCandidates(body, reportProgress) {
     reportProgress?.({ phase: 'cookie-check', percent: 1, message: '校验本次输入的微博 Cookie' });
     const validation = await checkCookieValidity(supplied);
     if (validation.ok) {
-      const saved = await upsertStoredCookie(supplied, validation);
-      preferredId = saved.id;
-      if (disableCookieStore) inlineCandidate = saved;
+      const now = new Date().toISOString();
+      const transient = {
+        id: cookieFingerprint(supplied),
+        cookie: supplied,
+        savedAt: now,
+        updatedAt: now,
+        lastCheckedAt: validation.checkedAt || now,
+        lastValidAt: validation.lastValidAt || '',
+        lastError: '',
+      };
+      if (!disableCookieStore && canSaveCookie) {
+        const saved = await upsertStoredCookie(supplied, validation);
+        preferredId = saved.id;
+      } else {
+        inlineCandidate = transient;
+        if (!disableCookieStore && !canSaveCookie) {
+          warnings.push('本次 Cookie 只临时用于抓取，未保存到服务器。');
+        }
+      }
     } else {
       await removeStoredCookie(supplied);
       failures.push(`输入的 Cookie 无效：${validation.message}`);
@@ -685,6 +708,7 @@ async function prepareCookieCandidates(body, reportProgress) {
     return {
       candidates: inlineCandidate ? [inlineCandidate] : [],
       failures,
+      warnings,
       summary: {
         ...summary,
         hasCookie: Boolean(inlineCandidate),
@@ -693,12 +717,15 @@ async function prepareCookieCandidates(body, reportProgress) {
     };
   }
   const store = await readCookieStore();
-  const candidates = sortCookieEntries(store.cookies, preferredId || store.activeId);
-  return { candidates, failures, summary };
+  const storedCandidates = sortCookieEntries(store.cookies, preferredId || store.activeId);
+  const candidates = inlineCandidate
+    ? [inlineCandidate, ...storedCandidates.filter((entry) => entry.id !== inlineCandidate.id)]
+    : storedCandidates;
+  return { candidates, failures, warnings, summary };
 }
 
-async function fetchCookieRepostsWithPool({ statusId, body, reportProgress }) {
-  const { candidates, failures, summary } = await prepareCookieCandidates(body, reportProgress);
+async function fetchCookieRepostsWithPool({ statusId, body, reportProgress, canWriteCookie = true }) {
+  const { candidates, failures, warnings, summary } = await prepareCookieCandidates(body, reportProgress, { canWriteCookie });
   if (!candidates.length) {
     const detail = failures.length ? `；${failures.join('；')}` : '';
     const error = new Error(`服务器端没有可用微博 Cookie，请先粘贴一次有效 Cookie${detail}`);
@@ -730,6 +757,7 @@ async function fetchCookieRepostsWithPool({ statusId, body, reportProgress }) {
         },
         warnings: [
           ...(failures.length ? failures : []),
+          ...(warnings.length ? warnings : []),
           ...(result.meta?.warnings || []),
         ],
       };
@@ -1302,7 +1330,7 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress }) {
   };
 }
 
-async function buildRepostsPayload(body, reportProgress) {
+async function buildRepostsPayload(body, reportProgress, options = {}) {
   const source = String(body.source || 'official');
   const statusId = extractStatusId(body.statusUrl || body.statusId);
   if (!statusId) {
@@ -1321,7 +1349,12 @@ async function buildRepostsPayload(body, reportProgress) {
       accessToken: body.accessToken,
     });
   } else if (source === 'mobile') {
-    result = await fetchCookieRepostsWithPool({ statusId, body, reportProgress });
+    result = await fetchCookieRepostsWithPool({
+      statusId,
+      body,
+      reportProgress,
+      canWriteCookie: options.canWriteCookie !== false,
+    });
   } else {
     const error = new Error('未知数据源');
     error.status = 400;
@@ -1348,7 +1381,7 @@ async function buildRepostsPayload(body, reportProgress) {
 
 async function handleReposts(req, res) {
   const body = await readJsonBody(req);
-  const payload = await buildRepostsPayload(body);
+  const payload = await buildRepostsPayload(body, null, { canWriteCookie: canWriteCookieStore(req) });
   return sendJson(res, 200, payload);
 }
 
@@ -1394,7 +1427,7 @@ async function handleStartRepostsJob(req, res) {
       percent: Math.max(0, Math.min(100, finiteNumber(progress.percent, job.progress.percent))),
     };
     job.updatedAt = new Date().toISOString();
-  })
+  }, { canWriteCookie: canWriteCookieStore(req) })
     .then((result) => {
       job.status = 'done';
       job.result = result;
@@ -1424,12 +1457,17 @@ async function handleGetRepostsJob(_req, res, jobId) {
   });
 }
 
-async function handleCookieStatus(_req, res, url) {
+async function handleCookieStatus(req, res, url) {
   const shouldCheck = url.searchParams.get('check') === '1';
-  const summary = shouldCheck
+  const canCheck = !shouldCheck || canWriteCookieStore(req);
+  const summary = shouldCheck && canCheck
     ? await validateStoredCookies()
     : cookieStoreSummary(await readCookieStore());
-  return sendJson(res, 200, summary);
+  return sendJson(res, 200, {
+    ...summary,
+    cookieStoreWriteProtected: Boolean(cookieWriteKey),
+    checkSkipped: shouldCheck && !canCheck,
+  });
 }
 
 async function handleDrawCount(req, res, url) {
@@ -1596,6 +1634,7 @@ const server = http.createServer(async (req, res) => {
         maxActiveJobs,
         apiKeyRequired: Boolean(apiKey),
         cookieStoreDisabled: disableCookieStore,
+        cookieStoreWriteProtected: Boolean(cookieWriteKey),
       });
     }
     if (req.method === 'GET' && url.pathname === '/api/weibo/draw-count') {
