@@ -33,9 +33,9 @@ body {
   letter-spacing: 0;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(247, 249, 252, 0.88) 42%, rgba(232, 238, 247, 0.96) 100%),
-    linear-gradient(135deg, rgba(0, 122, 255, 0.11) 0%, rgba(255, 255, 255, 0) 34%, rgba(48, 209, 88, 0.08) 70%, rgba(94, 92, 230, 0.09) 100%),
-    linear-gradient(105deg, rgba(255, 217, 228, 0.24), rgba(255, 255, 255, 0) 44%, rgba(121, 184, 255, 0.18));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 253, 0.90) 42%, rgba(232, 240, 249, 0.97) 100%),
+    linear-gradient(135deg, rgba(0, 122, 255, 0.12) 0%, rgba(255, 255, 255, 0) 34%, rgba(48, 209, 88, 0.075) 70%, rgba(94, 92, 230, 0.085) 100%),
+    linear-gradient(105deg, rgba(255, 217, 228, 0.27), rgba(255, 255, 255, 0) 44%, rgba(121, 184, 255, 0.20));
 }
 
 body::before {
@@ -47,9 +47,10 @@ body::before {
   background-image:
     linear-gradient(90deg, rgba(60, 60, 67, 0.028) 1px, transparent 1px),
     linear-gradient(rgba(60, 60, 67, 0.026) 1px, transparent 1px),
+    repeating-linear-gradient(115deg, rgba(121, 184, 255, 0.045) 0 1px, transparent 1px 118px),
     linear-gradient(135deg, rgba(0, 122, 255, 0.07), transparent 40%),
     linear-gradient(225deg, rgba(48, 209, 88, 0.055), transparent 44%);
-  background-size: 72px 72px, 72px 72px, 100% 100%, 100% 100%;
+  background-size: 72px 72px, 72px 72px, 100% 100%, 100% 100%, 100% 100%;
   mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.20) 70%, transparent 100%);
 }
 
@@ -215,6 +216,14 @@ body::after {
   position: relative;
   overflow: hidden;
   transition: transform 0.22s ease, border-color 0.22s ease, background 0.22s ease, box-shadow 0.22s ease, opacity 0.22s ease;
+}
+.btn-primary:focus-visible,
+.btn-ghost:focus-visible,
+.input-field:focus-visible {
+  outline: 0;
+  box-shadow:
+    0 0 0 4px rgba(0, 122, 255, 0.16),
+    0 1px 0 rgba(255, 255, 255, 0.92) inset;
 }
 .btn-primary {
   color: #ffffff !important;
@@ -455,6 +464,44 @@ body::after {
   letter-spacing: 0;
   font-weight: 760;
 }
+.stat-card {
+  position: relative;
+  overflow: hidden;
+  border-color: rgba(60, 60, 67, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 254, 0.74)),
+    rgba(255, 255, 255, 0.76);
+  box-shadow:
+    0 14px 34px rgba(52, 87, 132, 0.10),
+    0 1px 0 rgba(255, 255, 255, 0.94) inset;
+}
+.stat-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(125deg, rgba(121, 184, 255, 0.13), transparent 42%, rgba(255, 217, 228, 0.09));
+  opacity: 0.72;
+}
+.stat-card > * {
+  position: relative;
+  z-index: 1;
+}
+.stat-label {
+  letter-spacing: 0;
+}
+.stat-value {
+  font-weight: 780;
+}
+.status-line {
+  border-radius: 18px;
+  border: 1px solid rgba(60, 60, 67, 0.10);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(247, 250, 255, 0.56)),
+    rgba(255, 255, 255, 0.58);
+  padding: 10px 12px;
+  line-height: 1.5;
+}
 .hero-stage-panel,
 .action-panel {
   position: relative;
@@ -492,13 +539,20 @@ body::after {
   border: 1px solid rgba(0, 122, 255, 0.16);
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.94) inset;
 }
-.action-step-done .action-step-dot,
+.action-step-complete .action-step-dot,
 .action-step-active .action-step-dot,
+.action-step-current .action-step-dot,
 .action-btn-primary .action-step-dot {
   color: #ffffff;
   border-color: rgba(255, 255, 255, 0.32);
   background: linear-gradient(180deg, #49a9ff, #007aff);
   box-shadow: 0 8px 22px rgba(0, 122, 255, 0.22), 0 1px 0 rgba(255, 255, 255, 0.36) inset;
+}
+.action-step-ready .action-step-dot {
+  color: #0071e3;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(237, 246, 255, 0.86)),
+    rgba(0, 122, 255, 0.08);
 }
 .action-step-muted .action-step-dot,
 .action-step-muted .action-icon {
@@ -578,6 +632,27 @@ body::after {
   font-size: 12px;
   line-height: 1.55;
 }
+.list-panel {
+  overflow: hidden;
+}
+.candidate-row {
+  border-radius: 18px;
+  border: 1px solid rgba(60, 60, 67, 0.10);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(247, 250, 255, 0.56)),
+    rgba(255, 255, 255, 0.58);
+  box-shadow:
+    0 10px 26px rgba(52, 87, 132, 0.065),
+    0 1px 0 rgba(255, 255, 255, 0.86) inset;
+}
+.candidate-row + .candidate-row {
+  margin-top: 7px;
+}
+
+::selection {
+  background: rgba(0, 122, 255, 0.18);
+  color: #101014;
+}
 
 @media (min-width: 1024px) {
   aside.lg\:col-span-2 {
@@ -632,7 +707,7 @@ body::after {
       linear-gradient(64deg, rgba(255, 245, 232, 0.42), rgba(255, 255, 255, 0) 58%);
   }
   body::before {
-    background-size: 58px 58px, 58px 58px, 100% 100%, 100% 100%;
+    background-size: 58px 58px, 58px 58px, 100% 100%, 100% 100%, 100% 100%;
     opacity: 0.82;
   }
   .app-header {

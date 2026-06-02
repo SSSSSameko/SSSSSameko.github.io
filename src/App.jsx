@@ -386,12 +386,12 @@ const I = {
 
 function StatCard({ value, label, gradient, delay }) {
   return (
-    <div className={`glass px-3 py-3 text-left slide-up min-w-0 ${delay}`}>
-      <div className="flex items-center gap-2 text-[10px] uppercase text-gray-500 whitespace-nowrap">
+    <div className={`glass stat-card px-3 py-3 text-left slide-up min-w-0 ${delay}`}>
+      <div className="stat-label flex items-center gap-2 text-[10px] uppercase text-gray-500 whitespace-nowrap">
         <span className="h-1.5 w-1.5 rounded-full bg-[#007aff]" />
         {label}
       </div>
-      <div className={`mt-2 text-[22px] sm:text-[26px] leading-none font-semibold bg-clip-text text-transparent bg-gradient-to-r ${gradient} truncate`}>{value}</div>
+      <div className={`stat-value mt-2 text-[22px] sm:text-[26px] leading-none font-semibold bg-clip-text text-transparent bg-gradient-to-r ${gradient} truncate`}>{value}</div>
     </div>
   );
 }
@@ -1124,6 +1124,8 @@ function App() {
   const drawCountMeta = drawCountLastAt
     ? `最近开始：${new Date(drawCountLastAt).toLocaleString()}`
     : currentStatusId ? `微博 mid：${currentStatusId}` : '点击开始开奖才会计数';
+  const hasCandidates = displayPool.length > 0;
+  const hasResults = results.length > 0;
   return (
     <div className="relative z-10 min-h-screen flex flex-col app-shell">
       <header className="glass-subtle app-header sticky top-0 z-40">
@@ -1187,22 +1189,22 @@ function App() {
                     className="input-field px-4 py-3.5 text-white placeholder-gray-600 w-full text-[15px]" />
                 </label>
                 <div className="action-grid grid grid-cols-1 sm:grid-cols-4 gap-3">
-                  <button onClick={loadCandidates} disabled={isLoading} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${displayPool.length ? 'action-step-done' : ''} ${isLoading ? 'action-step-active' : ''}`}>
+                  <button onClick={loadCandidates} disabled={isLoading} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${hasCandidates ? 'action-step-complete' : 'action-step-current'} ${isLoading ? 'action-step-active' : ''}`}>
                     <span className="action-step-dot">1</span>
                     <span className="action-icon">{I.users}</span>
                     <span>{isLoading ? '载入中...' : '载入候选'}</span>
                   </button>
-                  <button onClick={openPrizeSettings} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${totalSlots > 0 ? 'action-step-done' : ''}`}>
+                  <button onClick={openPrizeSettings} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${totalSlots > 0 ? 'action-step-ready' : 'action-step-current'}`}>
                     <span className="action-step-dot">2</span>
                     <span className="action-icon">{I.gift}</span>
                     <span>填写奖项</span>
                   </button>
-                  <button onClick={drawAll} disabled={isDrawing || isLoading} className={`btn-primary action-btn action-step action-btn-primary px-4 py-3.5 font-bold relative z-10 breathe ${isDrawing ? 'action-step-active' : ''} ${results.length ? 'action-step-done' : ''}`}>
+                  <button onClick={drawAll} disabled={isDrawing || isLoading} className={`btn-primary action-btn action-step action-btn-primary px-4 py-3.5 font-bold relative z-10 breathe ${isDrawing ? 'action-step-active' : ''} ${hasResults ? 'action-step-complete' : 'action-step-current'}`}>
                     <span className="action-step-dot">3</span>
                     <span className="action-icon action-icon-primary">{I.bolt}</span>
                     <span>{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '一键开奖'}</span>
                   </button>
-                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !results.length} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${results.length ? 'action-step-ready' : 'action-step-muted'}`}>
+                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !hasResults} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${hasResults ? 'action-step-current' : 'action-step-muted'}`}>
                     <span className="action-step-dot">4</span>
                     <span className="action-icon">{I.image}</span>
                     <span>{isCapturing ? '生成中' : '记录图'}</span>
@@ -1228,7 +1230,7 @@ function App() {
                 <StatCard value={drawCount ?? 0} label="本链接已抽" gradient="from-[#5e5ce6] to-[#007aff]" delay="d3" />
               </div>
 
-              <div className={`mt-4 text-[13px] ${statusTone === 'error' ? 'status-bad' : statusTone === 'success' ? 'status-ok' : 'text-gray-500'}`}>
+              <div className={`status-line mt-4 text-[13px] ${statusTone === 'error' ? 'status-bad' : statusTone === 'success' ? 'status-ok' : 'text-gray-500'}`}>
                 {status}
               </div>
             </section>
@@ -1271,11 +1273,11 @@ function App() {
               </section>
             )}
 
-            <section className="glass p-5">
+            <section className="glass list-panel p-5">
               <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">{I.users} 候选列表</h3>
               <div className="max-h-72 overflow-y-auto space-y-1.5">
                 {displayPool.length ? displayPool.slice(0, 160).map((candidate, index) => (
-                  <div key={candidate.id || index} className="flex items-center justify-between gap-3 glass px-3 py-2">
+                  <div key={candidate.id || index} className="candidate-row flex items-center justify-between gap-3 px-3 py-2">
                     <div className="min-w-0">
                       <div className="text-[13px] text-gray-200 font-medium truncate">{candidate.screenName || candidate.uid || `候选人 ${index + 1}`}</div>
                       <div className="text-[11px] text-gray-600 truncate">{candidate.text || candidate.uid || candidate.source}</div>
