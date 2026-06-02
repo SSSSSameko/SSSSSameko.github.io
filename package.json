@@ -12,6 +12,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server.mjs",
+    "test": "node --test src/lib/appCore.test.js",
     "web": "npm run build && node server.mjs",
     "start:windows": "powershell -ExecutionPolicy Bypass -File scripts/windows-start.ps1"
   },

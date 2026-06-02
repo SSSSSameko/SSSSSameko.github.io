@@ -18,36 +18,23 @@ import {
   Users,
   X,
 } from 'lucide-react';
+import {
+  SOURCE_LABELS,
+  buildFilterSummary,
+  cleanApiBase,
+  digestCandidates,
+  friendlyProviderText,
+  parseManualInput,
+  randomSeedHex,
+  readStoredValue,
+  safeMentionName,
+  seededShuffle,
+  toCsv,
+  writeStoredValue,
+} from './lib/appCore.js';
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const publicAsset = (name) => `${import.meta.env.BASE_URL}${name}`;
-const SOURCE_LABELS = { mobile: 'H5 Cookie', manual: '手动名单', official: '官方接口' };
-const PROVIDER_LABELS = {
-  manual: '手动名单',
-  cookie: '服务器 Cookie 池',
-  mobile: 'H5 可见转发',
-  official: '官方接口',
-  desktop: '桌面可见转发',
-  legacy: '微博旧版接口',
-  'desktop-cookie': '桌面 Cookie 接口',
-};
-function readStoredValue(key) {
-  try {
-    return window.localStorage?.getItem(key) || '';
-  } catch {
-    return '';
-  }
-}
-function writeStoredValue(key, value) {
-  try {
-    if (value) window.localStorage?.setItem(key, value);
-    else window.localStorage?.removeItem(key);
-  } catch {
-    // Some locked-down browsers disable localStorage; the app can continue without it.
-  }
-}
-function cleanApiBase(value) {
-  return String(value || '').trim().replace(/\/+$/, '');
-}
 function configuredApiBases() {
   const configured = [
     window.WEIBO_DRAW_API_BASE,
@@ -86,60 +73,6 @@ function isStaticHostedPage() {
   return /\.github\.io$/i.test(location.hostname) || location.protocol === 'file:';
 }
 
-async function seededShuffle(items, seedMaterial) {
-  const result = [...items];
-  let counter = 0;
-  let words = [];
-  let wordIndex = 0;
-  async function refillWords() {
-    const input = `${seedMaterial}:${counter++}`;
-    const buffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
-    const view = new DataView(buffer);
-    words = [];
-    for (let offset = 0; offset < view.byteLength; offset += 4) {
-      words.push(view.getUint32(offset, false));
-    }
-    wordIndex = 0;
-  }
-  async function nextUint32() {
-    if (wordIndex >= words.length) await refillWords();
-    return words[wordIndex++];
-  }
-  for (let i = result.length - 1; i > 0; i -= 1) {
-    const range = i + 1;
-    const limit = Math.floor(0x100000000 / range) * range;
-    let value = await nextUint32();
-    while (value >= limit) value = await nextUint32();
-    const j = value % range;
-    [result[i], result[j]] = [result[j], result[i]];
-  }
-  return result;
-}
-async function digestCandidates(candidates) {
-  const payload = JSON.stringify(candidates.map((item) => ({
-    uid: item.uid,
-    screenName: item.screenName,
-    repostId: item.repostId,
-    text: item.text,
-    createdAt: item.createdAt,
-  })));
-  const buffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(payload));
-  return Array.from(new Uint8Array(buffer)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-function randomSeedHex() {
-  const bytes = new Uint8Array(16);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
-}
-function toCsv(rows) {
-  const headers = ['tier', 'uid', 'screenName', 'text', 'createdAt', 'source'];
-  const escape = (value) => {
-    const raw = String(value ?? '');
-    const safe = /^[=+\-@\t\r\n]/.test(raw.trimStart()) ? `'${raw}` : raw;
-    return `"${safe.replace(/"/g, '""')}"`;
-  };
-  return [headers.map(escape).join(','), ...rows.map((row) => headers.map((key) => escape(row[key])).join(','))].join('\n');
-}
 function download(name, content, type = 'text/csv;charset=utf-8') {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -155,9 +88,6 @@ function downloadUrl(name, url) {
   link.download = name;
   link.click();
 }
-function safeMentionName(value) {
-  return String(value || '').replace(/^@+/, '').trim();
-}
 function winnerMentionText(winners) {
   return winners.map((winner) => safeMentionName(winner.screenName || winner.uid)).filter(Boolean).map((name) => `@${name}`).join(' ');
 }
@@ -172,22 +102,6 @@ function formatDateTime(value = new Date()) {
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return '';
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
-}
-function buildFilterSummary({ keyword, mentionMin, uniqueByUser, excludePrevious }) {
-  const parts = [];
-  if (keyword) parts.push(`关键词：${keyword}`);
-  if (Number(mentionMin || 0) > 0) parts.push(`至少 @${Number(mentionMin || 0)}`);
-  if (uniqueByUser) parts.push('同一用户只保留一次');
-  if (excludePrevious) parts.push('排除本轮已中奖用户');
-  return parts.length ? parts.join(' / ') : '未启用额外筛选';
-}
-function friendlyProviderText(value) {
-  const parts = Array.isArray(value) ? value : String(value || '').split(/[\/,]/);
-  const labels = parts
-    .map((item) => String(item || '').trim())
-    .filter(Boolean)
-    .map((item) => PROVIDER_LABELS[item] || SOURCE_LABELS[item] || item);
-  return [...new Set(labels)].join(' / ');
 }
 function drawRoundedRect(ctx, x, y, width, height, radius, fill, stroke = '') {
   ctx.beginPath();
@@ -257,7 +171,7 @@ function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, color, font) {
 async function createRecordImage(payload) {
   const width = 720;
   const dpr = Math.min(2, window.devicePixelRatio || 2);
-  const pad = 38;
+  const pad = 36;
   const innerW = width - pad * 2;
   const results = Array.isArray(payload.results) ? payload.results : [];
   const avatarImage = await loadCanvasImage(publicAsset('avatar.jpg'));
@@ -265,7 +179,7 @@ async function createRecordImage(payload) {
   const prizeLayouts = results.map((item) => {
     const names = item.winners.map((winner) => safeMentionName(winner.screenName || winner.uid) || '未命名用户');
     const rows = Math.max(1, names.reduce((sum, name) => sum + Math.max(1, Math.ceil(String(name).length / 15)), 0));
-    return { item, names, height: 104 + rows * 40 };
+    return { item, names, height: 96 + rows * 38 };
   });
   const prizeHeight = prizeLayouts.reduce((sum, item) => sum + item.height + 18, 0);
   const auditRows = [
@@ -277,9 +191,9 @@ async function createRecordImage(payload) {
     ['筛选规则', payload.filterSummary],
     ['奖项设置', payload.prizeSummary],
   ];
-  const linkBoxEstimate = Math.max(78, 54 + Math.ceil(String(linkText).length / 28) * 24);
-  const auditHeight = 104 + auditRows.reduce((sum, [, value]) => sum + Math.max(34, Math.ceil(String(value).length / 24) * 25 + 8), 0);
-  const height = Math.max(1480, 700 + linkBoxEstimate + prizeHeight + auditHeight);
+  const linkBoxEstimate = Math.max(72, 50 + Math.ceil(String(linkText).length / 30) * 22);
+  const auditHeight = 96 + auditRows.reduce((sum, [, value]) => sum + Math.max(32, Math.ceil(String(value).length / 26) * 23 + 8), 0);
+  const height = Math.max(1280, 620 + linkBoxEstimate + prizeHeight + auditHeight);
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
@@ -291,25 +205,25 @@ async function createRecordImage(payload) {
 
   const bg = ctx.createLinearGradient(0, 0, width, height);
   bg.addColorStop(0, '#ffffff');
-  bg.addColorStop(0.45, '#f7fbff');
-  bg.addColorStop(1, '#edf5fb');
+  bg.addColorStop(0.44, '#f7fbff');
+  bg.addColorStop(1, '#eef5fb');
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, width, height);
 
   const topWash = ctx.createLinearGradient(0, 0, width, height * 0.48);
-  topWash.addColorStop(0, 'rgba(255,217,228,0.32)');
-  topWash.addColorStop(0.36, 'rgba(255,245,232,0.20)');
+  topWash.addColorStop(0, 'rgba(255,220,231,0.36)');
+  topWash.addColorStop(0.36, 'rgba(255,246,232,0.24)');
   topWash.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = topWash;
   ctx.fillRect(0, 0, width, height);
   const sideWash = ctx.createLinearGradient(width, 0, 0, height);
-  sideWash.addColorStop(0, 'rgba(0,122,255,0.16)');
-  sideWash.addColorStop(0.54, 'rgba(90,200,250,0.06)');
+  sideWash.addColorStop(0, 'rgba(0,122,255,0.17)');
+  sideWash.addColorStop(0.54, 'rgba(50,215,160,0.055)');
   sideWash.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = sideWash;
   ctx.fillRect(0, 0, width, height);
 
-  ctx.strokeStyle = 'rgba(0,122,255,0.035)';
+  ctx.strokeStyle = 'rgba(0,122,255,0.030)';
   ctx.lineWidth = 1;
   for (let x = 42; x < width; x += 42) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
   for (let gy = 42; gy < height; gy += 42) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(width, gy); ctx.stroke(); }
@@ -324,11 +238,11 @@ async function createRecordImage(payload) {
     ctx.shadowOffsetY = 0;
   }
 
-  let y = 30;
+  let y = 28;
   ctx.shadowColor = 'rgba(52,87,132,0.16)';
   ctx.shadowBlur = 32;
   ctx.shadowOffsetY = 14;
-  drawRoundedRect(ctx, pad, y, innerW, 106, 30, 'rgba(255,255,255,0.84)', 'rgba(60,60,67,0.12)');
+  drawRoundedRect(ctx, pad, y, innerW, 102, 30, 'rgba(255,255,255,0.86)', 'rgba(60,60,67,0.12)');
   ctx.shadowColor = 'transparent';
   ctx.shadowBlur = 0;
   ctx.shadowOffsetY = 0;
@@ -361,34 +275,34 @@ async function createRecordImage(payload) {
   ctx.fillText('微博转发抽奖助手', pad + 100, y + 28);
   ctx.font = '17px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#86868b';
-  ctx.fillText('by.sameko · 开奖快照', pad + 100, y + 66);
+  ctx.fillText('by.sameko · 手机保存版', pad + 100, y + 66);
   ctx.textAlign = 'right';
   drawRoundedRect(ctx, width - pad - 178, y + 34, 146, 40, 17, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.13)');
   ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#0071e3';
   ctx.fillText(formatDateTime(payload.drawnAt).slice(0, 10), width - pad - 48, y + 45);
   ctx.textAlign = 'left';
-  y += 142;
+  y += 132;
 
-  ctx.font = '45px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.font = '40px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   const titleGradient = ctx.createLinearGradient(pad, y, width - pad, y);
   titleGradient.addColorStop(0, '#111827');
   titleGradient.addColorStop(0.56, '#007aff');
   titleGradient.addColorStop(1, '#ff6b7a');
   ctx.fillStyle = titleGradient;
   ctx.fillText('微博转发抽奖结果', pad, y);
-  y += 58;
-  ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  y += 52;
+  ctx.font = '17px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   const linkLines = wrapCanvasText(ctx, linkText, innerW - 48);
-  const linkBoxH = Math.max(80, 48 + linkLines.length * 24);
+  const linkBoxH = Math.max(76, 46 + linkLines.length * 23);
   softCard(pad, y, innerW, linkBoxH, 24, 'rgba(255,255,255,0.70)', 'rgba(60,60,67,0.10)');
   ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#86868b';
   ctx.fillText('微博来源', pad + 22, y + 16);
   ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#3a3a40';
-  linkLines.forEach((line, index) => ctx.fillText(line, pad + 22, y + 40 + index * 24));
-  y += linkBoxH + 18;
+  linkLines.forEach((line, index) => ctx.fillText(line, pad + 22, y + 39 + index * 23));
+  y += linkBoxH + 16;
 
   const stats = [
     ['候选记录', payload.candidateCount, '#007aff'],
@@ -400,19 +314,19 @@ async function createRecordImage(payload) {
   const statW = (innerW - statGap) / 2;
   stats.forEach(([label, value, color], index) => {
     const sx = pad + (index % 2) * (statW + statGap);
-    const sy = y + Math.floor(index / 2) * 88;
-    const statFill = ctx.createLinearGradient(sx, sy, sx + statW, sy + 78);
+    const sy = y + Math.floor(index / 2) * 82;
+    const statFill = ctx.createLinearGradient(sx, sy, sx + statW, sy + 74);
     statFill.addColorStop(0, 'rgba(255,255,255,0.92)');
     statFill.addColorStop(1, index === 2 ? 'rgba(235,255,242,0.78)' : 'rgba(239,247,255,0.78)');
-    drawRoundedRect(ctx, sx, sy, statW, 78, 22, statFill, 'rgba(60,60,67,0.11)');
-    ctx.font = '31px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    drawRoundedRect(ctx, sx, sy, statW, 74, 22, statFill, 'rgba(60,60,67,0.11)');
+    ctx.font = '29px "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = color;
-    ctx.fillText(String(value ?? 0), sx + 20, sy + 13);
+    ctx.fillText(String(value ?? 0), sx + 20, sy + 11);
     ctx.font = '15px "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = '#86868b';
-    ctx.fillText(label, sx + 20, sy + 51);
+    ctx.fillText(label, sx + 20, sy + 48);
   });
-  y += 186;
+  y += 174;
 
   drawRoundedRect(ctx, pad, y, innerW, 60, 22, 'rgba(255,255,255,0.78)', 'rgba(0,122,255,0.13)');
   ctx.font = '24px "Noto Sans SC", "Microsoft YaHei", sans-serif';
@@ -424,7 +338,7 @@ async function createRecordImage(payload) {
   ctx.fillStyle = '#0071e3';
   ctx.fillText(`${payload.winnerCount || 0} 人`, width - pad - 44, y + 21);
   ctx.textAlign = 'left';
-  y += 78;
+  y += 74;
 
   prizeLayouts.forEach(({ item, names, height: cardH }, prizeIndex) => {
     softCard(pad, y, innerW, cardH, 26, 'rgba(255,255,255,0.84)', 'rgba(60,60,67,0.10)');
@@ -432,7 +346,7 @@ async function createRecordImage(payload) {
     ctx.beginPath();
     ctx.arc(pad + 30, y + 32, 7, 0, Math.PI * 2);
     ctx.fill();
-    ctx.font = '25px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    ctx.font = '24px "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = '#101014';
     ctx.fillText(item.prize.name, pad + 48, y + 18);
     drawRoundedRect(ctx, width - pad - 92, y + 18, 72, 30, 15, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.12)');
@@ -446,12 +360,12 @@ async function createRecordImage(payload) {
     ctx.moveTo(pad + 22, y + 64);
     ctx.lineTo(width - pad - 22, y + 64);
     ctx.stroke();
-    let wy = y + 80;
+    let wy = y + 76;
     names.forEach((name, nameIndex) => {
       const text = `@${name}`;
       ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
       const lines = wrapCanvasText(ctx, text, innerW - 92);
-      const rowH = Math.max(38, lines.length * 24 + 12);
+      const rowH = Math.max(36, lines.length * 23 + 11);
       drawRoundedRect(ctx, pad + 22, wy, innerW - 44, rowH, 18, prizeIndex === 0 ? 'rgba(0,122,255,0.060)' : 'rgba(246,248,252,0.78)', 'rgba(60,60,67,0.08)');
       drawRoundedRect(ctx, pad + 34, wy + 9, 24, 20, 10, 'rgba(0,122,255,0.11)', '');
       ctx.font = '12px "Noto Sans SC", "Microsoft YaHei", sans-serif';
@@ -460,9 +374,9 @@ async function createRecordImage(payload) {
       ctx.fillText(String(nameIndex + 1), pad + 46, wy + 12);
       ctx.textAlign = 'left';
       lines.forEach((line, lineIndex) => {
-        ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+        ctx.font = '17px "Noto Sans SC", "Microsoft YaHei", sans-serif';
         ctx.fillStyle = '#1d1d1f';
-        ctx.fillText(line, pad + 70, wy + 8 + lineIndex * 24);
+        ctx.fillText(line, pad + 70, wy + 8 + lineIndex * 23);
       });
       wy += rowH + 8;
     });
@@ -473,7 +387,7 @@ async function createRecordImage(payload) {
   ctx.font = '15px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   const auditRowLayouts = auditRows.map(([label, value]) => {
     const valueLines = wrapCanvasText(ctx, String(value), innerW - 132);
-    return { label, valueLines, height: Math.max(32, valueLines.length * 24 + 8) };
+    return { label, valueLines, height: Math.max(30, valueLines.length * 22 + 8) };
   });
   const actualAuditHeight = 78 + auditRowLayouts.reduce((sum, row) => sum + row.height, 0) + 22;
   softCard(pad, y, innerW, actualAuditHeight, 28, 'rgba(255,255,255,0.80)', 'rgba(60,60,67,0.12)');
@@ -481,13 +395,13 @@ async function createRecordImage(payload) {
   ctx.fillStyle = '#101014';
   ctx.fillText('开奖校验信息', pad + 24, y + 24);
   const auditX = pad + 24;
-  let ay = y + 76;
+  let ay = y + 74;
   auditRowLayouts.forEach(({ label, valueLines, height: rowH }) => {
     ctx.font = '15px "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = '#86868b';
     ctx.fillText(label, auditX, ay);
     ctx.fillStyle = '#3a3a40';
-    valueLines.forEach((line, lineIndex) => ctx.fillText(line, auditX + 104, ay + lineIndex * 24));
+    valueLines.forEach((line, lineIndex) => ctx.fillText(line, auditX + 104, ay + lineIndex * 22));
     ay += rowH;
   });
   y += actualAuditHeight + 28;
@@ -503,7 +417,7 @@ async function createRecordImage(payload) {
   drawWrappedText(ctx, '本图由微博转发抽奖助手生成，仅记录本次开奖快照。公开校验时请同时保留原微博、候选名单和本图信息。', pad, y, innerW, 22, '#86868b', '14px "Noto Sans SC", "Microsoft YaHei", sans-serif');
   y += 54;
 
-  const finalHeight = Math.min(height, Math.max(1120, Math.ceil(y + 22)));
+  const finalHeight = Math.min(height, Math.max(1280, Math.ceil(y + 22)));
   if (finalHeight === height) return canvas;
   const finalCanvas = document.createElement('canvas');
   finalCanvas.width = Math.round(width * dpr);
@@ -556,7 +470,7 @@ const I = {
 
 function StatCard({ value, label, gradient, delay }) {
   return (
-    <div className={`glass stat-card px-3 py-3 text-left slide-up min-w-0 ${delay}`}>
+    <div className={`stat-card px-3 py-3 text-left slide-up min-w-0 ${delay}`}>
       <div className="stat-label flex items-center gap-2 text-[10px] uppercase text-gray-500 whitespace-nowrap">
         <span className="h-1.5 w-1.5 rounded-full bg-[#007aff]" />
         {label}
@@ -566,8 +480,13 @@ function StatCard({ value, label, gradient, delay }) {
   );
 }
 
-function RollingBox({ isRolling, name, phase }) {
+function RollingBox({ isRolling, name, names = [], phase }) {
   const displayName = name || '抽取中';
+  const reelItems = [...names, displayName]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .slice(-6);
+  const visibleItems = reelItems.length ? reelItems : [displayName];
   return (
     <div className={`stage-shell w-full h-40 sm:h-44 flex items-center justify-center relative overflow-hidden ${isRolling ? 'is-rolling' : ''}`}>
       <div className="stage-sparkles" aria-hidden="true">
@@ -580,10 +499,10 @@ function RollingBox({ isRolling, name, phase }) {
         <div className="reel-window z-10">
           <div className="reel-card roll-in" key={displayName}>
             <div className="reel-mask">
-              <div className="reel-track">
-                <span>{displayName}</span>
-                <span>{displayName}</span>
-                <span>{displayName}</span>
+              <div className="reel-track" style={{ '--reel-items': visibleItems.length }}>
+                {visibleItems.map((item, index) => (
+                  <span key={`${item}-${index}`}>{item}</span>
+                ))}
               </div>
             </div>
             <div className="reel-phase">{phase}</div>
@@ -703,57 +622,6 @@ function History({ list, onClear }) {
   );
 }
 
-function normalizeManualItem(raw, index) {
-  const values = Array.isArray(raw) ? raw : Object.values(raw || {});
-  const singleCell = Array.isArray(raw) && values.length === 1;
-  const uid = String(raw.uid || raw.UID || raw.userId || raw.user_id || (singleCell ? '' : values[0]) || '').trim();
-  const screenName = String(raw.screenName || raw.name || raw.nickname || raw['昵称'] || (singleCell ? values[0] : values[1]) || `候选人 ${index + 1}`).trim();
-  const text = String(raw.text || raw.content || raw['转发内容'] || values[2] || '').trim();
-  const createdAt = String(raw.createdAt || raw.time || raw['时间'] || values[3] || '').trim();
-  const stable = [uid, screenName, text, createdAt].filter(Boolean).join('|') || String(index);
-  return { id: stable, uid, screenName, avatar: '', verified: false, followers: 0, text, createdAt, repostId: '', source: 'manual' };
-}
-function parseCsvLine(line, delimiter) {
-  const cells = [];
-  let value = '';
-  let quoted = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    const next = line[i + 1];
-    if (char === '"' && quoted && next === '"') { value += '"'; i += 1; }
-    else if (char === '"') quoted = !quoted;
-    else if (char === delimiter && !quoted) { cells.push(value.trim()); value = ''; }
-    else value += char;
-  }
-  cells.push(value.trim());
-  return cells;
-}
-function parseManualInput(text) {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  if (trimmed.startsWith('[')) {
-    const parsed = JSON.parse(trimmed);
-    if (!Array.isArray(parsed)) throw new Error('JSON 顶层需要是数组');
-    return parsed.map(normalizeManualItem);
-  }
-  const lines = trimmed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length) return [];
-  const delimiter = lines[0].includes('\t') ? '\t' : lines[0].includes(';') ? ';' : ',';
-  const first = parseCsvLine(lines[0], delimiter);
-  const headerKeys = ['uid', 'UID', '昵称', 'screenName', 'name', 'text', '转发内容', 'time', '时间'];
-  const hasHeader = first.some((cell) => headerKeys.includes(cell));
-  const headers = hasHeader ? first : [];
-  const dataLines = hasHeader ? lines.slice(1) : lines;
-  return dataLines.map((line, index) => {
-    const cells = parseCsvLine(line, delimiter);
-    if (!headers.length) return normalizeManualItem(cells, index);
-    const row = {};
-    headers.forEach((key, cellIndex) => { row[key] = cells[cellIndex] || ''; });
-    cells.forEach((cell, cellIndex) => { row[cellIndex] = cell || ''; });
-    return normalizeManualItem(row, index);
-  });
-}
-
 function App() {
   const [source, setSource] = useState('mobile');
   const [statusUrl, setStatusUrl] = useState('');
@@ -783,6 +651,7 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
   const [rollingName, setRollingName] = useState('');
+  const [rollingNames, setRollingNames] = useState([]);
   const [phase, setPhase] = useState('');
   const [drawHistory, setDrawHistory] = useState([]);
   const [showModal, setShowModal] = useState(false);
@@ -1119,11 +988,15 @@ function App() {
         let tick = 0;
         while (Date.now() - startedAt < duration) {
           const index = rollingPool.length ? (prizeIndex * 19 + tick * 7 + Math.floor(tick / 3)) % rollingPool.length : 0;
-          setRollingName(rollingPool[index] || `候选用户 ${tick + 1}`);
+          const nextRollingName = rollingPool[index] || `候选用户 ${tick + 1}`;
+          setRollingName(nextRollingName);
+          setRollingNames((previous) => [...previous, nextRollingName].slice(-6));
           await sleep(Math.min(96, 46 + tick * 4));
           tick += 1;
         }
-        setRollingName(prizeWinners.map((winner) => winner.screenName || winner.uid).filter(Boolean).join(' / '));
+        const winnerNames = prizeWinners.map((winner) => winner.screenName || winner.uid).filter(Boolean);
+        setRollingName(winnerNames.join(' / '));
+        setRollingNames(winnerNames);
         setPhase(`${prize.name} 开奖完成`);
         await sleep(380);
         all.push({ prize, winners: prizeWinners });
@@ -1161,6 +1034,7 @@ function App() {
     } finally {
       setPhase('');
       setRollingName('');
+      setRollingNames([]);
       setIsDrawing(false);
     }
   }
@@ -1348,7 +1222,7 @@ function App() {
               </div>
 
               <div className="stage-wrap">
-                <RollingBox isRolling={isDrawing} name={rollingName} phase={phase || '开奖中'} />
+                <RollingBox isRolling={isDrawing} name={rollingName} names={rollingNames} phase={phase || '开奖中'} />
               </div>
             </section>
 
@@ -1385,7 +1259,7 @@ function App() {
               </div>
 
               {progress && (
-                <div className="glass p-3 mt-4">
+                <div className="progress-card p-3 mt-4">
                   <div className="flex items-center justify-between text-[12px] text-gray-400 mb-2">
                     <span className="truncate">{progress.message || '处理中'}</span>
                     <strong className="text-[#007aff]">{Math.round(progress.percent || 0)}%</strong>

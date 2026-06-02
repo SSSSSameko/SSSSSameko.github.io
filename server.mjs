@@ -32,7 +32,7 @@ const maxStoredCookies = envNumber('MAX_STORED_COOKIES', 30, 1);
 const disableCookieStore = /^(1|true|yes)$/i.test(String(process.env.DISABLE_COOKIE_STORE || '').trim());
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
-  .map((origin) => origin.trim().replace(/\/+$/, ''))
+  .map((origin) => normalizeConfiguredOrigin(origin))
   .filter(Boolean);
 const OFFICIAL_PAGE_SIZE = 200;
 const OFFICIAL_MAX_PAGES = 500;
@@ -62,6 +62,17 @@ const MIME = {
 
 const WEIBO_BASE62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
+function normalizeConfiguredOrigin(origin) {
+  const trimmed = String(origin || '').trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  try {
+    const url = new URL(trimmed);
+    return ['http:', 'https:'].includes(url.protocol) ? url.origin : '';
+  } catch {
+    return '';
+  }
+}
+
 function sendJson(res, status, data) {
   const body = JSON.stringify(data);
   res.writeHead(status, {
@@ -77,6 +88,12 @@ function sendText(res, status, text) {
   res.end(text);
 }
 
+function cspConnectSources() {
+  const sources = new Set(["'self'", 'https://111.228.11.206']);
+  for (const origin of configuredCorsOrigins) sources.add(origin);
+  return [...sources].join(' ');
+}
+
 function securityHeaders() {
   return {
     'content-security-policy': [
@@ -84,7 +101,7 @@ function securityHeaders() {
       "script-src 'self'",
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https:",
-      "connect-src 'self' https://111.228.11.206",
+      `connect-src ${cspConnectSources()}`,
       "worker-src 'self' blob:",
       "object-src 'none'",
       "base-uri 'self'",
@@ -459,9 +476,15 @@ function uniqueByRepostId(candidates) {
 
 function safeError(error) {
   return {
-    message: error?.message || '未知错误',
+    message: redactSensitiveText(error?.message || '未知错误'),
     status: error?.status || 500,
   };
+}
+
+function redactSensitiveText(value) {
+  return String(value || '')
+    .replace(/((?:SUB|SUBP|ALF|SCF|SSOLoginState|XSRF-TOKEN|MLOGIN|M_WEIBOCN_PARAMS)=)[^;\s]+/gi, '$1[redacted]')
+    .replace(/(cookie\s*[:=]\s*)[^\n；。]+/gi, '$1[redacted]');
 }
 
 function cleanCookieHeader(value) {
