@@ -85,6 +85,7 @@ function securityHeaders() {
       "style-src 'self' 'unsafe-inline'",
       "img-src 'self' data: blob: https:",
       "connect-src 'self' https://111.228.11.206",
+      "worker-src 'self' blob:",
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
@@ -964,7 +965,7 @@ function reportPageProgress(reportProgress, { phase, label, start, end, page, to
 async function fetchOfficialReposts({ statusId, accessToken }) {
   const token = String(accessToken || '').trim();
   if (!token) {
-    const error = new Error('官方接口需要在页面输入本次使用的 access_token');
+    const error = new Error('官方接口需要在页面输入本次使用的访问凭据');
     error.status = 400;
     throw error;
   }
@@ -1567,7 +1568,7 @@ async function handleSaveDraw(req, res) {
     statusUrl,
     drawCount: drawStats.count,
     lastDrawnAt: drawStats.lastDrawnAt,
-    file,
+    file: path.basename(file),
   });
 }
 
@@ -1663,7 +1664,7 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 429, { ok: false, error: '请求过于频繁，请稍后再试' });
     }
     if (isApiPath(url.pathname) && !isAuthorizedApiRequest(req, url.pathname)) {
-      return sendJson(res, 401, { ok: false, error: 'API Key 不正确或未提供' });
+      return sendJson(res, 401, { ok: false, error: '访问密钥不正确或未提供' });
     }
     if (req.method === 'GET' && url.pathname === '/api/health') {
       return sendJson(res, 200, {

@@ -20,6 +20,31 @@ import {
 } from 'lucide-react';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const publicAsset = (name) => `${import.meta.env.BASE_URL}${name}`;
+const SOURCE_LABELS = { mobile: 'H5 Cookie', manual: '手动名单', official: '官方接口' };
+const PROVIDER_LABELS = {
+  manual: '手动名单',
+  cookie: '服务器 Cookie 池',
+  mobile: 'H5 可见转发',
+  official: '官方接口',
+  desktop: '桌面可见转发',
+  legacy: '微博旧版接口',
+  'desktop-cookie': '桌面 Cookie 接口',
+};
+function readStoredValue(key) {
+  try {
+    return window.localStorage?.getItem(key) || '';
+  } catch {
+    return '';
+  }
+}
+function writeStoredValue(key, value) {
+  try {
+    if (value) window.localStorage?.setItem(key, value);
+    else window.localStorage?.removeItem(key);
+  } catch {
+    // Some locked-down browsers disable localStorage; the app can continue without it.
+  }
+}
 function cleanApiBase(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }
@@ -52,9 +77,9 @@ function isTrustedApiBase(value) {
   }
 }
 function initialApiBase() {
-  const storedApi = cleanApiBase(localStorage.getItem('weibo-draw-api-base') || '');
+  const storedApi = cleanApiBase(readStoredValue('weibo-draw-api-base'));
   if (storedApi && isTrustedApiBase(storedApi)) return storedApi;
-  if (storedApi) localStorage.removeItem('weibo-draw-api-base');
+  if (storedApi) writeStoredValue('weibo-draw-api-base', '');
   return cleanApiBase(window.WEIBO_DRAW_API_BASE || '');
 }
 function isStaticHostedPage() {
@@ -156,6 +181,14 @@ function buildFilterSummary({ keyword, mentionMin, uniqueByUser, excludePrevious
   if (excludePrevious) parts.push('排除本轮已中奖用户');
   return parts.length ? parts.join(' / ') : '未启用额外筛选';
 }
+function friendlyProviderText(value) {
+  const parts = Array.isArray(value) ? value : String(value || '').split(/[\/,]/);
+  const labels = parts
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .map((item) => PROVIDER_LABELS[item] || SOURCE_LABELS[item] || item);
+  return [...new Set(labels)].join(' / ');
+}
 function drawRoundedRect(ctx, x, y, width, height, radius, fill, stroke = '') {
   ctx.beginPath();
   ctx.moveTo(x + radius, y);
@@ -222,22 +255,31 @@ function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, color, font) {
   return lines.length * lineHeight;
 }
 async function createRecordImage(payload) {
-  const width = 1080;
+  const width = 720;
   const dpr = Math.min(2, window.devicePixelRatio || 2);
-  const pad = 64;
+  const pad = 38;
   const innerW = width - pad * 2;
   const results = Array.isArray(payload.results) ? payload.results : [];
   const avatarImage = await loadCanvasImage(publicAsset('avatar.jpg'));
+  const linkText = payload.statusUrl || payload.statusId || '未记录微博链接';
   const prizeLayouts = results.map((item) => {
     const names = item.winners.map((winner) => safeMentionName(winner.screenName || winner.uid) || '未命名用户');
-    const rows = Math.max(1, names.reduce((sum, name) => sum + Math.max(1, Math.ceil(String(name).length / 20)), 0));
-    return { item, names, height: 122 + rows * 34 };
+    const rows = Math.max(1, names.reduce((sum, name) => sum + Math.max(1, Math.ceil(String(name).length / 15)), 0));
+    return { item, names, height: 104 + rows * 40 };
   });
   const prizeHeight = prizeLayouts.reduce((sum, item) => sum + item.height + 18, 0);
-  const auditHeight = 404;
-  const linkTextForHeight = String(payload.statusUrl || payload.statusId || '未记录微博链接');
-  const linkBoxEstimate = Math.max(64, 34 + Math.ceil(linkTextForHeight.length / 46) * 28);
-  const height = Math.max(1380, 1181 + linkBoxEstimate + prizeHeight);
+  const auditRows = [
+    ['随机方式', '公开随机种子 + SHA-256 Fisher-Yates 洗牌'],
+    ['随机种子', payload.seed || '未记录'],
+    ['名单摘要', payload.candidateDigest || '未记录'],
+    ['数据来源', friendlyProviderText(payload.providerText) || '可见转发接口'],
+    ['接口总转发', payload.totalNumber === null || payload.totalNumber === undefined ? '未返回' : `${payload.totalNumber} 条`],
+    ['筛选规则', payload.filterSummary],
+    ['奖项设置', payload.prizeSummary],
+  ];
+  const linkBoxEstimate = Math.max(78, 54 + Math.ceil(String(linkText).length / 28) * 24);
+  const auditHeight = 104 + auditRows.reduce((sum, [, value]) => sum + Math.max(34, Math.ceil(String(value).length / 24) * 25 + 8), 0);
+  const height = Math.max(1480, 700 + linkBoxEstimate + prizeHeight + auditHeight);
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
@@ -249,198 +291,237 @@ async function createRecordImage(payload) {
 
   const bg = ctx.createLinearGradient(0, 0, width, height);
   bg.addColorStop(0, '#ffffff');
-  bg.addColorStop(0.46, '#f7fbff');
-  bg.addColorStop(1, '#edf4fb');
+  bg.addColorStop(0.45, '#f7fbff');
+  bg.addColorStop(1, '#edf5fb');
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, width, height);
 
-  const warmLayer = ctx.createLinearGradient(0, 0, width, height * 0.45);
-  warmLayer.addColorStop(0, 'rgba(255,217,228,0.34)');
-  warmLayer.addColorStop(0.45, 'rgba(255,245,232,0.22)');
-  warmLayer.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = warmLayer;
+  const topWash = ctx.createLinearGradient(0, 0, width, height * 0.48);
+  topWash.addColorStop(0, 'rgba(255,217,228,0.32)');
+  topWash.addColorStop(0.36, 'rgba(255,245,232,0.20)');
+  topWash.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = topWash;
   ctx.fillRect(0, 0, width, height);
-  const coolLayer = ctx.createLinearGradient(width, 0, 0, height);
-  coolLayer.addColorStop(0, 'rgba(0,122,255,0.16)');
-  coolLayer.addColorStop(0.46, 'rgba(90,200,250,0.07)');
-  coolLayer.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = coolLayer;
+  const sideWash = ctx.createLinearGradient(width, 0, 0, height);
+  sideWash.addColorStop(0, 'rgba(0,122,255,0.16)');
+  sideWash.addColorStop(0.54, 'rgba(90,200,250,0.06)');
+  sideWash.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = sideWash;
   ctx.fillRect(0, 0, width, height);
 
   ctx.strokeStyle = 'rgba(0,122,255,0.035)';
   ctx.lineWidth = 1;
-  for (let x = 54; x < width; x += 54) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
-  for (let gy = 54; gy < height; gy += 54) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(width, gy); ctx.stroke(); }
+  for (let x = 42; x < width; x += 42) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
+  for (let gy = 42; gy < height; gy += 42) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(width, gy); ctx.stroke(); }
 
-  let y = 58;
+  function softCard(x, cardY, cardW, cardH, radius = 26, fill = 'rgba(255,255,255,0.82)', stroke = 'rgba(60,60,67,0.12)') {
+    ctx.shadowColor = 'rgba(52,87,132,0.12)';
+    ctx.shadowBlur = 30;
+    ctx.shadowOffsetY = 12;
+    drawRoundedRect(ctx, x, cardY, cardW, cardH, radius, fill, stroke);
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+  }
+
+  let y = 30;
   ctx.shadowColor = 'rgba(52,87,132,0.16)';
-  ctx.shadowBlur = 42;
-  ctx.shadowOffsetY = 18;
-  drawRoundedRect(ctx, pad, y, innerW, 142, 34, 'rgba(255,255,255,0.82)', 'rgba(60,60,67,0.12)');
+  ctx.shadowBlur = 32;
+  ctx.shadowOffsetY = 14;
+  drawRoundedRect(ctx, pad, y, innerW, 106, 30, 'rgba(255,255,255,0.84)', 'rgba(60,60,67,0.12)');
   ctx.shadowColor = 'transparent';
   ctx.shadowBlur = 0;
   ctx.shadowOffsetY = 0;
 
-  const badgeGradient = ctx.createLinearGradient(pad + 28, y + 24, pad + 102, y + 98);
+  const badgeGradient = ctx.createLinearGradient(pad + 20, y + 20, pad + 78, y + 78);
   badgeGradient.addColorStop(0, '#fff5e8');
   badgeGradient.addColorStop(0.5, '#d9ecff');
   badgeGradient.addColorStop(1, '#79b8ff');
-  const logoX = pad + 28;
-  const logoY = y + 26;
-  const logoSize = 80;
+  const logoX = pad + 18;
+  const logoY = y + 18;
+  const logoSize = 66;
   ctx.shadowColor = 'rgba(0,122,255,0.16)';
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 8;
-  drawRoundedRect(ctx, logoX, logoY, logoSize, logoSize, 26, badgeGradient, 'rgba(0,122,255,0.14)');
+  ctx.shadowBlur = 14;
+  ctx.shadowOffsetY = 6;
+  drawRoundedRect(ctx, logoX, logoY, logoSize, logoSize, 22, badgeGradient, 'rgba(0,122,255,0.14)');
   ctx.shadowColor = 'transparent';
   ctx.shadowBlur = 0;
   ctx.shadowOffsetY = 0;
   if (avatarImage) {
-    drawRoundedImage(ctx, avatarImage, logoX + 5, logoY + 5, logoSize - 10, logoSize - 10, 22);
-    drawRoundedRect(ctx, logoX + 5, logoY + 5, logoSize - 10, logoSize - 10, 22, '', 'rgba(255,255,255,0.56)');
+    drawRoundedImage(ctx, avatarImage, logoX + 4, logoY + 4, logoSize - 8, logoSize - 8, 19);
+    drawRoundedRect(ctx, logoX + 4, logoY + 4, logoSize - 8, logoSize - 8, 19, '', 'rgba(255,255,255,0.60)');
   } else {
     ctx.fillStyle = '#007aff';
-    ctx.font = '34px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillText('S', pad + 54, y + 48);
+    ctx.font = '30px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText('S', logoX + 24, logoY + 17);
   }
 
-  ctx.font = '42px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.font = '29px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#101014';
-  ctx.fillText('微博转发抽奖助手', pad + 122, y + 30);
-  ctx.font = '20px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.fillText('微博转发抽奖助手', pad + 100, y + 28);
+  ctx.font = '17px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#86868b';
-  ctx.fillText('by.sameko · 公开开奖记录', pad + 122, y + 84);
+  ctx.fillText('by.sameko · 开奖快照', pad + 100, y + 66);
   ctx.textAlign = 'right';
-  drawRoundedRect(ctx, width - pad - 300, y + 45, 266, 50, 18, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.13)');
-  ctx.font = '19px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  drawRoundedRect(ctx, width - pad - 178, y + 34, 146, 40, 17, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.13)');
+  ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#0071e3';
-  ctx.fillText(formatDateTime(payload.drawnAt), width - pad - 52, y + 59);
+  ctx.fillText(formatDateTime(payload.drawnAt).slice(0, 10), width - pad - 48, y + 45);
   ctx.textAlign = 'left';
-  y += 188;
+  y += 142;
 
-  ctx.font = '58px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.font = '45px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   const titleGradient = ctx.createLinearGradient(pad, y, width - pad, y);
   titleGradient.addColorStop(0, '#111827');
   titleGradient.addColorStop(0.56, '#007aff');
   titleGradient.addColorStop(1, '#ff6b7a');
   ctx.fillStyle = titleGradient;
   ctx.fillText('微博转发抽奖结果', pad, y);
-  y += 82;
-  ctx.font = '22px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  const linkText = payload.statusUrl || payload.statusId || '未记录微博链接';
+  y += 58;
+  ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   const linkLines = wrapCanvasText(ctx, linkText, innerW - 48);
-  const linkBoxH = Math.max(64, 34 + linkLines.length * 28);
-  drawRoundedRect(ctx, pad, y, innerW, linkBoxH, 22, 'rgba(255,255,255,0.68)', 'rgba(60,60,67,0.10)');
-  ctx.fillStyle = '#52525a';
-  linkLines.forEach((line, index) => ctx.fillText(line, pad + 24, y + 18 + index * 28));
-  y += linkBoxH + 24;
+  const linkBoxH = Math.max(80, 48 + linkLines.length * 24);
+  softCard(pad, y, innerW, linkBoxH, 24, 'rgba(255,255,255,0.70)', 'rgba(60,60,67,0.10)');
+  ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#86868b';
+  ctx.fillText('微博来源', pad + 22, y + 16);
+  ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#3a3a40';
+  linkLines.forEach((line, index) => ctx.fillText(line, pad + 22, y + 40 + index * 24));
+  y += linkBoxH + 18;
 
   const stats = [
-    ['候选记录', payload.candidateCount],
-    ['可抽人数', payload.eligibleCount],
-    ['中奖人数', payload.winnerCount],
-    ['本链接已抽', payload.drawCount],
+    ['候选记录', payload.candidateCount, '#007aff'],
+    ['可抽人数', payload.eligibleCount, '#4dbde6'],
+    ['中奖人数', payload.winnerCount, '#26a64f'],
+    ['本链接已抽', payload.drawCount, '#5e5ce6'],
   ];
-  const statGap = 18;
-  const statW = (width - pad * 2 - statGap * 3) / 4;
-  stats.forEach(([label, value], index) => {
-    const sx = pad + index * (statW + statGap);
-    const statFill = ctx.createLinearGradient(sx, y, sx + statW, y + 104);
+  const statGap = 12;
+  const statW = (innerW - statGap) / 2;
+  stats.forEach(([label, value, color], index) => {
+    const sx = pad + (index % 2) * (statW + statGap);
+    const sy = y + Math.floor(index / 2) * 88;
+    const statFill = ctx.createLinearGradient(sx, sy, sx + statW, sy + 78);
     statFill.addColorStop(0, 'rgba(255,255,255,0.92)');
     statFill.addColorStop(1, index === 2 ? 'rgba(235,255,242,0.78)' : 'rgba(239,247,255,0.78)');
-    drawRoundedRect(ctx, sx, y, statW, 110, 24, statFill, 'rgba(60,60,67,0.11)');
-    ctx.font = '42px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = index === 0 ? '#007aff' : index === 1 ? '#4dbde6' : index === 2 ? '#26a64f' : '#5e5ce6';
-    ctx.fillText(String(value ?? 0), sx + 24, y + 18);
-    ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    drawRoundedRect(ctx, sx, sy, statW, 78, 22, statFill, 'rgba(60,60,67,0.11)');
+    ctx.font = '31px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = color;
+    ctx.fillText(String(value ?? 0), sx + 20, sy + 13);
+    ctx.font = '15px "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = '#86868b';
-    ctx.fillText(label, sx + 24, y + 76);
+    ctx.fillText(label, sx + 20, sy + 51);
   });
-  y += 154;
+  y += 186;
 
-  drawRoundedRect(ctx, pad, y, innerW, 78, 24, 'rgba(255,255,255,0.78)', 'rgba(0,122,255,0.13)');
-  ctx.font = '28px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  drawRoundedRect(ctx, pad, y, innerW, 60, 22, 'rgba(255,255,255,0.78)', 'rgba(0,122,255,0.13)');
+  ctx.font = '24px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#1d1d1f';
-  ctx.fillText('中奖名单', pad + 30, y + 22);
+  ctx.fillText('中奖名单', pad + 22, y + 17);
   ctx.textAlign = 'right';
-  ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#86868b';
-  ctx.fillText('同一随机池按奖项顺序依次开出', width - pad - 30, y + 28);
+  drawRoundedRect(ctx, width - pad - 104, y + 15, 82, 30, 15, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.12)');
+  ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#0071e3';
+  ctx.fillText(`${payload.winnerCount || 0} 人`, width - pad - 44, y + 21);
   ctx.textAlign = 'left';
-  y += 104;
+  y += 78;
 
   prizeLayouts.forEach(({ item, names, height: cardH }, prizeIndex) => {
-    ctx.shadowColor = 'rgba(52,87,132,0.10)';
-    ctx.shadowBlur = 26;
-    ctx.shadowOffsetY = 12;
-    drawRoundedRect(ctx, pad, y, innerW, cardH, 28, 'rgba(255,255,255,0.82)', 'rgba(60,60,67,0.10)');
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
-    ctx.shadowOffsetY = 0;
+    softCard(pad, y, innerW, cardH, 26, 'rgba(255,255,255,0.84)', 'rgba(60,60,67,0.10)');
     ctx.fillStyle = item.prize.color || '#007aff';
     ctx.beginPath();
-    ctx.arc(pad + 38, y + 39, 7, 0, Math.PI * 2);
+    ctx.arc(pad + 30, y + 32, 7, 0, Math.PI * 2);
     ctx.fill();
-    ctx.font = '30px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    ctx.font = '25px "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = '#101014';
-    ctx.fillText(item.prize.name, pad + 58, y + 22);
-    drawRoundedRect(ctx, width - pad - 116, y + 22, 88, 34, 17, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.12)');
+    ctx.fillText(item.prize.name, pad + 48, y + 18);
+    drawRoundedRect(ctx, width - pad - 92, y + 18, 72, 30, 15, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.12)');
     ctx.textAlign = 'right';
-    ctx.font = '17px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = '#0071e3';
-    ctx.fillText(`${item.winners.length} 人`, width - pad - 52, y + 30);
+    ctx.fillText(`${item.winners.length} 人`, width - pad - 36, y + 24);
     ctx.textAlign = 'left';
     ctx.strokeStyle = 'rgba(60,60,67,0.08)';
     ctx.beginPath();
-    ctx.moveTo(pad + 30, y + 72);
-    ctx.lineTo(width - pad - 30, y + 72);
+    ctx.moveTo(pad + 22, y + 64);
+    ctx.lineTo(width - pad - 22, y + 64);
     ctx.stroke();
-    let wy = y + 92;
-    names.forEach((name) => {
+    let wy = y + 80;
+    names.forEach((name, nameIndex) => {
       const text = `@${name}`;
-      const lineHeight = 30;
-      const chipX = pad + 34;
-      const used = drawWrappedText(ctx, text, chipX, wy, innerW - 68, lineHeight, prizeIndex === 0 ? '#1d1d1f' : '#313136', '23px "Noto Sans SC", "Microsoft YaHei", sans-serif');
-      wy += used + 6;
+      ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+      const lines = wrapCanvasText(ctx, text, innerW - 92);
+      const rowH = Math.max(38, lines.length * 24 + 12);
+      drawRoundedRect(ctx, pad + 22, wy, innerW - 44, rowH, 18, prizeIndex === 0 ? 'rgba(0,122,255,0.060)' : 'rgba(246,248,252,0.78)', 'rgba(60,60,67,0.08)');
+      drawRoundedRect(ctx, pad + 34, wy + 9, 24, 20, 10, 'rgba(0,122,255,0.11)', '');
+      ctx.font = '12px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+      ctx.fillStyle = '#0071e3';
+      ctx.textAlign = 'center';
+      ctx.fillText(String(nameIndex + 1), pad + 46, wy + 12);
+      ctx.textAlign = 'left';
+      lines.forEach((line, lineIndex) => {
+        ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+        ctx.fillStyle = '#1d1d1f';
+        ctx.fillText(line, pad + 70, wy + 8 + lineIndex * 24);
+      });
+      wy += rowH + 8;
     });
     y += cardH + 18;
   });
 
-  y += 14;
-  drawRoundedRect(ctx, pad, y, innerW, auditHeight, 30, 'rgba(255,255,255,0.78)', 'rgba(60,60,67,0.12)');
-  ctx.font = '30px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  y += 4;
+  ctx.font = '15px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  const auditRowLayouts = auditRows.map(([label, value]) => {
+    const valueLines = wrapCanvasText(ctx, String(value), innerW - 132);
+    return { label, valueLines, height: Math.max(32, valueLines.length * 24 + 8) };
+  });
+  const actualAuditHeight = 78 + auditRowLayouts.reduce((sum, row) => sum + row.height, 0) + 22;
+  softCard(pad, y, innerW, actualAuditHeight, 28, 'rgba(255,255,255,0.80)', 'rgba(60,60,67,0.12)');
+  ctx.font = '25px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#101014';
-  ctx.fillText('公平公开校验信息', pad + 30, y + 28);
-  const auditX = pad + 30;
-  let ay = y + 82;
-  const auditRows = [
-    ['随机方式', '公开随机种子 + SHA-256 Fisher-Yates 洗牌'],
-    ['随机种子', payload.seed || '未记录'],
-    ['可抽池摘要', payload.candidateDigest || '未记录'],
-    ['数据来源', payload.providerText || '可见转发接口'],
-    ['接口总转发', payload.totalNumber === null || payload.totalNumber === undefined ? '未返回' : `${payload.totalNumber} 条`],
-    ['筛选规则', payload.filterSummary],
-    ['奖项设置', payload.prizeSummary],
-  ];
-  auditRows.forEach(([label, value]) => {
-    ctx.font = '19px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.fillText('开奖校验信息', pad + 24, y + 24);
+  const auditX = pad + 24;
+  let ay = y + 76;
+  auditRowLayouts.forEach(({ label, valueLines, height: rowH }) => {
+    ctx.font = '15px "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = '#86868b';
     ctx.fillText(label, auditX, ay);
-    const used = drawWrappedText(ctx, String(value), auditX + 132, ay, innerW - 168, 27, '#3a3a40', '19px "Noto Sans SC", "Microsoft YaHei", sans-serif');
-    ay += Math.max(32, used + 7);
+    ctx.fillStyle = '#3a3a40';
+    valueLines.forEach((line, lineIndex) => ctx.fillText(line, auditX + 104, ay + lineIndex * 24));
+    ay += rowH;
   });
-  y += auditHeight + 42;
+  y += actualAuditHeight + 28;
 
   ctx.strokeStyle = 'rgba(60,60,67,0.12)';
   ctx.beginPath();
   ctx.moveTo(pad, y);
   ctx.lineTo(width - pad, y);
   ctx.stroke();
-  y += 26;
-  ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  y += 20;
+  ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#86868b';
-  ctx.fillText('本图由微博转发抽奖助手生成，仅记录本次开奖快照。公开校验时请同时保留原微博、可抽池导出文件与本图信息。', pad, y);
-  return canvas;
+  drawWrappedText(ctx, '本图由微博转发抽奖助手生成，仅记录本次开奖快照。公开校验时请同时保留原微博、候选名单和本图信息。', pad, y, innerW, 22, '#86868b', '14px "Noto Sans SC", "Microsoft YaHei", sans-serif');
+  y += 54;
+
+  const finalHeight = Math.min(height, Math.max(1120, Math.ceil(y + 22)));
+  if (finalHeight === height) return canvas;
+  const finalCanvas = document.createElement('canvas');
+  finalCanvas.width = Math.round(width * dpr);
+  finalCanvas.height = Math.round(finalHeight * dpr);
+  finalCanvas.style.width = `${width}px`;
+  finalCanvas.style.height = `${finalHeight}px`;
+  finalCanvas.getContext('2d').drawImage(
+    canvas,
+    0,
+    0,
+    finalCanvas.width,
+    finalCanvas.height,
+    0,
+    0,
+    finalCanvas.width,
+    finalCanvas.height,
+  );
+  return finalCanvas;
 }
 
 const COLORS = ['#007aff', '#30d158', '#ff9f0a', '#5e5ce6', '#64d2ff', '#ff375f'];
@@ -511,7 +592,7 @@ function RollingBox({ isRolling, name, phase }) {
       ) : (
         <div className="reel-idle z-10">
           <span className="reel-idle-icon">{I.star}</span>
-          <span>等待幸运名单</span>
+          <span>准备开奖</span>
         </div>
       )}
     </div>
@@ -537,12 +618,12 @@ function PrizeCard({ prize, winners, isNew, index }) {
       <div className="p-5">
         <div className="flex items-center gap-2.5 mb-3">
           <div className="w-2 h-2 rounded-full pulse-dot" style={{ background: prize.color }} />
-          <span className="text-white font-semibold text-sm">{prize.name}</span>
+          <span className="text-[#1d1d1f] font-semibold text-sm">{prize.name}</span>
           <span className="text-[11px] text-gray-500 ml-auto bg-white/5 px-2 py-0.5 rounded-full">{winners.length}人</span>
         </div>
         <div className="flex flex-wrap gap-1.5">
           {winners.map((winner, j) => (
-            <span key={j} className="inline-flex items-center gap-1 hard-chip px-3 py-1.5 text-[13px] text-gray-200">
+            <span key={j} className="inline-flex items-center gap-1 hard-chip px-3 py-1.5 text-[13px] text-[#1d1d1f]">
               <span className="text-[#007aff]">{I.star}</span>{winner.screenName || winner.uid || `中奖用户${j + 1}`}
             </span>
           ))}
@@ -554,6 +635,7 @@ function PrizeCard({ prize, winners, isNew, index }) {
 
 function WinnerModal({ results, onClose, onCopyNames, onCopyPost, onCreateShareImage, isCapturing }) {
   useEffect(() => {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return undefined;
     const end = Date.now() + 4200;
     const colors = COLORS;
     const fire = () => {
@@ -573,7 +655,7 @@ function WinnerModal({ results, onClose, onCopyNames, onCopyPost, onCreateShareI
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-lg bg-gradient-to-br from-[#e8f3ff] to-[#5ac8fa] mb-4 shadow-lg shadow-blue-500/15">
             <span className="text-slate-950">{I.crown}</span>
           </div>
-          <h2 className="text-2xl font-bold text-white tracking-tight">开奖完成</h2>
+          <h2 className="text-2xl font-bold text-[#1d1d1f] tracking-tight">开奖完成</h2>
           <p className="text-sm text-gray-400 mt-1">共 <span className="text-[#007aff] font-semibold">{total}</span> 位幸运用户</p>
         </div>
         <div className="space-y-3 mb-6">
@@ -582,9 +664,9 @@ function WinnerModal({ results, onClose, onCopyNames, onCopyPost, onCreateShareI
           ))}
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
-          <button onClick={onCopyNames} className="btn-ghost px-3 py-2.5 rounded-xl text-[12px] text-gray-200 font-semibold flex items-center justify-center gap-1.5">{I.copy} 复制@名单</button>
-          <button onClick={onCopyPost} className="btn-ghost px-3 py-2.5 rounded-xl text-[12px] text-gray-200 font-semibold flex items-center justify-center gap-1.5">{I.copy} 复制文案</button>
-          <button data-testid="modal-record-image" onClick={onCreateShareImage} disabled={isCapturing} className="btn-ghost px-3 py-2.5 rounded-xl text-[12px] text-gray-200 font-semibold flex items-center justify-center gap-1.5">{I.image} {isCapturing ? '生成中' : '开奖记录图'}</button>
+          <button onClick={onCopyNames} className="btn-ghost px-3 py-2.5 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center justify-center gap-1.5">{I.copy} 复制@名单</button>
+          <button onClick={onCopyPost} className="btn-ghost px-3 py-2.5 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center justify-center gap-1.5">{I.copy} 复制开奖文案</button>
+          <button data-testid="modal-record-image" onClick={onCreateShareImage} disabled={isCapturing} className="btn-ghost px-3 py-2.5 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center justify-center gap-1.5">{I.image} {isCapturing ? '生成中' : '开奖记录图'}</button>
         </div>
         <button onClick={onClose} className="btn-primary px-6 py-3 rounded-xl text-white font-semibold relative z-10 w-full">
           <span className="relative z-10">好的</span>
@@ -623,8 +705,9 @@ function History({ list, onClear }) {
 
 function normalizeManualItem(raw, index) {
   const values = Array.isArray(raw) ? raw : Object.values(raw || {});
-  const uid = String(raw.uid || raw.UID || raw.userId || raw.user_id || values[0] || '').trim();
-  const screenName = String(raw.screenName || raw.name || raw.nickname || raw['昵称'] || values[1] || `候选人 ${index + 1}`).trim();
+  const singleCell = Array.isArray(raw) && values.length === 1;
+  const uid = String(raw.uid || raw.UID || raw.userId || raw.user_id || (singleCell ? '' : values[0]) || '').trim();
+  const screenName = String(raw.screenName || raw.name || raw.nickname || raw['昵称'] || (singleCell ? values[0] : values[1]) || `候选人 ${index + 1}`).trim();
   const text = String(raw.text || raw.content || raw['转发内容'] || values[2] || '').trim();
   const createdAt = String(raw.createdAt || raw.time || raw['时间'] || values[3] || '').trim();
   const stable = [uid, screenName, text, createdAt].filter(Boolean).join('|') || String(index);
@@ -694,7 +777,7 @@ function App() {
   const [drawCount, setDrawCount] = useState(null);
   const [drawCountLastAt, setDrawCountLastAt] = useState('');
   const [cookieInfo, setCookieInfo] = useState({ hasCookie: false, cookieCount: 0, lastValidAt: '' });
-  const [status, setStatus] = useState('Cookie 模式已就绪，输入微博链接后一键载入候选。');
+  const [status, setStatus] = useState('准备就绪。粘贴微博链接后，可以载入候选并开奖。');
   const [statusTone, setStatusTone] = useState('neutral');
   const [progress, setProgress] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -712,7 +795,6 @@ function App() {
   const prizeSettingsRef = useRef(null);
   const firstPrizeNameRef = useRef(null);
 
-  const sourceLabels = { mobile: 'H5 / Cookie', manual: '手动导入', official: '官方 token' };
   const normalizedPrizes = useMemo(() => prizes
     .map((prize, index) => ({
       ...prize,
@@ -760,10 +842,10 @@ function App() {
   }
   function apiFetch(path, options = {}) {
     if (!apiBase && isStaticHostedPage()) {
-      return Promise.reject(new Error('当前是静态前端，请先在设置里填写后端 API 地址，例如 https://api.example.com'));
+      return Promise.reject(new Error('当前是静态前端，请先在设置里填写后端接口地址，例如 https://api.example.com'));
     }
     if (apiBase && !isTrustedApiBase(apiBase)) {
-      return Promise.reject(new Error('后端 API 地址不在可信列表里，请使用当前公开后端或本地地址。'));
+      return Promise.reject(new Error('后端接口地址不在可信列表里，请使用当前公开后端或本地地址。'));
     }
     const headers = new Headers(options.headers || {});
     if (apiKey.trim()) headers.set('x-api-key', apiKey.trim());
@@ -825,9 +907,9 @@ function App() {
       const response = await apiFetch('/api/health');
       const json = await response.json();
       if (!json.ok) throw new Error(json.error || '后端没有返回 ok');
-      showStatus(`后端 API 连接成功：${apiBase || location.origin}`, 'success');
+      showStatus(`后端连接成功：${apiBase || location.origin}`, 'success');
     } catch (error) {
-      showStatus(`后端 API 连接失败：${error.message}`, 'error');
+      showStatus(`后端连接失败：${error.message}`, 'error');
     }
   }
 
@@ -854,8 +936,7 @@ function App() {
   useEffect(() => { loadCookieStatus(true); }, []);
   useEffect(() => {
     const cleaned = cleanApiBase(apiBase);
-    if (cleaned && isTrustedApiBase(cleaned)) localStorage.setItem('weibo-draw-api-base', cleaned);
-    else localStorage.removeItem('weibo-draw-api-base');
+    writeStoredValue('weibo-draw-api-base', cleaned && isTrustedApiBase(cleaned) ? cleaned : '');
   }, [apiBase]);
   useEffect(() => {
     const timer = setTimeout(() => refreshDrawCount(statusUrl), 420);
@@ -872,8 +953,10 @@ function App() {
     const started = await startResponse.json();
     if (!started.ok) throw new Error(started.error || '抓取任务创建失败');
     let lastProgress = started.progress || { percent: 3, message: '任务已创建' };
+    const deadline = Date.now() + 8 * 60 * 1000;
     setProgress(lastProgress);
     while (true) {
+      if (Date.now() > deadline) throw new Error('抓取任务等待时间过长，请稍后重试。');
       await sleep(650);
       const response = await apiFetch(`/api/weibo/reposts/jobs/${encodeURIComponent(started.jobId)}`);
       const json = await response.json();
@@ -911,9 +994,9 @@ function App() {
         };
       }
       if (!statusUrl.trim()) throw new Error('请先粘贴微博正文链接、mid 或 bid。');
-      if (source === 'official' && !accessToken.trim()) throw new Error('官方模式需要填写 access_token。');
+      if (source === 'official' && !accessToken.trim()) throw new Error('官方模式需要填写访问凭据。');
       showStatus(source === 'mobile'
-        ? '正在用默认可见接口抓取微博转发；未填写 Cookie 时会自动使用服务器 Cookie 池。'
+        ? '正在抓取微博可见转发；未填写 Cookie 时会自动使用服务器 Cookie 池。'
         : '正在通过官方接口分页抓取可见转发。');
       const json = await fetchRepostsWithProgress({
         source,
@@ -935,7 +1018,7 @@ function App() {
       const pageCount = Array.isArray(json.meta?.pages) ? json.meta.pages.length : 0;
       const totalNumber = Number(json.meta?.totalNumber);
       const totalText = Number.isFinite(totalNumber) ? `接口显示总转发约 ${totalNumber} 条。` : '';
-      showStatus(`已载入 ${json.candidates?.length || 0} 条可见转发，扫描 ${pageCount} 页。${totalText ? `${totalText} ` : ''}请确认奖项设置。`, 'success');
+      showStatus(`已载入 ${json.candidates?.length || 0} 条可见转发，扫描 ${pageCount} 页。${totalText ? `${totalText} ` : ''}请确认奖项后开奖。`, 'success');
       if (jumpAfterLoad) jumpToPrizeSettings();
       return {
         candidates: loadedCandidates,
@@ -1102,7 +1185,7 @@ function App() {
       });
       const json = await response.json();
       if (!json.ok) throw new Error(json.error || '保存失败');
-      showStatus(`结果已保存：${json.file}`, 'success');
+      showStatus(`开奖记录已保存：${json.file}`, 'success');
     } catch (error) {
       showStatus(error.message, 'error');
     }
@@ -1224,7 +1307,7 @@ function App() {
               <img src={publicAsset('avatar.jpg')} alt="sameko avatar" className="h-full w-full rounded-lg object-cover" />
             </div>
             <div className="leading-tight">
-              <h1 className="app-brand-title text-[14px] font-semibold text-white">微博转发抽奖助手</h1>
+              <h1 className="app-brand-title text-[14px] font-semibold text-[#1d1d1f]">微博转发抽奖助手</h1>
               <div className="app-brand-subtitle text-[10px] text-gray-500">by.sameko</div>
             </div>
           </div>
@@ -1232,7 +1315,7 @@ function App() {
             <span className="hard-chip px-2 py-1">接口 {apiBase ? '远程' : '本地'}</span>
             <span className="hard-chip px-2 py-1">任务 {progress ? '运行中' : '空闲'}</span>
           </div>
-          <button onClick={() => setShowSettings(true)} className="btn-ghost w-9 h-9 flex items-center justify-center text-gray-400 hover:text-white">
+          <button onClick={() => setShowSettings(true)} aria-label="打开设置" className="btn-ghost w-9 h-9 flex items-center justify-center text-gray-400 hover:text-white">
             {I.settings}
           </button>
         </div>
@@ -1244,16 +1327,16 @@ function App() {
             <section className="glass hero-panel hero-stage-panel p-5 sm:p-6 border-glow">
               <div className="mb-5 flex flex-col gap-4">
                 <div>
-                  <h2 className="hero-title text-[28px] sm:text-4xl font-semibold text-white leading-tight">微博转发抽奖助手</h2>
+                  <h2 className="hero-title text-[28px] sm:text-4xl font-semibold text-[#101014] leading-tight">微博转发抽奖助手</h2>
                 </div>
                 <div className="hero-metrics grid grid-cols-3 gap-2 text-[11px] text-gray-500">
                   <div className="hard-chip px-3 py-2">
                     <div>来源</div>
-                    <strong className="mt-1 block text-white text-[12px]">{sourceLabels[source]}</strong>
+                    <strong className="mt-1 block text-[#1d1d1f] text-[12px]">{SOURCE_LABELS[source]}</strong>
                   </div>
                   <div className="hard-chip px-3 py-2">
                     <div>奖项</div>
-                    <strong className="mt-1 block text-white text-[12px]">{prizes.length}</strong>
+                    <strong className="mt-1 block text-[#1d1d1f] text-[12px]">{prizes.length}</strong>
                   </div>
                   <div className="hard-chip px-3 py-2">
                     <div>状态</div>
@@ -1275,15 +1358,15 @@ function App() {
                   <span className="text-[12px] text-gray-500 font-semibold">微博链接 / mid / bid</span>
                   <input value={statusUrl} onChange={(event) => { setStatusUrl(event.target.value); setCurrentStatusUrl(event.target.value); }}
                     placeholder="粘贴微博链接 / mid / bid"
-                    className="input-field px-4 py-3.5 text-white placeholder-gray-600 w-full text-[15px]" />
+                    className="input-field px-4 py-3.5 text-[#1d1d1f] placeholder-gray-600 w-full text-[15px]" />
                 </label>
                 <div className="action-grid grid grid-cols-1 sm:grid-cols-4 gap-3">
-                  <button onClick={loadCandidates} disabled={isLoading} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${hasCandidates ? 'action-step-complete' : 'action-step-current'} ${isLoading ? 'action-step-active' : ''}`}>
+                  <button onClick={loadCandidates} disabled={isLoading} className={`btn-ghost action-btn action-step px-4 py-3.5 text-[#1d1d1f] font-bold whitespace-nowrap ${hasCandidates ? 'action-step-complete' : 'action-step-current'} ${isLoading ? 'action-step-active' : ''}`}>
                     <span className="action-step-dot">1</span>
                     <span className="action-icon">{I.users}</span>
                     <span>{isLoading ? '载入中...' : '载入候选'}</span>
                   </button>
-                  <button onClick={openPrizeSettings} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${totalSlots > 0 ? 'action-step-ready' : 'action-step-current'}`}>
+                  <button onClick={openPrizeSettings} className={`btn-ghost action-btn action-step px-4 py-3.5 text-[#1d1d1f] font-bold whitespace-nowrap ${totalSlots > 0 ? 'action-step-ready' : 'action-step-current'}`}>
                     <span className="action-step-dot">2</span>
                     <span className="action-icon">{I.gift}</span>
                     <span>填写奖项</span>
@@ -1293,7 +1376,7 @@ function App() {
                     <span className="action-icon action-icon-primary">{I.bolt}</span>
                     <span>{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '一键开奖'}</span>
                   </button>
-                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !hasResults} className={`btn-ghost action-btn action-step px-4 py-3.5 text-gray-100 font-bold whitespace-nowrap ${hasResults ? 'action-step-current' : 'action-step-muted'}`}>
+                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !hasResults} className={`btn-ghost action-btn action-step px-4 py-3.5 text-[#1d1d1f] font-bold whitespace-nowrap ${hasResults ? 'action-step-current' : 'action-step-muted'}`}>
                     <span className="action-step-dot">4</span>
                     <span className="action-icon">{I.image}</span>
                     <span>{isCapturing ? '生成中' : '记录图'}</span>
@@ -1337,48 +1420,48 @@ function App() {
             {results.length > 0 && (
               <section className="share-capture glass p-4 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                  <h3 className="text-base font-semibold text-white flex items-center gap-2"><span className="text-[#007aff]">{I.trophy}</span> 中奖结果</h3>
+                  <h3 className="text-base font-semibold text-[#1d1d1f] flex items-center gap-2"><span className="text-[#007aff]">{I.trophy}</span> 中奖结果</h3>
                   <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-                    <button onClick={saveResult} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-gray-300 font-semibold flex items-center gap-1.5">{I.save} 保存</button>
-                    <button onClick={copyWinnerMentions} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-gray-300 font-semibold flex items-center gap-1.5">{I.copy} @名单</button>
-                    <button onClick={copyWinnerPost} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-gray-300 font-semibold flex items-center gap-1.5">{I.copy} 文案</button>
-                    <button data-testid="results-record-image" onClick={createShareImage} disabled={isCapturing} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-gray-300 font-semibold flex items-center gap-1.5">{I.image} {isCapturing ? '生成中' : '开奖记录图'}</button>
-                    <button onClick={() => download('weibo-winners.csv', toCsv(winners))} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-gray-300 font-semibold flex items-center gap-1.5">{I.download} CSV</button>
+                    <button onClick={saveResult} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.save} 保存记录</button>
+                    <button onClick={copyWinnerMentions} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.copy} @名单</button>
+                    <button onClick={copyWinnerPost} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.copy} 开奖文案</button>
+                    <button data-testid="results-record-image" onClick={createShareImage} disabled={isCapturing} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.image} {isCapturing ? '生成中' : '开奖记录图'}</button>
+                    <button onClick={() => download('weibo-winners.csv', toCsv(winners))} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.download} 导出名单</button>
                   </div>
                 </div>
                 {results.map((item, index) => <PrizeCard key={index} prize={item.prize} winners={item.winners} isNew={true} index={index} />)}
                 {recordImageUrl && (
-                  <div className="glass p-3 border border-white/[0.06]">
+                  <div className="record-preview-card glass p-3 border border-white/[0.06]">
                     <div className="flex items-center justify-between gap-3 mb-3">
                       <div>
-                        <div className="text-[13px] text-white font-semibold">开奖记录图预览</div>
+                        <div className="text-[13px] text-[#1d1d1f] font-semibold">开奖记录图预览</div>
                         <div className="text-[11px] text-gray-500">含中奖名单、候选统计、公开种子与可抽池摘要</div>
                       </div>
-                      <button onClick={() => downloadUrl(recordImageName || `weibo-draw-record-${Date.now()}.png`, recordImageUrl)} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-gray-300 font-semibold flex items-center gap-1.5">{I.download} 保存图片</button>
+                      <button onClick={() => downloadUrl(recordImageName || `weibo-draw-record-${Date.now()}.png`, recordImageUrl)} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.download} 保存图片</button>
                     </div>
-                    <img src={recordImageUrl} alt="开奖记录图预览" className="w-full rounded-xl border border-white/[0.06]" />
+                    <img src={recordImageUrl} alt="开奖记录图预览" className="record-preview-image w-full rounded-xl border border-white/[0.06]" />
                   </div>
                 )}
               </section>
             )}
 
             <section className="glass list-panel p-5">
-              <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">{I.users} 候选列表</h3>
+              <h3 className="text-sm font-semibold text-[#1d1d1f] mb-3 flex items-center gap-2">{I.users} 候选列表</h3>
               <div className="max-h-72 overflow-y-auto space-y-1.5">
                 {displayPool.length ? displayPool.slice(0, 160).map((candidate, index) => (
                   <div key={candidate.id || index} className="candidate-row flex items-center justify-between gap-3 px-3 py-2">
                     <div className="min-w-0">
-                      <div className="text-[13px] text-gray-200 font-medium truncate">{candidate.screenName || candidate.uid || `候选人 ${index + 1}`}</div>
+                      <div className="text-[13px] text-[#1d1d1f] font-medium truncate">{candidate.screenName || candidate.uid || `候选人 ${index + 1}`}</div>
                       <div className="text-[11px] text-gray-600 truncate">{candidate.text || candidate.uid || candidate.source}</div>
                     </div>
-                    <span className="text-[10px] text-gray-500 bg-white/[0.04] rounded-full px-2 py-0.5">{candidate.source || 'manual'}</span>
+                    <span className="text-[10px] text-gray-500 bg-white/[0.04] rounded-full px-2 py-0.5">{friendlyProviderText(candidate.source) || '手动名单'}</span>
                   </div>
                 )) : (
                   <EmptyState icon={I.users} title="候选名单为空" detail="载入微博转发后，候选用户会按可抽规则显示在这里。" />
                 )}
               </div>
               {displayPool.length > 0 && (
-                <button onClick={() => download('eligible-candidates.csv', toCsv(displayPool.map((item) => ({ tier: '', ...item }))))} className="mt-3 btn-ghost px-4 py-2 rounded-xl text-[12px] text-gray-300 font-semibold flex items-center gap-1.5">{I.download} 导出候选 CSV</button>
+                <button onClick={() => download('eligible-candidates.csv', toCsv(displayPool.map((item) => ({ tier: '', ...item }))))} className="mt-3 btn-ghost px-4 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.download} 导出候选</button>
               )}
             </section>
           </div>
@@ -1386,17 +1469,17 @@ function App() {
           <aside className="lg:col-span-2 space-y-5">
             <section className="glass p-5">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-white flex items-center gap-2">{I.settings} 数据源</h3>
-                <span className="hard-chip text-[11px] text-[#007aff] px-2 py-0.5">{sourceLabels[source]}</span>
+                <h3 className="text-sm font-semibold text-[#1d1d1f] flex items-center gap-2">{I.settings} 数据源</h3>
+                <span className="hard-chip text-[11px] text-[#007aff] px-2 py-0.5">{SOURCE_LABELS[source]}</span>
               </div>
               <div className="grid grid-cols-3 gap-2 mb-3">
                 {[
                   ['mobile', 'H5', '推荐'],
                   ['manual', '导入', '每行一人'],
-                  ['official', '官方', 'token'],
+                  ['official', '官方', '凭据'],
                 ].map(([value, label, desc]) => (
                   <button key={value} onClick={() => { setSource(value); clearResult(); }}
-                      className={`p-3 text-left border transition rounded-lg ${source === value ? 'border-[#007aff]/40 bg-[#007aff]/10 text-white' : 'border-white/[0.06] bg-white/[0.03] text-gray-500 hover:text-white'}`}>
+                      className={`source-tab p-3 text-left border transition rounded-lg ${source === value ? 'source-tab-active' : ''}`}>
                     <div className="text-[13px] font-bold">{label}</div>
                     <div className="text-[10px] opacity-70 mt-0.5">{desc}</div>
                   </button>
@@ -1406,86 +1489,86 @@ function App() {
                 <div className="space-y-2">
                   <textarea value={mobileCookie} onChange={(event) => setMobileCookie(event.target.value)}
                     placeholder="微博 Cookie 可不填，服务器有可用 Cookie 时会自动使用"
-                    className="input-field secret-field px-3 py-2.5 text-[13px] text-white placeholder-gray-600 w-full h-20 resize-none" />
+                    className="input-field secret-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full h-20 resize-none" />
                   <div className="flex flex-wrap gap-2">
-                    <button onClick={() => loadCookieStatus(true)} className="btn-ghost px-3 py-2 rounded-lg text-gray-300 text-[12px] font-medium flex items-center gap-1.5">{I.shield} 校验服务器 Cookie</button>
+                    <button onClick={() => loadCookieStatus(true)} className="btn-ghost px-3 py-2 rounded-lg text-[#1d1d1f] text-[12px] font-medium flex items-center gap-1.5">{I.shield} 校验服务器 Cookie</button>
                     <span className="text-[11px] text-gray-600 self-center">可用 Cookie：{cookieInfo.cookieCount || 0}</span>
                   </div>
                 </div>
               )}
               {source === 'official' && (
                 <input value={accessToken} onChange={(event) => setAccessToken(event.target.value)}
-                  type="password" placeholder="输入 access_token"
-                  className="input-field px-3 py-2.5 text-[13px] text-white placeholder-gray-600 w-full" />
+                  type="password" placeholder="输入官方访问凭据"
+                  className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full" />
               )}
               {source === 'manual' && (
                 <div className="space-y-2">
                   <textarea value={manualInput} onChange={(event) => setManualInput(event.target.value)}
                     placeholder="每行一位用户，支持 CSV / TSV / JSON"
-                    className="input-field px-3 py-2.5 text-[13px] text-white placeholder-gray-600 w-full h-28 resize-none" />
+                    className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full h-28 resize-none" />
                   <div className="flex gap-2">
                     <button onClick={loadCandidates} className="flex-1 btn-primary px-3 py-2 rounded-lg text-white text-[13px] font-medium relative z-10"><span className="relative z-10">导入并替换</span></button>
-                    <button onClick={addManualNames} className="flex-1 btn-ghost px-3 py-2 rounded-lg text-gray-300 text-[13px] font-medium">追加名单</button>
+                    <button onClick={addManualNames} className="flex-1 btn-ghost px-3 py-2 rounded-lg text-[#1d1d1f] text-[13px] font-medium">追加名单</button>
                   </div>
                 </div>
               )}
             </section>
 
             <section ref={prizeSettingsRef} className="glass p-5 scroll-mt-8">
-              <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">{I.gift} 奖项设置</h3>
+              <h3 className="text-sm font-semibold text-[#1d1d1f] mb-3 flex items-center gap-2">{I.gift} 奖项设置</h3>
               <div className="grid grid-cols-3 gap-2 mb-3">
-                <button onClick={() => { setPrizes([defaultPrize(0, 1)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">一等奖 1人</button>
-                <button onClick={() => { setPrizes([defaultPrize(0, 3)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">一等奖 3人</button>
-                <button onClick={() => { setPrizes([defaultPrize(0, 10)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">一等奖 10人</button>
+                <button onClick={() => { setPrizes([defaultPrize(0, 1)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">一等奖 1人</button>
+                <button onClick={() => { setPrizes([defaultPrize(0, 3)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">一等奖 3人</button>
+                <button onClick={() => { setPrizes([defaultPrize(0, 10)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">一等奖 10人</button>
               </div>
               <div className="space-y-2">
                 {prizes.map((prize, index) => (
                   <div key={index} className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: prize.color }} />
                     <input ref={index === 0 ? firstPrizeNameRef : null} value={prize.name} onChange={(event) => { const next = [...prizes]; next[index] = { ...next[index], name: event.target.value }; setPrizes(next); clearResult('奖项已更新，请重新开奖。'); }}
-                      className="input-field rounded-lg px-2.5 py-1.5 text-[13px] text-white flex-1 bg-transparent min-w-0" />
+                      className="input-field rounded-lg px-2.5 py-1.5 text-[13px] text-[#1d1d1f] flex-1 bg-transparent min-w-0" />
                     <input type="number" value={prize.count} min={1} onChange={(event) => { const next = [...prizes]; next[index] = { ...next[index], count: Math.max(1, parseInt(event.target.value, 10) || 1) }; setPrizes(next); clearResult('奖项已更新，请重新开奖。'); }}
-                      className="input-field rounded-lg px-2 py-1.5 text-[13px] text-white w-14 text-center bg-transparent" />
+                      className="input-field rounded-lg px-2 py-1.5 text-[13px] text-[#1d1d1f] w-14 text-center bg-transparent" />
                     <button onClick={() => { if (prizes.length <= 1) return; setPrizes(prizes.filter((_, i) => i !== index)); clearResult('奖项已更新，请重新开奖。'); }} disabled={prizes.length <= 1} className={`transition flex-shrink-0 ${prizes.length <= 1 ? 'text-gray-700 cursor-not-allowed' : 'text-gray-500 hover:text-[#ff375f]'}`}>{I.trash}</button>
                   </div>
                 ))}
               </div>
               <button onClick={() => { setPrizes([...prizes, defaultPrize(prizes.length, 1)]); clearResult('奖项已更新，请重新开奖。'); }}
-                className="mt-2.5 w-full border border-dashed border-white/[0.06] rounded-lg py-2 text-[12px] text-gray-600 hover:text-white hover:border-white/[0.12] transition flex items-center justify-center gap-1">{I.plus} 添加奖项</button>
+                className="mt-2.5 w-full add-prize-btn rounded-lg py-2 text-[12px] transition flex items-center justify-center gap-1">{I.plus} 添加奖项</button>
             </section>
 
             <section className="glass p-5">
-              <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">{I.shield} 筛选规则</h3>
+              <h3 className="text-sm font-semibold text-[#1d1d1f] mb-3 flex items-center gap-2">{I.shield} 筛选规则</h3>
               <div className="grid grid-cols-2 gap-2 mb-3">
-                <button onClick={() => { setKeyword(''); setMentionMin(0); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">不筛选</button>
-                <button onClick={() => { setKeyword('抽奖'); setMentionMin(0); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">含“抽奖”</button>
-                <button onClick={() => { setKeyword(''); setMentionMin(1); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">至少 @1</button>
-                <button onClick={() => { setKeyword(''); setMentionMin(2); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-gray-300">至少 @2</button>
+                <button onClick={() => { setKeyword(''); setMentionMin(0); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">不筛选</button>
+                <button onClick={() => { setKeyword('抽奖'); setMentionMin(0); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">含“抽奖”</button>
+                <button onClick={() => { setKeyword(''); setMentionMin(1); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">至少 @1</button>
+                <button onClick={() => { setKeyword(''); setMentionMin(2); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">至少 @2</button>
               </div>
               <div className="grid grid-cols-2 gap-2 mb-2">
                 <input value={keyword} onChange={(event) => { setKeyword(event.target.value); clearResult('筛选规则已更新，请重新开奖。'); }} placeholder="关键词"
-                  className="input-field px-3 py-2 text-[13px] text-white placeholder-gray-600" />
+                  className="input-field px-3 py-2 text-[13px] text-[#1d1d1f] placeholder-gray-600" />
                 <input type="number" value={mentionMin} min="0" max="10" onChange={(event) => { setMentionMin(event.target.value); clearResult('筛选规则已更新，请重新开奖。'); }}
-                  className="input-field px-3 py-2 text-[13px] text-white placeholder-gray-600" />
+                  className="input-field px-3 py-2 text-[13px] text-[#1d1d1f] placeholder-gray-600" />
               </div>
               <textarea value={blocklist} onChange={(event) => { setBlocklist(event.target.value); clearResult('筛选规则已更新，请重新开奖。'); }}
                 placeholder="排除名单：每行一个 UID 或昵称"
-                className="input-field px-3 py-2.5 text-[13px] text-white placeholder-gray-600 w-full h-20 resize-none" />
+                className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full h-20 resize-none" />
               <label className="mt-3 flex items-center gap-2 text-[13px] text-gray-400"><input type="checkbox" checked={uniqueByUser} onChange={(event) => setUniqueByUser(event.target.checked)} className="accent-[#007aff]" /> 同一用户只保留一次</label>
               <label className="mt-2 flex items-center gap-2 text-[13px] text-gray-400"><input type="checkbox" checked={excludePrevious} onChange={(event) => setExcludePrevious(event.target.checked)} className="accent-[#007aff]" /> 排除本轮已中奖用户</label>
             </section>
 
             <section className="glass p-5">
-              <h3 className="text-sm font-semibold text-white mb-3 flex items-center gap-2">{I.clock} 开奖记录</h3>
+              <h3 className="text-sm font-semibold text-[#1d1d1f] mb-3 flex items-center gap-2">{I.clock} 开奖记录</h3>
               <History list={drawHistory} onClear={() => setDrawHistory([])} />
             </section>
 
             <section className="glass p-5">
-              <h3 className="text-sm font-semibold text-white mb-3">开奖校验</h3>
+              <h3 className="text-sm font-semibold text-[#1d1d1f] mb-3">开奖校验</h3>
               <div className="grid gap-2 text-[12px]">
-                <div className="flex justify-between gap-3"><span className="text-gray-600">公开种子</span><strong className="text-gray-300 truncate">{lastAudit?.seed || '未开奖'}</strong></div>
-                <div className="flex justify-between gap-3"><span className="text-gray-600">名单摘要</span><strong className="text-gray-300 truncate">{lastAudit?.candidateDigest?.slice(0, 16) || '未生成'}</strong></div>
-                <div className="flex justify-between gap-3"><span className="text-gray-600">抽奖次数</span><strong className="text-gray-300 truncate">{drawCountText}</strong></div>
+                <div className="flex justify-between gap-3"><span className="text-gray-600">公开种子</span><strong className="text-[#1d1d1f] truncate">{lastAudit?.seed || '未开奖'}</strong></div>
+                <div className="flex justify-between gap-3"><span className="text-gray-600">名单摘要</span><strong className="text-[#1d1d1f] truncate">{lastAudit?.candidateDigest?.slice(0, 16) || '未生成'}</strong></div>
+                <div className="flex justify-between gap-3"><span className="text-gray-600">抽奖次数</span><strong className="text-[#1d1d1f] truncate">{drawCountText}</strong></div>
                 <div className="text-gray-600 truncate">{drawCountMeta}</div>
               </div>
             </section>
@@ -1514,25 +1597,25 @@ function App() {
           <div className="absolute inset-0 bg-black/70 backdrop-blur-md" />
           <div className="relative glass-elevated p-6 max-w-md w-full border border-white/[0.08] reveal" onClick={(event) => event.stopPropagation()}>
             <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-500 hover:text-white hover:bg-white/10 transition">{I.close}</button>
-            <h2 className="text-lg font-bold text-white mb-4 flex items-center gap-2">{I.settings} 快速操作</h2>
-            <button onClick={() => { setCandidates([]); setResults([]); setLastPool(null); setShowSettings(false); showStatus('已清空候选和结果。'); }} className="btn-ghost px-4 py-3 rounded-xl text-gray-300 text-sm font-semibold w-full mb-2">清空候选和结果</button>
-            <button onClick={() => { setMobileCookie(''); setShowSettings(false); showStatus('已清空当前输入框里的 Cookie，服务器 Cookie 池不受影响。'); }} className="btn-ghost px-4 py-3 rounded-xl text-gray-300 text-sm font-semibold w-full mb-2">清空输入框 Cookie</button>
+            <h2 className="text-lg font-bold text-[#1d1d1f] mb-4 flex items-center gap-2">{I.settings} 快速操作</h2>
+            <button onClick={() => { setCandidates([]); setResults([]); setLastPool(null); setShowSettings(false); showStatus('已清空候选和结果。'); }} className="btn-ghost px-4 py-3 rounded-xl text-[#1d1d1f] text-sm font-semibold w-full mb-2">清空候选和结果</button>
+            <button onClick={() => { setMobileCookie(''); setShowSettings(false); showStatus('已清空当前输入框里的 Cookie，服务器 Cookie 池不受影响。'); }} className="btn-ghost px-4 py-3 rounded-xl text-[#1d1d1f] text-sm font-semibold w-full mb-2">清空输入框 Cookie</button>
             <label className="grid gap-2 mt-3">
-              <span className="text-[12px] text-gray-500 font-semibold">后端 API 地址</span>
+              <span className="text-[12px] text-gray-500 font-semibold">后端接口地址</span>
               <input value={apiBase} onChange={(event) => setApiBase(cleanApiBase(event.target.value))}
                 placeholder="https://api.example.com"
-                className="input-field px-3 py-2.5 text-[13px] text-white placeholder-gray-600 w-full" />
+                className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full" />
             </label>
             <label className="grid gap-2 mt-3">
-              <span className="text-[12px] text-gray-500 font-semibold">API Key（可选）</span>
+              <span className="text-[12px] text-gray-500 font-semibold">访问密钥（可选）</span>
               <input value={apiKey} onChange={(event) => setApiKey(event.target.value)}
                 type="password"
                 placeholder="公开模式不用填写"
-                className="input-field px-3 py-2.5 text-[13px] text-white placeholder-gray-600 w-full" />
+                className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full" />
             </label>
             <div className="grid grid-cols-2 gap-2 mt-2">
-              <button onClick={testApiConnection} className="btn-ghost px-3 py-2 rounded-xl text-gray-300 text-[12px] font-semibold">测试连接</button>
-              <button onClick={() => { setApiBase(''); setApiKey(''); showStatus('已改回同域后端，并清空本机 API Key。'); }} className="btn-ghost px-3 py-2 rounded-xl text-gray-300 text-[12px] font-semibold">同域模式</button>
+              <button onClick={testApiConnection} className="btn-ghost px-3 py-2 rounded-xl text-[#1d1d1f] text-[12px] font-semibold">测试连接</button>
+              <button onClick={() => { setApiBase(''); setApiKey(''); showStatus('已改回同域后端，并清空本机访问密钥。'); }} className="btn-ghost px-3 py-2 rounded-xl text-[#1d1d1f] text-[12px] font-semibold">同域模式</button>
             </div>
             <button onClick={() => setShowSettings(false)} className="mt-4 btn-primary px-6 py-2.5 rounded-xl text-white font-medium relative z-10 w-full">
               <span className="relative z-10">完成</span>

@@ -439,6 +439,53 @@ body::after {
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.76) inset;
 }
 
+.source-tab {
+  color: var(--ink-soft);
+  border-color: rgba(60, 60, 67, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(246, 249, 253, 0.58)),
+    rgba(255, 255, 255, 0.55);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.82) inset;
+}
+.source-tab:hover {
+  color: var(--ink);
+  border-color: rgba(0, 122, 255, 0.22);
+  background: rgba(255, 255, 255, 0.82);
+}
+.source-tab-active {
+  color: var(--ink);
+  border-color: rgba(0, 122, 255, 0.36);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(235, 246, 255, 0.78)),
+    rgba(0, 122, 255, 0.09);
+  box-shadow:
+    0 12px 30px rgba(0, 122, 255, 0.10),
+    0 1px 0 rgba(255, 255, 255, 0.92) inset;
+}
+
+.add-prize-btn {
+  color: var(--ink-soft);
+  border: 1px dashed rgba(0, 122, 255, 0.22);
+  background: rgba(255, 255, 255, 0.48);
+}
+.add-prize-btn:hover {
+  color: #0071e3;
+  border-color: rgba(0, 122, 255, 0.38);
+  background: rgba(239, 247, 255, 0.72);
+}
+
+.record-preview-card {
+  max-width: 430px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.record-preview-image {
+  display: block;
+  max-height: 74vh;
+  object-fit: contain;
+  background: #eef5fb;
+}
+
 .hero-panel {
   position: relative;
   overflow: hidden;
@@ -677,19 +724,7 @@ body::after {
 .status-warn { color: #a15c00; }
 .status-bad { color: #c02b4f; }
 
-.text-white,
-.text-gray-100,
-.text-gray-200,
-.text-gray-300 { color: var(--ink) !important; }
-.text-gray-400 { color: var(--ink-soft) !important; }
-.text-gray-500,
-.text-gray-600 { color: var(--ink-faint) !important; }
-.text-\[\#ff9fca\],
-.text-\[\#ffb8d6\],
-.text-\[\#ffd4e5\] { color: var(--blue) !important; }
-.text-\[\#9ddcff\] { color: #0071e3 !important; }
 .placeholder-gray-600::placeholder { color: #8e8e93 !important; }
-.bg-\[\#ff9fca\] { background-color: var(--blue) !important; }
 .bg-white\/5,
 .bg-white\/10,
 .bg-white\/\[0\.03\],
@@ -697,7 +732,6 @@ body::after {
 .bg-white\/\[0\.05\] { background-color: rgba(255, 255, 255, 0.54) !important; }
 .border-white\/\[0\.06\] { border-color: rgba(60, 60, 67, 0.13) !important; }
 .hover\:text-white:hover { color: var(--ink) !important; }
-.accent-\[\#ff9fca\] { accent-color: var(--blue); }
 
 @media (max-width: 640px) {
   body {
@@ -912,6 +946,25 @@ body::after {
   .hero-metrics .hard-chip { padding: 9px 10px !important; }
   .stage-shell { min-height: 142px; }
   .action-btn { min-height: 58px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.001ms !important;
+  }
+  .breathe,
+  .pulse-dot,
+  .shimmer-line,
+  .stage-shell.is-rolling,
+  .reel-card,
+  .reel-track {
+    animation: none !important;
+  }
 }
 
 ::-webkit-scrollbar { width: 8px; height: 8px; }
