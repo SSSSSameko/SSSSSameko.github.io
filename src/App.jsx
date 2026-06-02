@@ -167,6 +167,35 @@ function drawRoundedRect(ctx, x, y, width, height, radius, fill, stroke = '') {
   if (fill) { ctx.fillStyle = fill; ctx.fill(); }
   if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
 }
+function loadCanvasImage(src) {
+  return new Promise((resolve) => {
+    const image = new window.Image();
+    image.decoding = 'async';
+    image.onload = () => resolve(image);
+    image.onerror = () => resolve(null);
+    image.src = src;
+  });
+}
+function drawRoundedImage(ctx, image, x, y, width, height, radius) {
+  const imageW = image.naturalWidth || image.width;
+  const imageH = image.naturalHeight || image.height;
+  const scale = Math.max(width / imageW, height / imageH);
+  const sourceW = width / scale;
+  const sourceH = height / scale;
+  const sourceX = (imageW - sourceW) / 2;
+  const sourceY = (imageH - sourceH) / 2;
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + width, y, x + width, y + height, radius);
+  ctx.arcTo(x + width, y + height, x, y + height, radius);
+  ctx.arcTo(x, y + height, x, y, radius);
+  ctx.arcTo(x, y, x + width, y, radius);
+  ctx.closePath();
+  ctx.clip();
+  ctx.drawImage(image, sourceX, sourceY, sourceW, sourceH, x, y, width, height);
+  ctx.restore();
+}
 function wrapCanvasText(ctx, text, maxWidth) {
   const raw = String(text || '');
   const lines = [];
@@ -192,15 +221,23 @@ function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, color, font) {
   lines.forEach((line, index) => ctx.fillText(line, x, y + index * lineHeight));
   return lines.length * lineHeight;
 }
-function createRecordImage(payload) {
+async function createRecordImage(payload) {
   const width = 1080;
   const dpr = Math.min(2, window.devicePixelRatio || 2);
-  const prizeHeight = payload.results.reduce((sum, item) => {
-    const winnerLines = Math.max(1, item.winners.reduce((acc, winner) => acc + Math.max(1, Math.ceil(String(winner.screenName || winner.uid || '').length / 18)), 0));
-    return sum + 116 + winnerLines * 34;
-  }, 0);
-  const auditLines = 13;
-  const height = Math.max(1540, 770 + prizeHeight + auditLines * 34);
+  const pad = 64;
+  const innerW = width - pad * 2;
+  const results = Array.isArray(payload.results) ? payload.results : [];
+  const avatarImage = await loadCanvasImage(publicAsset('avatar.jpg'));
+  const prizeLayouts = results.map((item) => {
+    const names = item.winners.map((winner) => safeMentionName(winner.screenName || winner.uid) || '未命名用户');
+    const rows = Math.max(1, names.reduce((sum, name) => sum + Math.max(1, Math.ceil(String(name).length / 20)), 0));
+    return { item, names, height: 122 + rows * 34 };
+  });
+  const prizeHeight = prizeLayouts.reduce((sum, item) => sum + item.height + 18, 0);
+  const auditHeight = 404;
+  const linkTextForHeight = String(payload.statusUrl || payload.statusId || '未记录微博链接');
+  const linkBoxEstimate = Math.max(64, 34 + Math.ceil(linkTextForHeight.length / 46) * 28);
+  const height = Math.max(1380, 1181 + linkBoxEstimate + prizeHeight);
   const canvas = document.createElement('canvas');
   canvas.width = Math.round(width * dpr);
   canvas.height = Math.round(height * dpr);
@@ -211,53 +248,92 @@ function createRecordImage(payload) {
   ctx.textBaseline = 'top';
 
   const bg = ctx.createLinearGradient(0, 0, width, height);
-  bg.addColorStop(0, '#16070d');
-  bg.addColorStop(0.48, '#090714');
-  bg.addColorStop(1, '#03050b');
+  bg.addColorStop(0, '#ffffff');
+  bg.addColorStop(0.46, '#f7fbff');
+  bg.addColorStop(1, '#edf4fb');
   ctx.fillStyle = bg;
   ctx.fillRect(0, 0, width, height);
 
-  const hot = ctx.createRadialGradient(180, 120, 40, 180, 120, 520);
-  hot.addColorStop(0, 'rgba(239,68,68,0.34)');
-  hot.addColorStop(1, 'rgba(239,68,68,0)');
-  ctx.fillStyle = hot;
+  const warmLayer = ctx.createLinearGradient(0, 0, width, height * 0.45);
+  warmLayer.addColorStop(0, 'rgba(255,217,228,0.34)');
+  warmLayer.addColorStop(0.45, 'rgba(255,245,232,0.22)');
+  warmLayer.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = warmLayer;
   ctx.fillRect(0, 0, width, height);
-  const glow = ctx.createRadialGradient(920, 260, 20, 920, 260, 560);
-  glow.addColorStop(0, 'rgba(249,115,22,0.27)');
-  glow.addColorStop(1, 'rgba(249,115,22,0)');
-  ctx.fillStyle = glow;
+  const coolLayer = ctx.createLinearGradient(width, 0, 0, height);
+  coolLayer.addColorStop(0, 'rgba(0,122,255,0.16)');
+  coolLayer.addColorStop(0.46, 'rgba(90,200,250,0.07)');
+  coolLayer.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = coolLayer;
   ctx.fillRect(0, 0, width, height);
 
-  ctx.strokeStyle = 'rgba(255,255,255,0.035)';
+  ctx.strokeStyle = 'rgba(0,122,255,0.035)';
   ctx.lineWidth = 1;
-  for (let x = 56; x < width; x += 56) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
-  for (let y = 56; y < height; y += 56) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
+  for (let x = 54; x < width; x += 54) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
+  for (let gy = 54; gy < height; gy += 54) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(width, gy); ctx.stroke(); }
 
-  const pad = 64;
   let y = 58;
-  drawRoundedRect(ctx, pad, y, width - pad * 2, 122, 30, 'rgba(255,255,255,0.055)', 'rgba(255,255,255,0.10)');
-  ctx.font = '42px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#ffffff';
-  ctx.fillText('微博转发抽奖助手', pad + 34, y + 28);
-  ctx.font = '20px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = 'rgba(255,255,255,0.50)';
-  ctx.fillText('by.sameko · 公开开奖记录', pad + 34, y + 80);
-  ctx.textAlign = 'right';
-  ctx.font = '22px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#fbbf24';
-  ctx.fillText(formatDateTime(payload.drawnAt), width - pad - 34, y + 51);
-  ctx.textAlign = 'left';
-  y += 172;
+  ctx.shadowColor = 'rgba(52,87,132,0.16)';
+  ctx.shadowBlur = 42;
+  ctx.shadowOffsetY = 18;
+  drawRoundedRect(ctx, pad, y, innerW, 142, 34, 'rgba(255,255,255,0.82)', 'rgba(60,60,67,0.12)');
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
 
-  ctx.font = '62px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  const badgeGradient = ctx.createLinearGradient(pad + 28, y + 24, pad + 102, y + 98);
+  badgeGradient.addColorStop(0, '#fff5e8');
+  badgeGradient.addColorStop(0.5, '#d9ecff');
+  badgeGradient.addColorStop(1, '#79b8ff');
+  const logoX = pad + 28;
+  const logoY = y + 26;
+  const logoSize = 80;
+  ctx.shadowColor = 'rgba(0,122,255,0.16)';
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 8;
+  drawRoundedRect(ctx, logoX, logoY, logoSize, logoSize, 26, badgeGradient, 'rgba(0,122,255,0.14)');
+  ctx.shadowColor = 'transparent';
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
+  if (avatarImage) {
+    drawRoundedImage(ctx, avatarImage, logoX + 5, logoY + 5, logoSize - 10, logoSize - 10, 22);
+    drawRoundedRect(ctx, logoX + 5, logoY + 5, logoSize - 10, logoSize - 10, 22, '', 'rgba(255,255,255,0.56)');
+  } else {
+    ctx.fillStyle = '#007aff';
+    ctx.font = '34px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    ctx.fillText('S', pad + 54, y + 48);
+  }
+
+  ctx.font = '42px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#101014';
+  ctx.fillText('微博转发抽奖助手', pad + 122, y + 30);
+  ctx.font = '20px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#86868b';
+  ctx.fillText('by.sameko · 公开开奖记录', pad + 122, y + 84);
+  ctx.textAlign = 'right';
+  drawRoundedRect(ctx, width - pad - 300, y + 45, 266, 50, 18, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.13)');
+  ctx.font = '19px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  ctx.fillStyle = '#0071e3';
+  ctx.fillText(formatDateTime(payload.drawnAt), width - pad - 52, y + 59);
+  ctx.textAlign = 'left';
+  y += 188;
+
+  ctx.font = '58px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   const titleGradient = ctx.createLinearGradient(pad, y, width - pad, y);
-  titleGradient.addColorStop(0, '#ffffff');
-  titleGradient.addColorStop(0.5, '#d7ecff');
-  titleGradient.addColorStop(1, '#5ac8fa');
+  titleGradient.addColorStop(0, '#111827');
+  titleGradient.addColorStop(0.56, '#007aff');
+  titleGradient.addColorStop(1, '#ff6b7a');
   ctx.fillStyle = titleGradient;
   ctx.fillText('微博转发抽奖结果', pad, y);
-  y += 86;
-  y += drawWrappedText(ctx, payload.statusUrl || payload.statusId || '未记录微博链接', pad, y, width - pad * 2, 30, 'rgba(255,255,255,0.58)', '22px "Noto Sans SC", "Microsoft YaHei", sans-serif') + 24;
+  y += 82;
+  ctx.font = '22px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+  const linkText = payload.statusUrl || payload.statusId || '未记录微博链接';
+  const linkLines = wrapCanvasText(ctx, linkText, innerW - 48);
+  const linkBoxH = Math.max(64, 34 + linkLines.length * 28);
+  drawRoundedRect(ctx, pad, y, innerW, linkBoxH, 22, 'rgba(255,255,255,0.68)', 'rgba(60,60,67,0.10)');
+  ctx.fillStyle = '#52525a';
+  linkLines.forEach((line, index) => ctx.fillText(line, pad + 24, y + 18 + index * 28));
+  y += linkBoxH + 24;
 
   const stats = [
     ['候选记录', payload.candidateCount],
@@ -269,58 +345,71 @@ function createRecordImage(payload) {
   const statW = (width - pad * 2 - statGap * 3) / 4;
   stats.forEach(([label, value], index) => {
     const sx = pad + index * (statW + statGap);
-    drawRoundedRect(ctx, sx, y, statW, 104, 22, 'rgba(255,255,255,0.065)', 'rgba(255,255,255,0.095)');
+    const statFill = ctx.createLinearGradient(sx, y, sx + statW, y + 104);
+    statFill.addColorStop(0, 'rgba(255,255,255,0.92)');
+    statFill.addColorStop(1, index === 2 ? 'rgba(235,255,242,0.78)' : 'rgba(239,247,255,0.78)');
+    drawRoundedRect(ctx, sx, y, statW, 110, 24, statFill, 'rgba(60,60,67,0.11)');
     ctx.font = '42px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = index === 0 ? '#007aff' : index === 1 ? '#5ac8fa' : index === 2 ? '#30d158' : '#5e5ce6';
+    ctx.fillStyle = index === 0 ? '#007aff' : index === 1 ? '#4dbde6' : index === 2 ? '#26a64f' : '#5e5ce6';
     ctx.fillText(String(value ?? 0), sx + 24, y + 18);
     ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.52)';
-    ctx.fillText(label, sx + 24, y + 70);
+    ctx.fillStyle = '#86868b';
+    ctx.fillText(label, sx + 24, y + 76);
   });
-  y += 146;
+  y += 154;
 
-  drawRoundedRect(ctx, pad, y, width - pad * 2, 72, 22, 'rgba(255,159,202,0.16)', 'rgba(157,220,255,0.22)');
+  drawRoundedRect(ctx, pad, y, innerW, 78, 24, 'rgba(255,255,255,0.78)', 'rgba(0,122,255,0.13)');
   ctx.font = '28px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#fff7ed';
-  ctx.fillText('中奖名单', pad + 28, y + 20);
+  ctx.fillStyle = '#1d1d1f';
+  ctx.fillText('中奖名单', pad + 30, y + 22);
   ctx.textAlign = 'right';
   ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = 'rgba(255,255,255,0.55)';
-  ctx.fillText('每个奖项按同一随机池顺序依次开出', width - pad - 28, y + 26);
+  ctx.fillStyle = '#86868b';
+  ctx.fillText('同一随机池按奖项顺序依次开出', width - pad - 30, y + 28);
   ctx.textAlign = 'left';
-  y += 96;
+  y += 104;
 
-  payload.results.forEach((item) => {
-    const names = item.winners.map((winner) => safeMentionName(winner.screenName || winner.uid) || '未命名用户');
-    const rows = names.reduce((sum, name) => sum + Math.max(1, Math.ceil(name.length / 18)), 0);
-    const cardH = 100 + rows * 36;
-    drawRoundedRect(ctx, pad, y, width - pad * 2, cardH, 26, 'rgba(255,255,255,0.050)', 'rgba(255,255,255,0.085)');
-    ctx.fillStyle = item.prize.color || '#f97316';
+  prizeLayouts.forEach(({ item, names, height: cardH }, prizeIndex) => {
+    ctx.shadowColor = 'rgba(52,87,132,0.10)';
+    ctx.shadowBlur = 26;
+    ctx.shadowOffsetY = 12;
+    drawRoundedRect(ctx, pad, y, innerW, cardH, 28, 'rgba(255,255,255,0.82)', 'rgba(60,60,67,0.10)');
+    ctx.shadowColor = 'transparent';
+    ctx.shadowBlur = 0;
+    ctx.shadowOffsetY = 0;
+    ctx.fillStyle = item.prize.color || '#007aff';
     ctx.beginPath();
-    ctx.arc(pad + 34, y + 35, 7, 0, Math.PI * 2);
+    ctx.arc(pad + 38, y + 39, 7, 0, Math.PI * 2);
     ctx.fill();
     ctx.font = '30px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(item.prize.name, pad + 54, y + 20);
+    ctx.fillStyle = '#101014';
+    ctx.fillText(item.prize.name, pad + 58, y + 22);
+    drawRoundedRect(ctx, width - pad - 116, y + 22, 88, 34, 17, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.12)');
     ctx.textAlign = 'right';
-    ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.50)';
-    ctx.fillText(`${item.winners.length} 人`, width - pad - 28, y + 26);
+    ctx.font = '17px "Noto Sans SC", "Microsoft YaHei", sans-serif';
+    ctx.fillStyle = '#0071e3';
+    ctx.fillText(`${item.winners.length} 人`, width - pad - 52, y + 30);
     ctx.textAlign = 'left';
-    let wy = y + 70;
+    ctx.strokeStyle = 'rgba(60,60,67,0.08)';
+    ctx.beginPath();
+    ctx.moveTo(pad + 30, y + 72);
+    ctx.lineTo(width - pad - 30, y + 72);
+    ctx.stroke();
+    let wy = y + 92;
     names.forEach((name) => {
       const text = `@${name}`;
       const lineHeight = 30;
-      const used = drawWrappedText(ctx, text, pad + 34, wy, width - pad * 2 - 68, lineHeight, '#fef3c7', '23px "Noto Sans SC", "Microsoft YaHei", sans-serif');
-      wy += used + 4;
+      const chipX = pad + 34;
+      const used = drawWrappedText(ctx, text, chipX, wy, innerW - 68, lineHeight, prizeIndex === 0 ? '#1d1d1f' : '#313136', '23px "Noto Sans SC", "Microsoft YaHei", sans-serif');
+      wy += used + 6;
     });
     y += cardH + 18;
   });
 
   y += 14;
-  drawRoundedRect(ctx, pad, y, width - pad * 2, 404, 28, 'rgba(15,23,42,0.62)', 'rgba(148,163,184,0.16)');
+  drawRoundedRect(ctx, pad, y, innerW, auditHeight, 30, 'rgba(255,255,255,0.78)', 'rgba(60,60,67,0.12)');
   ctx.font = '30px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#bfdbfe';
+  ctx.fillStyle = '#101014';
   ctx.fillText('公平公开校验信息', pad + 30, y + 28);
   const auditX = pad + 30;
   let ay = y + 82;
@@ -335,21 +424,21 @@ function createRecordImage(payload) {
   ];
   auditRows.forEach(([label, value]) => {
     ctx.font = '19px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = 'rgba(255,255,255,0.42)';
+    ctx.fillStyle = '#86868b';
     ctx.fillText(label, auditX, ay);
-    const used = drawWrappedText(ctx, String(value), auditX + 128, ay, width - pad * 2 - 164, 27, 'rgba(255,255,255,0.75)', '19px "Noto Sans SC", "Microsoft YaHei", sans-serif');
+    const used = drawWrappedText(ctx, String(value), auditX + 132, ay, innerW - 168, 27, '#3a3a40', '19px "Noto Sans SC", "Microsoft YaHei", sans-serif');
     ay += Math.max(32, used + 7);
   });
-  y += 446;
+  y += auditHeight + 42;
 
-  ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+  ctx.strokeStyle = 'rgba(60,60,67,0.12)';
   ctx.beginPath();
   ctx.moveTo(pad, y);
   ctx.lineTo(width - pad, y);
   ctx.stroke();
-  y += 28;
+  y += 26;
   ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = 'rgba(255,255,255,0.38)';
+  ctx.fillStyle = '#86868b';
   ctx.fillText('本图由微博转发抽奖助手生成，仅记录本次开奖快照。公开校验时请同时保留原微博、可抽池导出文件与本图信息。', pad, y);
   return canvas;
 }
@@ -1065,7 +1154,7 @@ function App() {
         ...(Array.isArray(sourceMeta?.providers) ? sourceMeta.providers : [sourceMeta?.provider]).filter(Boolean),
         sourceMeta?.complete === false ? '未完整' : '',
       ].filter(Boolean).join(' / ');
-      const canvas = createRecordImage({
+      const canvas = await createRecordImage({
         results,
         statusUrl: currentStatusUrl || statusUrl.trim(),
         statusId: currentStatusId || sourceMeta?.statusId || '',
