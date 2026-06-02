@@ -89,7 +89,7 @@ function sendText(res, status, text) {
 }
 
 function cspConnectSources() {
-  const sources = new Set(["'self'", 'https://111.228.11.206']);
+  const sources = new Set(["'self'", 'https://111.228.11.206', 'https://sssssameko.github.io']);
   for (const origin of configuredCorsOrigins) sources.add(origin);
   return [...sources].join(' ');
 }
