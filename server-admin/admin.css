@@ -552,6 +552,57 @@ input:focus {
   background: rgba(255, 255, 255, 0.54);
 }
 
+.login-ops {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 14px;
+  border-radius: 24px;
+  border: 1px solid rgba(120, 143, 170, 0.14);
+  background: rgba(255, 255, 255, 0.48);
+}
+
+.login-ops-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.login-ops-head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.login-ops-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.login-ops-actions .ghost-button,
+.login-ops-actions .primary-button {
+  width: 100%;
+  padding: 0 10px;
+}
+
+.qr-frame {
+  padding: 10px;
+  border-radius: 22px;
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.88), rgba(229, 244, 255, 0.62));
+  border: 1px solid rgba(255, 255, 255, 0.86);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.86), 0 14px 30px rgba(76, 100, 132, 0.12);
+}
+
+.qr-frame img {
+  display: block;
+  width: 100%;
+  max-height: 520px;
+  object-fit: contain;
+  border-radius: 16px;
+  background: #fff;
+}
+
 .toast {
   position: fixed;
   left: 50%;
@@ -599,9 +650,15 @@ input:focus {
 
   .topbar-actions .ghost-button,
   .toolbar .ghost-button,
+  .login-ops-actions .ghost-button,
+  .login-ops-actions .primary-button,
   .toolbar input {
     flex: 1 1 auto;
     width: 100%;
+  }
+
+  .login-ops-actions {
+    grid-template-columns: 1fr;
   }
 
   .login-panel {

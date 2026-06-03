@@ -7,6 +7,7 @@
     selected: null,
     search: '',
     loading: false,
+    loginPoller: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -27,6 +28,13 @@
     detailPanel: $('detailPanel'),
     attemptList: $('attemptList'),
     cookieBox: $('cookieBox'),
+    startWeiboLoginBtn: $('startWeiboLoginBtn'),
+    refreshWeiboCookieBtn: $('refreshWeiboCookieBtn'),
+    stopWeiboLoginBtn: $('stopWeiboLoginBtn'),
+    weiboLoginBadge: $('weiboLoginBadge'),
+    weiboLoginText: $('weiboLoginText'),
+    qrFrame: $('qrFrame'),
+    qrImage: $('qrImage'),
     toast: $('toast'),
   };
 
@@ -129,6 +137,7 @@
 
     renderAttempts(summary.recentAttempts || []);
     renderCookie(summary.cookie || {});
+    renderWeiboLogin(summary.weiboLogin || {});
   }
 
   function renderAttempts(attempts) {
@@ -149,6 +158,7 @@
   }
 
   function renderCookie(cookie) {
+    const queue = state.summary?.queue || {};
     const status = cookie.cookieStoreDisabled
       ? 'Cookie 保存已关闭'
       : cookie.hasCookie
@@ -159,8 +169,44 @@
       <div class="cookie-line">最近有效：${escapeHtml(formatDate(cookie.lastValidAt))}</div>
       <div class="cookie-line">最近保存：${escapeHtml(formatDate(cookie.savedAt))}</div>
       <div class="cookie-line">写入保护：${escapeHtml(cookie.cookieStoreWriteProtected ? '已开启' : '未开启')}</div>
+      <div class="cookie-line">抓取队列：运行 ${escapeHtml(formatNumber(queue.active))} / 排队 ${escapeHtml(formatNumber(queue.queued))}</div>
       <div class="subtle">后台不会返回 Cookie 明文，只显示保存状态和时间。</div>
     `;
+  }
+
+  function renderWeiboLogin(login) {
+    const statusLabel = {
+      idle: '未连接',
+      waiting_scan: '等待扫码',
+      starting: '启动中',
+      logged_in: '已登录',
+      ok: '可用',
+      refreshing: '保活中',
+      error: '异常',
+    }[login.status] || plain(login.status, '未连接');
+    els.weiboLoginBadge.textContent = statusLabel;
+    els.weiboLoginText.textContent = [
+      plain(login.message, '扫码后 Cookie 会保存到服务器 Cookie 池，普通用户只共享代抓能力。'),
+      login.lastRefreshAt ? `最近保活：${formatDate(login.lastRefreshAt)}` : '',
+      login.nextRefreshAt ? `下次自动保活：${formatDate(login.nextRefreshAt)}` : '',
+      login.lastError ? `最近错误：${login.lastError}` : '',
+    ].filter(Boolean).join(' · ');
+
+    const image = String(login.screenshot || '');
+    if (/^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(image)) {
+      els.qrImage.src = image;
+      els.qrFrame.classList.remove('hidden');
+    } else {
+      els.qrImage.removeAttribute('src');
+      els.qrFrame.classList.add('hidden');
+    }
+
+    els.startWeiboLoginBtn.disabled = Boolean(login.active || login.refreshing);
+    els.refreshWeiboCookieBtn.disabled = Boolean(login.active || login.refreshing);
+    els.stopWeiboLoginBtn.disabled = !login.active;
+
+    if (login.active) startLoginPolling();
+    if (!login.active && state.loginPoller) stopLoginPolling();
   }
 
   function recordTitle(item) {
@@ -263,6 +309,63 @@
     const data = await api('/api/admin/summary');
     state.summary = data;
     renderSummary();
+  }
+
+  function startLoginPolling() {
+    if (state.loginPoller) return;
+    state.loginPoller = setInterval(() => {
+      loadWeiboLoginStatus(false).catch(() => {});
+    }, 2600);
+  }
+
+  function stopLoginPolling() {
+    clearInterval(state.loginPoller);
+    state.loginPoller = null;
+  }
+
+  async function loadWeiboLoginStatus(showMessage = true) {
+    const data = await api('/api/admin/weibo-login/status');
+    renderWeiboLogin(data);
+    if (data.saved) await loadSummary();
+    if (showMessage) showToast(data.message || '微博登录状态已刷新');
+    return data;
+  }
+
+  async function startWeiboLogin() {
+    try {
+      els.startWeiboLoginBtn.disabled = true;
+      showToast('正在打开微博扫码登录');
+      const data = await api('/api/admin/weibo-login/start', { method: 'POST' });
+      renderWeiboLogin(data);
+      startLoginPolling();
+    } catch (error) {
+      showToast(error.message);
+      await loadSummary().catch(() => {});
+    }
+  }
+
+  async function stopWeiboLogin() {
+    try {
+      const data = await api('/api/admin/weibo-login/stop', { method: 'POST' });
+      renderWeiboLogin(data);
+      showToast(data.message || '扫码窗口已关闭');
+    } catch (error) {
+      showToast(error.message);
+    }
+  }
+
+  async function refreshWeiboCookie() {
+    try {
+      els.refreshWeiboCookieBtn.disabled = true;
+      showToast('正在刷新服务器微博 Cookie');
+      const data = await api('/api/admin/weibo-login/refresh', { method: 'POST' });
+      renderWeiboLogin(data);
+      await loadSummary();
+      showToast(data.message || '服务器 Cookie 已刷新');
+    } catch (error) {
+      showToast(error.message);
+      await loadSummary().catch(() => {});
+    }
   }
 
   async function loadDraws() {
@@ -425,6 +528,7 @@
     state.selected = null;
     localStorage.removeItem(STORAGE_KEY);
     els.adminKeyInput.value = '';
+    stopLoginPolling();
     setAuthed(false);
     showToast('已退出后台');
   }
@@ -436,6 +540,9 @@
   els.refreshBtn.addEventListener('click', loadAll);
   els.logoutBtn.addEventListener('click', logout);
   els.exportAllBtn.addEventListener('click', exportAll);
+  els.startWeiboLoginBtn.addEventListener('click', startWeiboLogin);
+  els.refreshWeiboCookieBtn.addEventListener('click', refreshWeiboCookie);
+  els.stopWeiboLoginBtn.addEventListener('click', stopWeiboLogin);
 
   let searchTimer = null;
   els.searchInput.addEventListener('input', () => {

@@ -15,9 +15,21 @@ Environment=DISABLE_COOKIE_STORE=0
 Environment=MAX_STORED_COOKIES=30
 Environment=MAX_COOKIE_BYTES=16384
 Environment=MAX_ACTIVE_JOBS=1
+Environment=MAX_QUEUED_JOBS=24
 Environment=FETCH_TIMEOUT_MS=20000
 Environment=RATE_LIMIT_WINDOW_MS=60000
 Environment=RATE_LIMIT_MAX=80
+Environment=JOB_CREATE_RATE_LIMIT_MAX=8
+Environment=JOB_POLL_RATE_LIMIT_MAX=240
+Environment=PAGE_DELAY_JITTER_MS=500
+Environment=OFFICIAL_PAGE_DELAY_MS=1000
+Environment=DESKTOP_PAGE_DELAY_MS=1500
+Environment=LEGACY_PAGE_DELAY_MS=1500
+Environment=MOBILE_PAGE_DELAY_MS=1800
+Environment=SAME_STATUS_REQUEST_GAP_MS=4000
+Environment=WEIBO_KEEPALIVE_ENABLED=1
+Environment=WEIBO_KEEPALIVE_INTERVAL_MS=172800000
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/sameko-weibo-lottery/ms-playwright
 Environment=CORS_ORIGINS=https://sssssameko.github.io
 EnvironmentFile=-/etc/sameko-weibo-lottery.env
 ExecStart=/usr/bin/node /opt/sameko-weibo-lottery/server.mjs

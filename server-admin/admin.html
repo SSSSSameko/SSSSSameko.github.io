@@ -96,6 +96,24 @@
             </div>
           </div>
           <div class="cookie-box" id="cookieBox"></div>
+          <div class="login-ops">
+            <div class="login-ops-head">
+              <div>
+                <p class="eyebrow">Server Login</p>
+                <h3>服务器扫码登录</h3>
+              </div>
+              <span class="badge" id="weiboLoginBadge">未连接</span>
+            </div>
+            <div class="login-ops-actions">
+              <button class="primary-button" id="startWeiboLoginBtn" type="button">扫码登录微博</button>
+              <button class="ghost-button" id="refreshWeiboCookieBtn" type="button">立即保活</button>
+              <button class="ghost-button danger-text" id="stopWeiboLoginBtn" type="button">关闭扫码</button>
+            </div>
+            <div class="qr-frame hidden" id="qrFrame">
+              <img id="qrImage" alt="微博扫码登录二维码">
+            </div>
+            <div class="subtle" id="weiboLoginText">扫码后 Cookie 会保存到服务器 Cookie 池，普通用户只共享代抓能力。</div>
+          </div>
         </div>
       </section>
     </main>
