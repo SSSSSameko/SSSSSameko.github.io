@@ -679,6 +679,9 @@ function App() {
     }))
     .filter((prize) => prize.name && prize.count > 0), [prizes]);
   const totalSlots = normalizedPrizes.reduce((sum, prize) => sum + prize.count, 0);
+  const prizeSummary = normalizedPrizes.length
+    ? `${normalizedPrizes.length} 个奖项，共 ${totalSlots} 个名额`
+    : '请填写奖项名额';
 
   const rules = useMemo(() => {
     const blocked = new Set(blocklist.split(/\r?\n|,/).map((item) => item.trim().toLowerCase()).filter(Boolean));
@@ -1246,7 +1249,6 @@ function App() {
                     <span className="action-icon">{I.listChecks}</span>
                     <span className="action-copy">
                       <span className="action-title">{isLoading ? '载入中...' : '载入候选'}</span>
-                      <span className="action-hint">{hasCandidates ? `${displayPool.length} 人可抽` : '可见转发名单'}</span>
                     </span>
                   </button>
                   <button onClick={openPrizeSettings} className={`btn-ghost action-btn action-step action-step-prize px-4 py-3.5 text-[#1d1d1f] font-bold ${totalSlots > 0 ? 'action-step-ready' : 'action-step-current'}`}>
@@ -1254,7 +1256,7 @@ function App() {
                     <span className="action-icon">{I.badgeCheck}</span>
                     <span className="action-copy">
                       <span className="action-title">填写奖项</span>
-                      <span className="action-hint">{totalSlots > 0 ? `${totalSlots} 个名额` : '一等奖默认 1 人'}</span>
+                      <span className="action-hint">{prizeSummary}</span>
                     </span>
                   </button>
                   <button onClick={drawAll} disabled={isDrawing || isLoading} className={`btn-primary action-btn action-step action-step-draw action-btn-primary px-4 py-3.5 font-bold relative z-10 breathe ${isDrawing ? 'action-step-active' : ''} ${hasResults ? 'action-step-complete' : 'action-step-current'}`}>
@@ -1262,7 +1264,6 @@ function App() {
                     <span className="action-icon action-icon-primary">{I.sparkles}</span>
                     <span className="action-copy">
                       <span className="action-title">{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '一键开奖'}</span>
-                      <span className="action-hint">公开种子洗牌</span>
                     </span>
                   </button>
                   <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !hasResults} className={`btn-ghost action-btn action-step action-step-record px-4 py-3.5 text-[#1d1d1f] font-bold ${hasResults ? 'action-step-current' : 'action-step-muted'}`}>
