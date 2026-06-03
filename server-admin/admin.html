@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="robots" content="noindex,nofollow">
+  <title>微博转发抽奖助手后台</title>
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="stylesheet" href="/admin/admin.css">
+  <script src="/admin/admin.js" defer></script>
+</head>
+<body>
+  <div class="aurora aurora-one"></div>
+  <div class="aurora aurora-two"></div>
+  <div class="shell">
+    <header class="topbar">
+      <a class="brand" href="/admin" aria-label="微博转发抽奖助手后台">
+        <span class="brand-avatar"><img src="/avatar.jpg" alt=""></span>
+        <span class="brand-copy">
+          <strong>微博转发抽奖助手后台</strong>
+          <span>by.sameko · 管理面板</span>
+        </span>
+      </a>
+      <div class="topbar-actions">
+        <button class="ghost-button" id="refreshBtn" type="button">刷新</button>
+        <button class="ghost-button danger-text" id="logoutBtn" type="button">退出</button>
+      </div>
+    </header>
+
+    <section class="login-panel" id="loginPanel">
+      <div>
+        <p class="eyebrow">Admin Access</p>
+        <h1>输入后台密钥</h1>
+        <p class="login-copy">后台只展示开奖记录和运行状态，不返回 Cookie 明文。密钥会保存在你当前浏览器本地。</p>
+      </div>
+      <div class="login-form">
+        <label for="adminKeyInput">后台密钥</label>
+        <input id="adminKeyInput" type="password" autocomplete="current-password" spellcheck="false" placeholder="粘贴 ADMIN_KEY">
+        <button class="primary-button" id="loginBtn" type="button">进入后台</button>
+      </div>
+      <p class="message" id="loginMessage"></p>
+    </section>
+
+    <main class="dashboard hidden" id="dashboard">
+      <section class="hero-panel">
+        <div>
+          <p class="eyebrow">Overview</p>
+          <h1>开奖记录总览</h1>
+          <p id="heroSubtitle">正在读取后台数据。</p>
+        </div>
+        <div class="health-pill" id="healthPill">等待连接</div>
+      </section>
+
+      <section class="metric-grid" id="metricGrid" aria-label="后台数据概览"></section>
+
+      <section class="workbench">
+        <div class="records-panel">
+          <div class="panel-head">
+            <div>
+              <p class="eyebrow">Draw Records</p>
+              <h2>开奖记录</h2>
+            </div>
+            <div class="toolbar">
+              <input id="searchInput" type="search" placeholder="搜索链接、奖项、中奖人">
+              <button class="ghost-button" id="exportAllBtn" type="button">导出 CSV</button>
+            </div>
+          </div>
+          <div class="record-list" id="recordList"></div>
+        </div>
+
+        <aside class="detail-panel" id="detailPanel">
+          <div class="empty-detail">
+            <p class="eyebrow">Detail</p>
+            <h2>选择一条开奖记录</h2>
+            <p>点开左侧记录后，可以按奖项查看中奖人、复制名单、导出单条记录或删除误保存的数据。</p>
+          </div>
+        </aside>
+      </section>
+
+      <section class="bottom-grid">
+        <div class="panel">
+          <div class="panel-head slim">
+            <div>
+              <p class="eyebrow">Recent Attempts</p>
+              <h2>最近开奖动作</h2>
+            </div>
+          </div>
+          <div class="attempt-list" id="attemptList"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head slim">
+            <div>
+              <p class="eyebrow">Cookie Pool</p>
+              <h2>Cookie 状态</h2>
+            </div>
+          </div>
+          <div class="cookie-box" id="cookieBox"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

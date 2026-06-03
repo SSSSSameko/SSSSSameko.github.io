@@ -948,7 +948,7 @@ function App() {
     if (!ensurePrizeSettingsReady()) return;
     let drawCandidates = candidates;
     let drawEligible = eligible;
-    let drawContext = { statusId: currentStatusId, statusUrl: currentStatusUrl };
+    let drawContext = { statusId: currentStatusId, statusUrl: currentStatusUrl, sourceMeta };
 
     if (!drawEligible.length) {
       showStatus('正在先载入候选名单。');
@@ -959,6 +959,7 @@ function App() {
         drawContext = {
           statusId: loaded?.statusId || currentStatusId,
           statusUrl: loaded?.statusUrl || currentStatusUrl || statusUrl.trim(),
+          sourceMeta: loaded?.sourceMeta || sourceMeta,
         };
       } catch {
         return;
@@ -1019,7 +1020,7 @@ function App() {
       });
       setHistoryUids(wonIds);
       setLastPool(drawEligible);
-      setLastAudit({
+      const audit = {
         seed,
         drawnAt: new Date().toISOString(),
         statusId: drawContext.statusId || currentStatusId,
@@ -1027,7 +1028,8 @@ function App() {
         rules: { filters: { keyword, mentionMin: Number(mentionMin || 0), uniqueByUser, excludePrevious }, prizes: normalizedPrizes },
         candidateDigest,
         eligibleCount: drawEligible.length,
-      });
+      };
+      setLastAudit(audit);
       const now = new Date();
       const time = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
       setDrawHistory((previous) => [{
@@ -1036,7 +1038,21 @@ function App() {
         total: all.reduce((sum, item) => sum + item.winners.length, 0),
         summary: all.map((item) => `${item.prize.name}: ${item.winners.map((winner) => winner.screenName || winner.uid).join('、')}`).join(' | '),
       }, ...previous].slice(0, 50));
-      showStatus(`已抽出 ${all.reduce((sum, item) => sum + item.winners.length, 0)} 位中奖用户。`, 'success');
+      const saved = await saveResult({
+        silent: true,
+        results: all,
+        statusId: drawContext.statusId || currentStatusId,
+        statusUrl: drawContext.statusUrl || currentStatusUrl || statusUrl.trim(),
+        sourceMeta: {
+          ...(drawContext.sourceMeta || sourceMeta || {}),
+          statusId: drawContext.statusId || currentStatusId,
+          statusUrl: drawContext.statusUrl || currentStatusUrl || statusUrl.trim(),
+        },
+        totalCount: drawCandidates.length,
+        eligibleCount: drawEligible.length,
+        audit,
+      });
+      showStatus(`已抽出 ${all.reduce((sum, item) => sum + item.winners.length, 0)} 位中奖用户${saved?.file ? '，后台已记录。' : '。'}`, 'success');
       setShowModal(true);
     } catch (error) {
       showStatus(error.message, 'error');
@@ -1048,18 +1064,29 @@ function App() {
     }
   }
 
-  async function saveResult() {
-    if (!results.length) return;
+  async function saveResult(options = {}) {
+    const opts = options?.nativeEvent ? {} : options;
+    const activeResults = Array.isArray(opts.results) ? opts.results : results;
+    const activeWinners = activeResults.flatMap((item) => item.winners || []);
+    if (!activeWinners.length) return null;
     try {
+      const activeSourceMeta = opts.sourceMeta || sourceMeta || {};
+      const activeStatusId = opts.statusId ?? currentStatusId;
+      const activeStatusUrl = opts.statusUrl ?? currentStatusUrl;
       const payload = {
         source,
-        statusId: currentStatusId,
-        statusUrl: currentStatusUrl,
-        sourceMeta: { ...(sourceMeta || {}), statusId: currentStatusId || sourceMeta?.statusId, statusUrl: currentStatusUrl || sourceMeta?.statusUrl },
-        winners,
-        totalCount: candidates.length,
-        eligibleCount: lastAudit?.eligibleCount || eligible.length,
-        audit: lastAudit,
+        statusId: activeStatusId,
+        statusUrl: activeStatusUrl,
+        sourceMeta: {
+          ...activeSourceMeta,
+          statusId: activeStatusId || activeSourceMeta?.statusId,
+          statusUrl: activeStatusUrl || activeSourceMeta?.statusUrl,
+        },
+        results: activeResults,
+        winners: activeWinners,
+        totalCount: opts.totalCount ?? candidates.length,
+        eligibleCount: opts.eligibleCount ?? lastAudit?.eligibleCount ?? eligible.length,
+        audit: opts.audit ?? lastAudit,
       };
       const response = await apiFetch('/api/draws', {
         method: 'POST',
@@ -1068,9 +1095,11 @@ function App() {
       });
       const json = await response.json();
       if (!json.ok) throw new Error(json.error || '保存失败');
-      showStatus(`开奖记录已保存：${json.file}`, 'success');
+      if (!opts.silent) showStatus(`开奖记录已保存：${json.file}`, 'success');
+      return json;
     } catch (error) {
-      showStatus(error.message, 'error');
+      if (!opts.silent) showStatus(error.message, 'error');
+      return null;
     }
   }
 

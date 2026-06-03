@@ -8,6 +8,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname);
 const distDir = path.join(rootDir, 'dist');
 const publicDir = path.join(rootDir, 'public');
+const adminDir = path.join(rootDir, 'server-admin');
 const drawsDir = path.join(rootDir, 'output', 'draws');
 const authDir = path.join(rootDir, 'output', 'auth');
 const cookieStoreFile = path.join(authDir, 'weibo-cookie.json');
@@ -21,6 +22,7 @@ function envNumber(name, fallback, minimum = 0) {
 const port = envNumber('PORT', 4173, 1);
 const host = String(process.env.HOST || '').trim();
 const apiKey = String(process.env.API_KEY || '').trim();
+const adminKey = String(process.env.ADMIN_KEY || '').trim();
 const cookieWriteKey = String(process.env.COOKIE_WRITE_KEY || '').trim();
 const fetchTimeoutMs = envNumber('FETCH_TIMEOUT_MS', 20_000, 1000);
 const jobTtlMs = envNumber('JOB_TTL_MS', 10 * 60_000, 60_000);
@@ -132,7 +134,7 @@ function applyCors(req, res, pathname) {
   if (!isAllowedCorsOrigin(origin)) return false;
   res.setHeader('access-control-allow-origin', origin);
   res.setHeader('vary', 'Origin');
-  res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
+  res.setHeader('access-control-allow-methods', 'GET,POST,DELETE,OPTIONS');
   res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key');
   res.setHeader('access-control-max-age', '86400');
   return true;
@@ -154,7 +156,11 @@ function requestApiKey(req) {
 }
 
 function isAuthorizedApiRequest(req, pathname) {
-  if (!apiKey || req.method === 'OPTIONS' || pathname === '/api/health') return true;
+  if (req.method === 'OPTIONS' || pathname === '/api/health') return true;
+  if (pathname === '/api/admin' || pathname.startsWith('/api/admin/')) {
+    return Boolean(adminKey) && timingSafeEqualText(requestApiKey(req), adminKey);
+  }
+  if (!apiKey) return true;
   return timingSafeEqualText(requestApiKey(req), apiKey);
 }
 
@@ -1558,7 +1564,19 @@ async function handleDrawAttempt(req, res) {
 
 async function handleSaveDraw(req, res) {
   const body = await readJsonBody(req, 10 * 1024 * 1024);
-  const winners = Array.isArray(body.winners) ? body.winners : [];
+  const rawResultGroups = Array.isArray(body.results) ? body.results : [];
+  const bodyWinners = Array.isArray(body.winners) ? body.winners : [];
+  const rawWinners = bodyWinners.length ? bodyWinners : rawResultGroups.flatMap((item) => Array.isArray(item?.winners) ? item.winners : []);
+  const winners = rawWinners.map(publicWinner).filter((winner) => winner.uid || winner.screenName);
+  const resultGroups = rawResultGroups
+    .map((item, index) => ({
+      prize: publicPrize(item?.prize, index),
+      winners: (Array.isArray(item?.winners) ? item.winners : []).map(publicWinner).filter((winner) => winner.uid || winner.screenName),
+    }))
+    .filter((item) => item.winners.length);
+  const normalizedResults = resultGroups.length
+    ? resultGroups
+    : [{ prize: { name: '中奖名单', count: winners.length, color: '' }, winners }];
   if (!winners.length) {
     return sendJson(res, 400, { ok: false, error: '没有可保存的中奖结果' });
   }
@@ -1567,16 +1585,61 @@ async function handleSaveDraw(req, res) {
   const savedAt = new Date().toISOString();
   const statusId = extractStatusId(body.statusId || body.statusUrl || body.sourceMeta?.statusId || body.sourceMeta?.statusUrl);
   const statusUrl = normalizeStatusUrl(body.statusUrl || body.sourceMeta?.statusUrl, statusId);
+  const stableDrawnAt = body.audit?.drawnAt || body.drawnAt || savedAt;
   const auditHash = crypto.createHash('sha256')
-    .update(JSON.stringify({ ...body, statusId, statusUrl, savedAt }))
+    .update(JSON.stringify({
+      source: body.source || '',
+      statusId,
+      statusUrl,
+      drawnAt: stableDrawnAt,
+      seed: body.audit?.seed || body.seed || '',
+      candidateDigest: body.audit?.candidateDigest || body.candidateDigest || '',
+      results: normalizedResults.map((item) => ({
+        prize: { name: item?.prize?.name || '', count: finiteNumber(item?.prize?.count, null) },
+        winners: Array.isArray(item?.winners)
+          ? item.winners.map((winner) => winner?.uid || winner?.screenName || winner?.id || '')
+          : [],
+      })),
+      winners: winners.map((winner) => winner?.uid || winner?.screenName || winner?.id || ''),
+    }))
     .digest('hex');
-  const stamp = savedAt.replace(/[-:.TZ]/g, '').slice(0, 14);
+  const stamp = stableDrawnAt.replace(/[-:.TZ]/g, '').slice(0, 14) || savedAt.replace(/[-:.TZ]/g, '').slice(0, 14);
   const file = path.join(drawsDir, `draw-${stamp}-${auditHash.slice(0, 8)}.json`);
+  const sourceMeta = body.sourceMeta && typeof body.sourceMeta === 'object' ? body.sourceMeta : {};
+  const audit = body.audit && typeof body.audit === 'object' ? body.audit : {};
+  const rules = audit.rules && typeof audit.rules === 'object' ? audit.rules : body.rules;
   const payload = {
-    ...body,
+    source: String(body.source || '').slice(0, 80),
     statusId,
     statusUrl,
+    sourceMeta: {
+      provider: String(sourceMeta.provider || '').slice(0, 80),
+      providers: Array.isArray(sourceMeta.providers) ? sourceMeta.providers.map((item) => String(item).slice(0, 80)).slice(0, 10) : [],
+      statusId,
+      statusUrl,
+      totalNumber: finiteNumber(sourceMeta.totalNumber, null),
+      visibleNumber: finiteNumber(sourceMeta.visibleNumber, null),
+      rawVisibleNumber: finiteNumber(sourceMeta.rawVisibleNumber, null),
+      complete: typeof sourceMeta.complete === 'boolean' ? sourceMeta.complete : null,
+    },
+    results: normalizedResults,
+    winners,
+    totalCount: finiteNumber(body.totalCount ?? body.candidateCount, null),
+    eligibleCount: finiteNumber(body.eligibleCount ?? audit.eligibleCount, null),
+    audit: {
+      seed: String(audit.seed || body.seed || '').slice(0, 120),
+      drawnAt: stableDrawnAt,
+      statusId,
+      statusUrl,
+      candidateDigest: String(audit.candidateDigest || body.candidateDigest || '').slice(0, 120),
+      eligibleCount: finiteNumber(body.eligibleCount ?? audit.eligibleCount, null),
+      rules: rules && typeof rules === 'object' ? {
+        filters: rules.filters || null,
+        prizes: Array.isArray(rules.prizes) ? rules.prizes.map(publicPrize).slice(0, 20) : null,
+      } : null,
+    },
     savedAt,
+    drawnAt: stableDrawnAt,
     auditHash,
     note: '请妥善保管本地浏览器资料和登录凭据。',
   };
@@ -1595,6 +1658,225 @@ async function handleSaveDraw(req, res) {
   });
 }
 
+function safeDrawFileName(input) {
+  const name = path.basename(String(input || '').trim());
+  if (!/^draw-[0-9A-Za-z._-]+\.json$/.test(name)) {
+    const error = new Error('开奖记录文件名不正确');
+    error.status = 400;
+    throw error;
+  }
+  return name;
+}
+
+async function listDrawFiles() {
+  try {
+    const entries = await fs.readdir(drawsDir, { withFileTypes: true });
+    const files = [];
+    for (const entry of entries) {
+      if (!entry.isFile() || !/^draw-[0-9A-Za-z._-]+\.json$/.test(entry.name)) continue;
+      const filePath = path.join(drawsDir, entry.name);
+      const stat = await fs.stat(filePath);
+      files.push({ file: entry.name, filePath, mtimeMs: stat.mtimeMs, size: stat.size });
+    }
+    return files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+}
+
+async function readDrawFile(fileName) {
+  const safeName = safeDrawFileName(fileName);
+  const filePath = path.join(drawsDir, safeName);
+  const relativePath = path.relative(drawsDir, filePath);
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    const error = new Error('开奖记录路径不正确');
+    error.status = 400;
+    throw error;
+  }
+  try {
+    const text = await fs.readFile(filePath, 'utf8');
+    return { file: safeName, filePath, record: JSON.parse(text) };
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      error.status = 404;
+      error.message = '开奖记录不存在';
+    }
+    throw error;
+  }
+}
+
+function publicWinner(winner = {}) {
+  return {
+    uid: String(winner.uid || winner.id || '').slice(0, 80),
+    screenName: String(winner.screenName || winner.name || '').slice(0, 120),
+    profileUrl: String(winner.profileUrl || winner.url || '').slice(0, 400),
+    text: String(winner.text || '').slice(0, 500),
+    source: String(winner.source || '').slice(0, 80),
+  };
+}
+
+function publicPrize(prize = {}, fallbackIndex = 0) {
+  return {
+    name: String(prize.name || `奖项${fallbackIndex + 1}`).slice(0, 80),
+    count: finiteNumber(prize.count, null),
+    color: String(prize.color || '').slice(0, 32),
+  };
+}
+
+function drawResultGroups(record = {}) {
+  if (Array.isArray(record.results) && record.results.length) {
+    return record.results.map((item, index) => ({
+      prize: publicPrize(item?.prize, index),
+      winners: Array.isArray(item?.winners) ? item.winners.map(publicWinner) : [],
+    }));
+  }
+  const winners = Array.isArray(record.winners) ? record.winners.map(publicWinner) : [];
+  return winners.length ? [{ prize: { name: '中奖名单', count: winners.length, color: '' }, winners }] : [];
+}
+
+function drawRecordPublic(record, file, detail = false) {
+  const results = drawResultGroups(record);
+  const winners = results.flatMap((item) => item.winners.map((winner) => ({
+    ...winner,
+    prizeName: item.prize.name,
+  })));
+  const savedAt = String(record.savedAt || record.drawnAt || record.audit?.drawnAt || '');
+  const drawnAt = String(record.drawnAt || record.audit?.drawnAt || savedAt);
+  const summary = {
+    file,
+    savedAt,
+    drawnAt,
+    source: String(record.source || record.sourceMeta?.provider || '').slice(0, 80),
+    statusId: String(record.statusId || record.audit?.statusId || record.sourceMeta?.statusId || '').slice(0, 80),
+    statusUrl: String(record.statusUrl || record.audit?.statusUrl || record.sourceMeta?.statusUrl || '').slice(0, 500),
+    auditHash: String(record.auditHash || '').slice(0, 80),
+    prizeCount: results.length,
+    winnerCount: winners.length,
+    totalCount: finiteNumber(record.totalCount ?? record.candidateCount, null),
+    eligibleCount: finiteNumber(record.eligibleCount ?? record.audit?.eligibleCount, null),
+    results,
+    winners,
+  };
+  if (!detail) {
+    return {
+      ...summary,
+      results: results.map((item) => ({
+        prize: item.prize,
+        winners: item.winners.slice(0, 3),
+        winnerCount: item.winners.length,
+      })),
+      winners: winners.slice(0, 8),
+    };
+  }
+  return {
+    ...summary,
+    audit: {
+      seed: String(record.audit?.seed || record.seed || '').slice(0, 120),
+      candidateDigest: String(record.audit?.candidateDigest || record.candidateDigest || '').slice(0, 120),
+      rules: record.audit?.rules || record.rules || null,
+    },
+    sourceMeta: {
+      provider: record.sourceMeta?.provider || '',
+      providers: Array.isArray(record.sourceMeta?.providers) ? record.sourceMeta.providers : [],
+      totalNumber: finiteNumber(record.sourceMeta?.totalNumber, null),
+      complete: record.sourceMeta?.complete,
+    },
+  };
+}
+
+async function listSavedDraws({ limit = 100, search = '' } = {}) {
+  const files = await listDrawFiles();
+  const normalizedSearch = String(search || '').trim().toLowerCase();
+  const items = [];
+  for (const fileInfo of files) {
+    try {
+      const { record } = await readDrawFile(fileInfo.file);
+      const item = drawRecordPublic(record, fileInfo.file, false);
+      const haystack = [
+        item.file,
+        item.statusId,
+        item.statusUrl,
+        item.source,
+        ...item.results.map((result) => result.prize.name),
+        ...item.winners.map((winner) => `${winner.screenName} ${winner.uid} ${winner.prizeName}`),
+      ].join(' ').toLowerCase();
+      if (!normalizedSearch || haystack.includes(normalizedSearch)) {
+        items.push({ ...item, size: fileInfo.size });
+      }
+      if (items.length >= limit) break;
+    } catch {
+      // Skip broken draw files instead of breaking the whole admin page.
+    }
+  }
+  return items;
+}
+
+async function handleAdminSummary(req, res) {
+  const [draws, attempts, cookieSummary] = await Promise.all([
+    listSavedDraws({ limit: 500 }),
+    listDrawAttempts(),
+    cookieStoreSummary(await readCookieStore()),
+  ]);
+  const statusIds = new Set(draws.map((item) => item.statusId).filter(Boolean));
+  const winnerCount = draws.reduce((sum, item) => sum + item.winnerCount, 0);
+  return sendJson(res, 200, {
+    ok: true,
+    adminEnabled: Boolean(adminKey),
+    savedDrawCount: draws.length,
+    attemptCount: attempts.length,
+    winnerCount,
+    statusCount: statusIds.size,
+    cookie: {
+      hasCookie: cookieSummary.hasCookie,
+      cookieCount: cookieSummary.cookieCount,
+      activeId: cookieSummary.activeId,
+      savedAt: cookieSummary.savedAt,
+      lastValidAt: cookieSummary.lastValidAt,
+      lastInvalidAt: cookieSummary.lastInvalidAt,
+      cookieStoreDisabled: disableCookieStore,
+      cookieStoreWriteProtected: Boolean(cookieWriteKey),
+    },
+    recentDraws: draws.slice(0, 8),
+    recentAttempts: attempts.slice(-12).reverse().map((item) => ({
+      attemptId: item.attemptId,
+      drawnAt: item.drawnAt,
+      statusId: item.statusId,
+      statusUrl: item.statusUrl,
+      source: item.source,
+      eligibleCount: item.eligibleCount,
+      candidateCount: item.candidateCount,
+      prizeCount: item.prizeCount,
+    })),
+  });
+}
+
+async function handleAdminDraws(req, res, url) {
+  const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') || 100)));
+  const search = url.searchParams.get('search') || '';
+  const items = await listSavedDraws({ limit, search });
+  return sendJson(res, 200, { ok: true, items });
+}
+
+async function handleAdminDrawDetail(req, res, fileName) {
+  const { file, record } = await readDrawFile(fileName);
+  return sendJson(res, 200, { ok: true, item: drawRecordPublic(record, file, true) });
+}
+
+async function handleAdminDeleteDraw(req, res, fileName) {
+  const safeName = safeDrawFileName(fileName);
+  const filePath = path.join(drawsDir, safeName);
+  try {
+    await fs.unlink(filePath);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return sendJson(res, 404, { ok: false, error: '开奖记录不存在' });
+    }
+    throw error;
+  }
+  return sendJson(res, 200, { ok: true, removed: safeName });
+}
+
 function staticCacheHeaders(filePath) {
   const normalized = filePath.replace(/\\/g, '/');
   const name = path.basename(filePath);
@@ -1605,6 +1887,36 @@ function staticCacheHeaders(filePath) {
     return { 'cache-control': 'public, max-age=31536000, immutable' };
   }
   return { 'cache-control': 'public, max-age=3600' };
+}
+
+function adminAssetName(pathname) {
+  if (pathname === '/admin' || pathname === '/admin/') return 'admin.html';
+  if (pathname === '/admin/admin.css') return 'admin.css';
+  if (pathname === '/admin/admin.js') return 'admin.js';
+  return '';
+}
+
+async function serveAdminAsset(req, res, pathname) {
+  const assetName = adminAssetName(pathname);
+  if (!assetName) return false;
+  if (req.method !== 'GET') {
+    sendText(res, 405, 'Method Not Allowed');
+    return true;
+  }
+  const filePath = path.join(adminDir, assetName);
+  try {
+    const content = await fs.readFile(filePath);
+    res.writeHead(200, {
+      ...securityHeaders(),
+      'content-type': MIME[path.extname(filePath)] || 'application/octet-stream',
+      'cache-control': assetName === 'admin.html' ? 'no-store' : 'no-cache',
+      'x-robots-tag': 'noindex, nofollow',
+    });
+    res.end(content);
+  } catch {
+    sendText(res, 404, 'Not Found');
+  }
+  return true;
 }
 
 function missingBuildHtml() {
@@ -1689,6 +2001,9 @@ const server = http.createServer(async (req, res) => {
     if (isApiPath(url.pathname) && !isAuthorizedApiRequest(req, url.pathname)) {
       return sendJson(res, 401, { ok: false, error: '访问密钥不正确或未提供' });
     }
+    if (adminAssetName(url.pathname)) {
+      return await serveAdminAsset(req, res, url.pathname);
+    }
     if (req.method === 'GET' && url.pathname === '/api/health') {
       return sendJson(res, 200, {
         ok: true,
@@ -1701,6 +2016,17 @@ const server = http.createServer(async (req, res) => {
         cookieStoreDisabled: disableCookieStore,
         cookieStoreWriteProtected: Boolean(cookieWriteKey),
       });
+    }
+    if (req.method === 'GET' && url.pathname === '/api/admin/summary') {
+      return await handleAdminSummary(req, res);
+    }
+    if (req.method === 'GET' && url.pathname === '/api/admin/draws') {
+      return await handleAdminDraws(req, res, url);
+    }
+    if (url.pathname.startsWith('/api/admin/draws/')) {
+      const fileName = decodeURIComponent(url.pathname.replace('/api/admin/draws/', ''));
+      if (req.method === 'GET') return await handleAdminDrawDetail(req, res, fileName);
+      if (req.method === 'DELETE') return await handleAdminDeleteDraw(req, res, fileName);
     }
     if (req.method === 'GET' && url.pathname === '/api/weibo/draw-count') {
       return await handleDrawCount(req, res, url);

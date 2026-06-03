@@ -19,6 +19,7 @@ Environment=FETCH_TIMEOUT_MS=20000
 Environment=RATE_LIMIT_WINDOW_MS=60000
 Environment=RATE_LIMIT_MAX=80
 Environment=CORS_ORIGINS=https://sssssameko.github.io
+EnvironmentFile=-/etc/sameko-weibo-lottery.env
 ExecStart=/usr/bin/node /opt/sameko-weibo-lottery/server.mjs
 Restart=on-failure
 RestartSec=5
