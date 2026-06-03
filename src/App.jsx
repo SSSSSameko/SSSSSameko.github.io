@@ -220,13 +220,13 @@ async function createRecordImage(payload) {
   ctx.fillStyle = topWash;
   ctx.fillRect(0, 0, width, height);
   const sideWash = ctx.createLinearGradient(width, 0, 0, height);
-  sideWash.addColorStop(0, 'rgba(0,122,255,0.17)');
+  sideWash.addColorStop(0, 'rgba(95,143,145,0.15)');
   sideWash.addColorStop(0.54, 'rgba(50,215,160,0.055)');
   sideWash.addColorStop(1, 'rgba(255,255,255,0)');
   ctx.fillStyle = sideWash;
   ctx.fillRect(0, 0, width, height);
 
-  ctx.strokeStyle = 'rgba(0,122,255,0.030)';
+  ctx.strokeStyle = 'rgba(95,143,145,0.030)';
   ctx.lineWidth = 1;
   for (let x = 42; x < width; x += 42) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
   for (let gy = 42; gy < height; gy += 42) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(width, gy); ctx.stroke(); }
@@ -252,15 +252,15 @@ async function createRecordImage(payload) {
 
   const badgeGradient = ctx.createLinearGradient(pad + 20, y + 20, pad + 78, y + 78);
   badgeGradient.addColorStop(0, '#fff5e8');
-  badgeGradient.addColorStop(0.5, '#d9ecff');
-  badgeGradient.addColorStop(1, '#79b8ff');
+  badgeGradient.addColorStop(0.5, '#e3f4f2');
+  badgeGradient.addColorStop(1, '#9ddfd7');
   const logoX = pad + 18;
   const logoY = y + 18;
   const logoSize = 66;
-  ctx.shadowColor = 'rgba(0,122,255,0.16)';
+  ctx.shadowColor = 'rgba(95,143,145,0.14)';
   ctx.shadowBlur = 14;
   ctx.shadowOffsetY = 6;
-  drawRoundedRect(ctx, logoX, logoY, logoSize, logoSize, 22, badgeGradient, 'rgba(0,122,255,0.14)');
+  drawRoundedRect(ctx, logoX, logoY, logoSize, logoSize, 22, badgeGradient, 'rgba(95,143,145,0.13)');
   ctx.shadowColor = 'transparent';
   ctx.shadowBlur = 0;
   ctx.shadowOffsetY = 0;
@@ -268,7 +268,7 @@ async function createRecordImage(payload) {
     drawRoundedImage(ctx, avatarImage, logoX + 4, logoY + 4, logoSize - 8, logoSize - 8, 19);
     drawRoundedRect(ctx, logoX + 4, logoY + 4, logoSize - 8, logoSize - 8, 19, '', 'rgba(255,255,255,0.60)');
   } else {
-    ctx.fillStyle = '#007aff';
+    ctx.fillStyle = '#5f8f91';
     ctx.font = '30px "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillText('S', logoX + 24, logoY + 17);
   }
@@ -280,9 +280,9 @@ async function createRecordImage(payload) {
   ctx.fillStyle = '#86868b';
   ctx.fillText('by.sameko · 手机保存版', pad + 100, y + 66);
   ctx.textAlign = 'right';
-  drawRoundedRect(ctx, width - pad - 178, y + 34, 146, 40, 17, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.13)');
+  drawRoundedRect(ctx, width - pad - 178, y + 34, 146, 40, 17, 'rgba(95,143,145,0.08)', 'rgba(95,143,145,0.13)');
   ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#0071e3';
+  ctx.fillStyle = '#5f8f91';
   ctx.fillText(formatDateTime(payload.drawnAt).slice(0, 10), width - pad - 48, y + 45);
   ctx.textAlign = 'left';
   y += 132;
@@ -290,8 +290,8 @@ async function createRecordImage(payload) {
   ctx.font = '40px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   const titleGradient = ctx.createLinearGradient(pad, y, width - pad, y);
   titleGradient.addColorStop(0, '#111827');
-  titleGradient.addColorStop(0.56, '#007aff');
-  titleGradient.addColorStop(1, '#ff6b7a');
+  titleGradient.addColorStop(0.56, '#5f8f91');
+  titleGradient.addColorStop(1, '#d9858c');
   ctx.fillStyle = titleGradient;
   ctx.fillText('微博转发抽奖结果', pad, y);
   y += 52;
@@ -308,10 +308,10 @@ async function createRecordImage(payload) {
   y += linkBoxH + 16;
 
   const stats = [
-    ['候选记录', payload.candidateCount, '#007aff'],
-    ['可抽人数', payload.eligibleCount, '#4dbde6'],
-    ['中奖人数', payload.winnerCount, '#26a64f'],
-    ['本链接已抽', payload.drawCount, '#5e5ce6'],
+    ['候选记录', payload.candidateCount, '#5f8f91'],
+    ['可抽人数', payload.eligibleCount, '#6faaa8'],
+    ['中奖人数', payload.winnerCount, '#62b58c'],
+    ['本链接已抽', payload.drawCount, '#9188c8'],
   ];
   const statGap = 12;
   const statW = (innerW - statGap) / 2;
@@ -331,31 +331,31 @@ async function createRecordImage(payload) {
   });
   y += 174;
 
-  drawRoundedRect(ctx, pad, y, innerW, 60, 22, 'rgba(255,255,255,0.78)', 'rgba(0,122,255,0.13)');
+  drawRoundedRect(ctx, pad, y, innerW, 60, 22, 'rgba(255,255,255,0.78)', 'rgba(95,143,145,0.13)');
   ctx.font = '24px "Noto Sans SC", "Microsoft YaHei", sans-serif';
   ctx.fillStyle = '#1d1d1f';
   ctx.fillText('中奖名单', pad + 22, y + 17);
   ctx.textAlign = 'right';
-  drawRoundedRect(ctx, width - pad - 104, y + 15, 82, 30, 15, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.12)');
+  drawRoundedRect(ctx, width - pad - 104, y + 15, 82, 30, 15, 'rgba(95,143,145,0.08)', 'rgba(95,143,145,0.12)');
   ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#0071e3';
+  ctx.fillStyle = '#5f8f91';
   ctx.fillText(`${payload.winnerCount || 0} 人`, width - pad - 44, y + 21);
   ctx.textAlign = 'left';
   y += 74;
 
   prizeLayouts.forEach(({ item, names, height: cardH }, prizeIndex) => {
     softCard(pad, y, innerW, cardH, 26, 'rgba(255,255,255,0.84)', 'rgba(60,60,67,0.10)');
-    ctx.fillStyle = item.prize.color || '#007aff';
+    ctx.fillStyle = item.prize.color || '#5f8f91';
     ctx.beginPath();
     ctx.arc(pad + 30, y + 32, 7, 0, Math.PI * 2);
     ctx.fill();
     ctx.font = '24px "Noto Sans SC", "Microsoft YaHei", sans-serif';
     ctx.fillStyle = '#101014';
     ctx.fillText(item.prize.name, pad + 48, y + 18);
-    drawRoundedRect(ctx, width - pad - 92, y + 18, 72, 30, 15, 'rgba(0,122,255,0.08)', 'rgba(0,122,255,0.12)');
+    drawRoundedRect(ctx, width - pad - 92, y + 18, 72, 30, 15, 'rgba(95,143,145,0.08)', 'rgba(95,143,145,0.12)');
     ctx.textAlign = 'right';
     ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = '#0071e3';
+    ctx.fillStyle = '#5f8f91';
     ctx.fillText(`${item.winners.length} 人`, width - pad - 36, y + 24);
     ctx.textAlign = 'left';
     ctx.strokeStyle = 'rgba(60,60,67,0.08)';
@@ -369,10 +369,10 @@ async function createRecordImage(payload) {
       ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
       const lines = wrapCanvasText(ctx, text, innerW - 92);
       const rowH = Math.max(36, lines.length * 23 + 11);
-      drawRoundedRect(ctx, pad + 22, wy, innerW - 44, rowH, 18, prizeIndex === 0 ? 'rgba(0,122,255,0.060)' : 'rgba(246,248,252,0.78)', 'rgba(60,60,67,0.08)');
-      drawRoundedRect(ctx, pad + 34, wy + 9, 24, 20, 10, 'rgba(0,122,255,0.11)', '');
+      drawRoundedRect(ctx, pad + 22, wy, innerW - 44, rowH, 18, prizeIndex === 0 ? 'rgba(95,143,145,0.060)' : 'rgba(246,248,252,0.78)', 'rgba(60,60,67,0.08)');
+      drawRoundedRect(ctx, pad + 34, wy + 9, 24, 20, 10, 'rgba(95,143,145,0.11)', '');
       ctx.font = '12px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-      ctx.fillStyle = '#0071e3';
+      ctx.fillStyle = '#5f8f91';
       ctx.textAlign = 'center';
       ctx.fillText(String(nameIndex + 1), pad + 46, wy + 12);
       ctx.textAlign = 'left';
@@ -441,7 +441,7 @@ async function createRecordImage(payload) {
   return finalCanvas;
 }
 
-const COLORS = ['#007aff', '#30d158', '#ff9f0a', '#5e5ce6', '#64d2ff', '#ff375f'];
+const COLORS = ['#5f8f91', '#62b58c', '#d9a65f', '#9188c8', '#9ddfd7', '#d9858c'];
 const PRIZE_NAMES = ['一等奖', '二等奖', '三等奖', '幸运奖'];
 function defaultPrize(index = 0, count = 1) {
   return {
@@ -461,7 +461,7 @@ const I = {
   clock: <Clock className="w-[18px] h-[18px]" strokeWidth={1.5} />,
   trash: <Trash2 className="w-4 h-4" strokeWidth={1.8} />,
   settings: <Settings className="w-[18px] h-[18px]" strokeWidth={1.5} />,
-  bolt: <Bolt className="w-5 h-5 text-[#5ac8fa]" fill="currentColor" strokeWidth={1.2} />,
+  bolt: <Bolt className="w-5 h-5 text-[#9ddfd7]" fill="currentColor" strokeWidth={1.2} />,
   sparkles: <Sparkles className="w-[18px] h-[18px]" strokeWidth={1.7} />,
   close: <X className="w-4 h-4" strokeWidth={2} />,
   plus: <Plus className="w-4 h-4" strokeWidth={2} />,
@@ -478,7 +478,7 @@ function StatCard({ value, label, gradient, delay }) {
   return (
     <div className={`stat-card px-3 py-3 text-left slide-up min-w-0 ${delay}`}>
       <div className="stat-label flex items-center gap-2 text-[10px] uppercase text-gray-500 whitespace-nowrap">
-        <span className="h-1.5 w-1.5 rounded-full bg-[#007aff]" />
+        <span className="h-1.5 w-1.5 rounded-full bg-[#5f8f91]" />
         {label}
       </div>
       <div className={`stat-value mt-2 text-[22px] sm:text-[26px] leading-none font-semibold bg-clip-text text-transparent bg-gradient-to-r ${gradient} truncate`}>{value}</div>
@@ -549,7 +549,7 @@ function PrizeCard({ prize, winners, isNew, index }) {
         <div className="flex flex-wrap gap-1.5">
           {winners.map((winner, j) => (
             <span key={j} className="inline-flex items-center gap-1 hard-chip px-3 py-1.5 text-[13px] text-[#1d1d1f]">
-              <span className="text-[#007aff]">{I.star}</span>{winner.screenName || winner.uid || `中奖用户${j + 1}`}
+              <span className="text-[#5f8f91]">{I.star}</span>{winner.screenName || winner.uid || `中奖用户${j + 1}`}
             </span>
           ))}
         </div>
@@ -577,11 +577,11 @@ function WinnerModal({ results, onClose, onCopyNames, onCopyPost, onCreateShareI
       <div data-share-modal className="relative glass-elevated share-capture p-6 sm:p-8 max-w-lg w-full reveal overflow-y-auto max-h-[90vh]" onClick={(event) => event.stopPropagation()}>
         <button onClick={onClose} className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/5 flex items-center justify-center text-gray-500 hover:text-white hover:bg-white/10 transition">{I.close}</button>
         <div className="text-center mb-6">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-lg bg-gradient-to-br from-[#e8f3ff] to-[#5ac8fa] mb-4 shadow-lg shadow-blue-500/15">
+          <div className="inline-flex items-center justify-center w-16 h-16 rounded-lg bg-gradient-to-br from-[#f1fbf9] to-[#9ddfd7] mb-4 shadow-lg shadow-teal-500/10">
             <span className="text-slate-950">{I.crown}</span>
           </div>
           <h2 className="text-2xl font-bold text-[#1d1d1f] tracking-tight">开奖完成</h2>
-          <p className="text-sm text-gray-400 mt-1">共 <span className="text-[#007aff] font-semibold">{total}</span> 位幸运用户</p>
+          <p className="text-sm text-gray-400 mt-1">共 <span className="text-[#5f8f91] font-semibold">{total}</span> 位幸运用户</p>
         </div>
         <div className="space-y-3 mb-6">
           {results.map((item, i) => (
@@ -611,13 +611,13 @@ function History({ list, onClear }) {
     <div>
       <div className="flex items-center justify-between mb-2.5">
         <span className="text-[11px] text-gray-500">{list.length} 条记录</span>
-        <button onClick={onClear} className="text-[11px] text-gray-500 hover:text-[#ff375f] transition flex items-center gap-1">{I.trash} 清空</button>
+        <button onClick={onClear} className="text-[11px] text-gray-500 hover:text-[#d9858c] transition flex items-center gap-1">{I.trash} 清空</button>
       </div>
       <div className="space-y-1.5 max-h-52 overflow-y-auto">
         {list.map((item, i) => (
           <div key={i} className="glass rounded-lg p-2.5 hover:bg-white/[0.03] transition">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[#007aff] text-[11px]">{item.time}</span>
+              <span className="text-[#5f8f91] text-[11px]">{item.time}</span>
               <span className="text-[10px] text-gray-600">{item.total}人中奖</span>
             </div>
             <div className="text-[11px] text-gray-500 truncate">{item.summary}</div>
@@ -1280,18 +1280,18 @@ function App() {
                 <div className="progress-card p-3 mt-4">
                   <div className="flex items-center justify-between text-[12px] text-gray-400 mb-2">
                     <span className="truncate">{progress.message || '处理中'}</span>
-                    <strong className="text-[#007aff]">{Math.round(progress.percent || 0)}%</strong>
+                    <strong className="text-[#5f8f91]">{Math.round(progress.percent || 0)}%</strong>
                   </div>
                   <div className="h-2 rounded-full bg-white/[0.05] overflow-hidden">
-                    <div className="h-full rounded-full bg-gradient-to-r from-[#007aff] via-[#5ac8fa] to-[#30d158] transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(progress.percent || 0)))}%` }} />
+                    <div className="h-full rounded-full bg-gradient-to-r from-[#5f8f91] via-[#9ddfd7] to-[#62b58c] transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(progress.percent || 0)))}%` }} />
                   </div>
                 </div>
               )}
 
               <div className="hero-stats mt-5 grid grid-cols-3 gap-2">
-                <StatCard value={displayPool.length} label="可抽人数" gradient="from-[#007aff] to-[#5ac8fa]" delay="d1" />
-                <StatCard value={totalSlots} label="中奖名额" gradient="from-[#5ac8fa] to-[#30d158]" delay="d2" />
-                <StatCard value={drawCount ?? 0} label="本链接已抽" gradient="from-[#5e5ce6] to-[#007aff]" delay="d3" />
+                <StatCard value={displayPool.length} label="可抽人数" gradient="from-[#5f8f91] to-[#9ddfd7]" delay="d1" />
+                <StatCard value={totalSlots} label="中奖名额" gradient="from-[#9ddfd7] to-[#62b58c]" delay="d2" />
+                <StatCard value={drawCount ?? 0} label="本链接已抽" gradient="from-[#9188c8] to-[#5f8f91]" delay="d3" />
               </div>
 
               <div className={`status-line mt-4 text-[13px] ${statusTone === 'error' ? 'status-bad' : statusTone === 'success' ? 'status-ok' : 'text-gray-500'}`}>
@@ -1301,18 +1301,18 @@ function App() {
 
             <section className="glass pool-stats-panel p-4">
               <div className="pool-stats-grid grid grid-cols-4 gap-2">
-                <StatCard value={candidates.length} label="候选" gradient="from-[#007aff] to-[#5ac8fa]" delay="d1" />
-                <StatCard value={eligible.length} label="可抽" gradient="from-[#5ac8fa] to-[#30d158]" delay="d2" />
-                <StatCard value={duplicateCount} label="去重" gradient="from-[#5e5ce6] to-[#007aff]" delay="d2" />
-                <StatCard value={winners.length} label="中奖" gradient="from-[#30d158] to-[#ff9f0a]" delay="d3" />
+                <StatCard value={candidates.length} label="候选" gradient="from-[#5f8f91] to-[#9ddfd7]" delay="d1" />
+                <StatCard value={eligible.length} label="可抽" gradient="from-[#9ddfd7] to-[#62b58c]" delay="d2" />
+                <StatCard value={duplicateCount} label="去重" gradient="from-[#9188c8] to-[#5f8f91]" delay="d2" />
+                <StatCard value={winners.length} label="中奖" gradient="from-[#62b58c] to-[#d9a65f]" delay="d3" />
               </div>
-              {isDrawing && <div className="mt-3 text-[12px] text-[#007aff] truncate">{phase || '开奖中'} {rollingName ? `：${rollingName}` : ''}</div>}
+              {isDrawing && <div className="mt-3 text-[12px] text-[#5f8f91] truncate">{phase || '开奖中'} {rollingName ? `：${rollingName}` : ''}</div>}
             </section>
 
             {results.length > 0 && (
               <section className="share-capture glass p-4 space-y-3">
                 <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                  <h3 className="text-base font-semibold text-[#1d1d1f] flex items-center gap-2"><span className="text-[#007aff]">{I.trophy}</span> 中奖结果</h3>
+                  <h3 className="text-base font-semibold text-[#1d1d1f] flex items-center gap-2"><span className="text-[#5f8f91]">{I.trophy}</span> 中奖结果</h3>
                   <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
                     <button onClick={saveResult} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.save} 保存记录</button>
                     <button onClick={copyWinnerMentions} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.copy} @名单</button>
@@ -1362,7 +1362,7 @@ function App() {
             <section className="glass p-5">
               <div className="flex items-center justify-between mb-3">
                 <h3 className="text-sm font-semibold text-[#1d1d1f] flex items-center gap-2">{I.settings} 数据源</h3>
-                <span className="hard-chip text-[11px] text-[#007aff] px-2 py-0.5">{SOURCE_LABELS[source]}</span>
+                <span className="hard-chip text-[11px] text-[#5f8f91] px-2 py-0.5">{SOURCE_LABELS[source]}</span>
               </div>
               <div className="grid grid-cols-3 gap-2 mb-3">
                 {[
@@ -1421,7 +1421,7 @@ function App() {
                       className="input-field rounded-lg px-2.5 py-1.5 text-[13px] text-[#1d1d1f] flex-1 bg-transparent min-w-0" />
                     <input type="number" value={prize.count} min={1} onChange={(event) => { const next = [...prizes]; next[index] = { ...next[index], count: Math.max(1, parseInt(event.target.value, 10) || 1) }; setPrizes(next); clearResult('奖项已更新，请重新开奖。'); }}
                       className="input-field rounded-lg px-2 py-1.5 text-[13px] text-[#1d1d1f] w-14 text-center bg-transparent" />
-                    <button onClick={() => { if (prizes.length <= 1) return; setPrizes(prizes.filter((_, i) => i !== index)); clearResult('奖项已更新，请重新开奖。'); }} disabled={prizes.length <= 1} className={`transition flex-shrink-0 ${prizes.length <= 1 ? 'text-gray-700 cursor-not-allowed' : 'text-gray-500 hover:text-[#ff375f]'}`}>{I.trash}</button>
+                    <button onClick={() => { if (prizes.length <= 1) return; setPrizes(prizes.filter((_, i) => i !== index)); clearResult('奖项已更新，请重新开奖。'); }} disabled={prizes.length <= 1} className={`transition flex-shrink-0 ${prizes.length <= 1 ? 'text-gray-700 cursor-not-allowed' : 'text-gray-500 hover:text-[#d9858c]'}`}>{I.trash}</button>
                   </div>
                 ))}
               </div>
@@ -1446,8 +1446,8 @@ function App() {
               <textarea value={blocklist} onChange={(event) => { setBlocklist(event.target.value); clearResult('筛选规则已更新，请重新开奖。'); }}
                 placeholder="排除名单：每行一个 UID 或昵称"
                 className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full h-20 resize-none" />
-              <label className="mt-3 flex items-center gap-2 text-[13px] text-gray-400"><input type="checkbox" checked={uniqueByUser} onChange={(event) => setUniqueByUser(event.target.checked)} className="accent-[#007aff]" /> 同一用户只保留一次</label>
-              <label className="mt-2 flex items-center gap-2 text-[13px] text-gray-400"><input type="checkbox" checked={excludePrevious} onChange={(event) => setExcludePrevious(event.target.checked)} className="accent-[#007aff]" /> 排除本轮已中奖用户</label>
+              <label className="mt-3 flex items-center gap-2 text-[13px] text-gray-400"><input type="checkbox" checked={uniqueByUser} onChange={(event) => setUniqueByUser(event.target.checked)} className="accent-[#5f8f91]" /> 同一用户只保留一次</label>
+              <label className="mt-2 flex items-center gap-2 text-[13px] text-gray-400"><input type="checkbox" checked={excludePrevious} onChange={(event) => setExcludePrevious(event.target.checked)} className="accent-[#5f8f91]" /> 排除本轮已中奖用户</label>
             </section>
 
             <section className="glass p-5">

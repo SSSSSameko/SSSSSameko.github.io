@@ -1783,3 +1783,230 @@ body::after {
     display: none;
   }
 }
+
+/* White seaglass palette */
+:root {
+  --blue: #5f8f91;
+  --blue-2: #9ddfd7;
+  --green: #62b58c;
+  --violet: #9188c8;
+  --red: #d97986;
+  --sameko-sky: #a8d9dc;
+  --sameko-blush: #f1cbd2;
+  --weibo-warm: #d9858c;
+}
+
+body {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(249, 251, 251, 0.94) 44%, rgba(235, 241, 241, 0.98) 100%),
+    linear-gradient(135deg, rgba(126, 184, 181, 0.12) 0%, rgba(255, 255, 255, 0) 35%, rgba(241, 203, 210, 0.13) 73%, rgba(145, 136, 200, 0.08) 100%),
+    linear-gradient(105deg, rgba(255, 245, 232, 0.28), rgba(255, 255, 255, 0) 45%, rgba(168, 217, 220, 0.22));
+}
+
+body::before {
+  background-image:
+    linear-gradient(90deg, rgba(60, 60, 67, 0.026) 1px, transparent 1px),
+    linear-gradient(rgba(60, 60, 67, 0.024) 1px, transparent 1px),
+    repeating-linear-gradient(115deg, rgba(126, 184, 181, 0.04) 0 1px, transparent 1px 118px),
+    linear-gradient(135deg, rgba(126, 184, 181, 0.065), transparent 40%),
+    linear-gradient(225deg, rgba(241, 203, 210, 0.06), transparent 44%);
+}
+
+.border-glow::before {
+  background:
+    linear-gradient(90deg, rgba(111, 160, 158, 0.68), rgba(238, 199, 206, 0.40), rgba(148, 140, 199, 0.38), rgba(255, 255, 255, 0.58)) top left / 100% 2px no-repeat,
+    linear-gradient(180deg, rgba(255, 255, 255, 0.64), transparent 32%);
+}
+
+@keyframes breathe {
+  0%, 100% {
+    box-shadow:
+      0 0 0 0 rgba(95, 143, 145, 0.20),
+      0 18px 42px rgba(72, 96, 111, 0.18),
+      0 6px 22px rgba(157, 223, 215, 0.18);
+  }
+  50% {
+    box-shadow:
+      0 0 0 8px rgba(95, 143, 145, 0),
+      0 23px 54px rgba(72, 96, 111, 0.20),
+      0 8px 28px rgba(157, 223, 215, 0.22);
+  }
+}
+
+.btn-primary {
+  color: #ffffff !important;
+  border-color: rgba(79, 106, 115, 0.46);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0) 43%),
+    linear-gradient(140deg, #a8e4dc 0%, #6faaa8 42%, #526678 100%);
+  box-shadow:
+    0 18px 44px rgba(72, 96, 111, 0.20),
+    0 8px 24px rgba(157, 223, 215, 0.20),
+    0 1px 0 rgba(255, 255, 255, 0.52) inset,
+    0 -1px 0 rgba(34, 44, 64, 0.14) inset;
+}
+
+.btn-primary:focus-visible,
+.btn-ghost:focus-visible,
+.input-field:focus-visible {
+  box-shadow:
+    0 0 0 4px rgba(111, 160, 158, 0.18),
+    0 1px 0 rgba(255, 255, 255, 0.92) inset;
+}
+
+.source-tab-active {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(241, 249, 248, 0.78)),
+    linear-gradient(120deg, rgba(126, 184, 181, 0.12), rgba(241, 203, 210, 0.08));
+}
+
+.empty-state {
+  border-color: rgba(111, 160, 158, 0.14);
+  background:
+    repeating-linear-gradient(135deg, rgba(157, 223, 215, 0.052) 0 1px, transparent 1px 36px),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.86), rgba(248, 251, 250, 0.64)),
+    linear-gradient(115deg, rgba(241, 203, 210, 0.15), rgba(157, 223, 215, 0.12));
+}
+
+.empty-state-icon {
+  color: #5f8f91;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(240, 250, 248, 0.84)),
+    rgba(111, 160, 158, 0.08);
+}
+
+.action-panel {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.76), rgba(248, 251, 251, 0.50)),
+    linear-gradient(135deg, rgba(126, 184, 181, 0.07), rgba(255, 255, 255, 0) 44%, rgba(241, 203, 210, 0.07)),
+    rgba(255, 255, 255, 0.54);
+  box-shadow:
+    0 28px 76px rgba(44, 61, 72, 0.11),
+    0 1px 0 rgba(255, 255, 255, 0.96) inset,
+    0 -1px 0 rgba(34, 44, 64, 0.045) inset;
+}
+
+.action-grid::before {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.30), rgba(255, 255, 255, 0)),
+    linear-gradient(90deg, rgba(126, 184, 181, 0.12), rgba(255, 255, 255, 0) 42%, rgba(241, 203, 210, 0.10));
+}
+
+.action-btn {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(247, 251, 251, 0.40)),
+    linear-gradient(135deg, rgba(157, 223, 215, 0.14), rgba(255, 255, 255, 0) 55%, rgba(241, 203, 210, 0.12)),
+    rgba(255, 255, 255, 0.42);
+  box-shadow:
+    0 18px 44px rgba(44, 61, 72, 0.12),
+    0 1px 0 rgba(255, 255, 255, 0.95) inset,
+    0 -1px 0 rgba(34, 44, 64, 0.08) inset;
+}
+
+.action-btn::after {
+  box-shadow:
+    12px 0 24px rgba(255, 255, 255, 0.25) inset,
+    -14px -8px 28px rgba(255, 255, 255, 0.18) inset,
+    0 -18px 36px rgba(111, 160, 158, 0.035) inset;
+}
+
+.action-btn:hover {
+  box-shadow:
+    0 24px 58px rgba(44, 61, 72, 0.15),
+    0 1px 0 rgba(255, 255, 255, 0.98) inset,
+    0 -1px 0 rgba(34, 44, 64, 0.08) inset;
+}
+
+.action-btn:focus-visible {
+  box-shadow:
+    0 0 0 4px rgba(111, 160, 158, 0.18),
+    0 24px 58px rgba(44, 61, 72, 0.15),
+    0 1px 0 rgba(255, 255, 255, 0.98) inset;
+}
+
+.action-icon {
+  color: var(--action-color, #5f8f91);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(247, 251, 251, 0.44)),
+    linear-gradient(135deg, color-mix(in srgb, var(--action-color, #5f8f91) 15%, transparent), rgba(255, 255, 255, 0));
+  box-shadow:
+    0 12px 28px color-mix(in srgb, var(--action-color, #5f8f91) 16%, transparent),
+    0 1px 0 rgba(255, 255, 255, 0.94) inset,
+    0 -1px 0 rgba(34, 44, 64, 0.07) inset;
+}
+
+.action-icon svg {
+  filter: drop-shadow(0 6px 12px color-mix(in srgb, var(--action-color, #5f8f91) 16%, transparent));
+}
+
+.action-step-candidates { --action-color: #6aa9a5; }
+.action-step-prize { --action-color: #958cca; }
+.action-step-draw { --action-color: #5f8f91; }
+.action-step-record { --action-color: #d9858c; }
+
+.action-step-candidates.action-step-complete {
+  --action-color: #63a97e;
+}
+
+.action-step-ready {
+  --action-color: #9289c7;
+}
+
+.action-step-current .action-step-dot,
+.action-step-ready .action-step-dot,
+.action-step-complete .action-step-dot {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.40), rgba(255, 255, 255, 0) 42%),
+    linear-gradient(180deg, color-mix(in srgb, var(--action-color, #5f8f91) 64%, #ffffff), var(--action-color, #5f8f91));
+  box-shadow:
+    0 10px 24px color-mix(in srgb, var(--action-color, #5f8f91) 20%, transparent),
+    0 1px 0 rgba(255, 255, 255, 0.44) inset;
+}
+
+.action-step-draw.action-btn-primary {
+  color: #ffffff !important;
+  border-color: rgba(255, 255, 255, 0.50);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.42), rgba(255, 255, 255, 0) 43%),
+    linear-gradient(135deg, rgba(166, 226, 220, 0.96), rgba(98, 156, 155, 0.96) 46%, rgba(82, 102, 120, 0.96)),
+    rgba(95, 143, 145, 0.82);
+  box-shadow:
+    0 24px 62px rgba(72, 96, 111, 0.23),
+    0 8px 30px rgba(157, 223, 215, 0.20),
+    0 1px 0 rgba(255, 255, 255, 0.52) inset,
+    0 -1px 0 rgba(33, 54, 62, 0.18) inset;
+}
+
+.action-step-draw .action-icon {
+  box-shadow:
+    0 14px 30px rgba(33, 54, 62, 0.18),
+    0 1px 0 rgba(255, 255, 255, 0.30) inset;
+}
+
+.action-step-draw .action-step-dot {
+  color: #4e7274;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(238, 250, 248, 0.86));
+}
+
+@keyframes liquidSweep {
+  0%, 100% {
+    box-shadow:
+      12px 0 24px rgba(255, 255, 255, 0.25) inset,
+      -14px -8px 28px rgba(255, 255, 255, 0.18) inset,
+      0 -18px 36px rgba(111, 160, 158, 0.035) inset;
+  }
+  50% {
+    box-shadow:
+      24px 0 38px rgba(255, 255, 255, 0.31) inset,
+      -8px -4px 30px rgba(255, 255, 255, 0.23) inset,
+      0 -18px 42px rgba(255, 255, 255, 0.13) inset;
+  }
+}
+
+@media (max-width: 640px) {
+  .action-grid::before {
+    background:
+      linear-gradient(180deg, rgba(106, 169, 165, 0.34), rgba(149, 140, 202, 0.22), rgba(95, 143, 145, 0.32), rgba(217, 133, 140, 0.16));
+  }
+}
