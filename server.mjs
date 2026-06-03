@@ -909,7 +909,6 @@ async function closeWeiboLoginSession(message = '扫码窗口已关闭') {
   try {
     await session.context?.close();
   } catch {
-    // Browser shutdown errors are not useful to expose.
   }
   await writeWeiboLoginState({
     lastStatus: session.status === 'logged_in' ? 'ok' : 'idle',
@@ -1064,7 +1063,6 @@ function scheduleWeiboKeepalive() {
         await refreshCookieFromBrowserProfile('scheduled-refresh');
       }
     } catch {
-      // Scheduled keepalive state is visible in the admin panel after manual refresh.
     } finally {
       setInterval(() => {
         refreshCookieFromBrowserProfile('scheduled-refresh').catch(() => {});
@@ -1662,7 +1660,7 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress }) {
 
   const unique = uniqueCandidates(candidates);
   return {
-    candidates: uniqueByRepostId(candidates),
+    candidates: uniqueByRepostId(unique),
     meta: {
       provider: 'mobile',
       pages,
@@ -1671,8 +1669,7 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress }) {
       complete: !hitPageCap,
       cookieMode: Boolean(cookie),
       warnings: [
-        '已使用页面输入的微博 Cookie 自动扫描 H5 接口声明的页数范围；中间空页不会再提前结束。',
-        '请只在账号和活动规则允许的范围内使用，不要绕过验证码、风控或访问限制。',
+        '已按 H5 接口返回的页数范围扫描可见转发。',
         ...(hitPageCap ? [`为避免异常长任务，本次在 ${MOBILE_MAX_PAGES} 页后停止。`] : []),
       ],
     },
@@ -1746,7 +1743,7 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress }) {
       complete: results.every((result) => result.meta?.complete !== false) && completeByCount,
       cookieMode: true,
       warnings: [
-        '默认使用桌面端 ajax/statuses/repostTimeline；该接口在测试链接中与 H5/旧版可见数量一致，但页数更少。',
+        '已优先使用桌面端可见转发入口，并在需要时尝试备用入口。',
         ...warnings,
         visibilityWarning,
         ...sourceWarnings,
@@ -1808,6 +1805,7 @@ async function buildRepostsPayload(body, reportProgress, options = {}) {
 async function runWithStatusLock(statusId, task) {
   const key = String(statusId || '').trim();
   if (!key) return await task();
+  const hadPrevious = statusLocks.has(key);
   const previous = statusLocks.get(key) || Promise.resolve();
   let release;
   const current = new Promise((resolve) => { release = resolve; });
@@ -1815,7 +1813,7 @@ async function runWithStatusLock(statusId, task) {
   statusLocks.set(key, chained);
   try {
     await previous.catch(() => {});
-    if (sameStatusRequestGapMs) await sleepWithJitter(sameStatusRequestGapMs, Math.min(pageDelayJitterMs, 500));
+    if (hadPrevious && sameStatusRequestGapMs) await sleepWithJitter(sameStatusRequestGapMs, Math.min(pageDelayJitterMs, 500));
     return await task();
   } finally {
     release();
@@ -2090,7 +2088,6 @@ async function handleSaveDraw(req, res) {
     savedAt,
     drawnAt: stableDrawnAt,
     auditHash,
-    note: '请妥善保管本地浏览器资料和登录凭据。',
   };
   await fs.writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
   const drawStats = statusId ? await getDrawCountForStatus(statusId) : { count: null, lastDrawnAt: '' };
@@ -2255,7 +2252,6 @@ async function listSavedDraws({ limit = 100, search = '' } = {}) {
       }
       if (items.length >= limit) break;
     } catch {
-      // Skip broken draw files instead of breaking the whole admin page.
     }
   }
   return items;

@@ -27,7 +27,6 @@ export function writeStoredValue(key, value) {
     if (value) window.localStorage?.setItem(key, value);
     else window.localStorage?.removeItem(key);
   } catch {
-    // Locked-down browsers can disable localStorage; the app can continue without it.
   }
 }
 

@@ -257,7 +257,7 @@
     if (!item) {
       els.detailPanel.innerHTML = `
         <div class="empty-detail">
-          <p class="eyebrow">Detail</p>
+          <p class="eyebrow">详情</p>
           <h2>选择一条开奖记录</h2>
           <p>点开左侧记录后，可以按奖项查看中奖人、复制名单、导出单条记录或删除误保存的数据。</p>
         </div>
@@ -289,7 +289,7 @@
 
     els.detailPanel.innerHTML = `
       <div class="detail-title">
-        <p class="eyebrow">Detail</p>
+        <p class="eyebrow">详情</p>
         <h2>${escapeHtml(prizeSummary(item))}</h2>
         <p class="subtle">${escapeHtml(formatDate(item.drawnAt || item.savedAt))} · 文件 ${escapeHtml(item.file)}</p>
       </div>
@@ -424,7 +424,7 @@
 
   function csvCell(value) {
     let text = String(value ?? '');
-    if (/^[=+\-@]/.test(text)) text = `'${text}`;
+    if (/^[=+\-@\t\r\n]/.test(text.trimStart())) text = `'${text}`;
     return `"${text.replace(/"/g, '""')}"`;
   }
 

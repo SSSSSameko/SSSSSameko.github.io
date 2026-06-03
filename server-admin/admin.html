@@ -30,13 +30,13 @@
 
     <section class="login-panel" id="loginPanel">
       <div>
-        <p class="eyebrow">Admin Access</p>
+        <p class="eyebrow">后台入口</p>
         <h1>输入后台密钥</h1>
         <p class="login-copy">后台只展示开奖记录和运行状态，不返回 Cookie 明文。密钥会保存在你当前浏览器本地。</p>
       </div>
       <div class="login-form">
         <label for="adminKeyInput">后台密钥</label>
-        <input id="adminKeyInput" type="password" autocomplete="current-password" spellcheck="false" placeholder="粘贴 ADMIN_KEY">
+        <input id="adminKeyInput" type="password" autocomplete="current-password" spellcheck="false" placeholder="粘贴后台密钥">
         <button class="primary-button" id="loginBtn" type="button">进入后台</button>
       </div>
       <p class="message" id="loginMessage"></p>
@@ -45,7 +45,7 @@
     <main class="dashboard hidden" id="dashboard">
       <section class="hero-panel">
         <div>
-          <p class="eyebrow">Overview</p>
+          <p class="eyebrow">总览</p>
           <h1>开奖记录总览</h1>
           <p id="heroSubtitle">正在读取后台数据。</p>
         </div>
@@ -58,7 +58,7 @@
         <div class="records-panel">
           <div class="panel-head">
             <div>
-              <p class="eyebrow">Draw Records</p>
+              <p class="eyebrow">开奖记录</p>
               <h2>开奖记录</h2>
             </div>
             <div class="toolbar">
@@ -71,7 +71,7 @@
 
         <aside class="detail-panel" id="detailPanel">
           <div class="empty-detail">
-            <p class="eyebrow">Detail</p>
+            <p class="eyebrow">详情</p>
             <h2>选择一条开奖记录</h2>
             <p>点开左侧记录后，可以按奖项查看中奖人、复制名单、导出单条记录或删除误保存的数据。</p>
           </div>
@@ -82,7 +82,7 @@
         <div class="panel">
           <div class="panel-head slim">
             <div>
-              <p class="eyebrow">Recent Attempts</p>
+              <p class="eyebrow">最近动作</p>
               <h2>最近开奖动作</h2>
             </div>
           </div>
@@ -91,7 +91,7 @@
         <div class="panel">
           <div class="panel-head slim">
             <div>
-              <p class="eyebrow">Cookie Pool</p>
+              <p class="eyebrow">Cookie 状态</p>
               <h2>Cookie 状态</h2>
             </div>
           </div>
@@ -99,7 +99,7 @@
           <div class="login-ops">
             <div class="login-ops-head">
               <div>
-                <p class="eyebrow">Server Login</p>
+                <p class="eyebrow">服务器登录</p>
                 <h3>服务器扫码登录</h3>
               </div>
               <span class="badge" id="weiboLoginBadge">未连接</span>
