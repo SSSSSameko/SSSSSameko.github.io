@@ -10,6 +10,7 @@
 - 中奖名单滚动动画
 - 开奖记录图和 CSV 导出
 - 后端 Cookie 池自动校验和失效清理
+- 服务器后台查看开奖记录、中奖明细和 Cookie 池状态
 
 ## 本地运行
 
@@ -35,6 +36,17 @@ http://127.0.0.1:4173/
 - `output/`、`profiles/`、`.env` 不要提交到 GitHub
 - 不要把微博 Cookie、服务器密码、API Key 写进代码或 README
 - `CORS_ORIGINS` 只填写自己的前端域名
+- 后台密钥放在服务器 `/etc/sameko-weibo-lottery.env`，格式为 `ADMIN_KEY=你的后台密钥`
+
+## 后台管理
+
+后端部署完成后访问：
+
+```text
+https://你的后端地址/admin
+```
+
+使用服务器环境文件里的 `ADMIN_KEY` 登录。后台可以查看开奖记录、奖项分组、中奖用户、最近开奖动作和 Cookie 池状态；后台接口不会返回 Cookie 明文。
 
 ## 安全说明
 
