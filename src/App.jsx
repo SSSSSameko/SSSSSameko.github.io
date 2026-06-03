@@ -2,16 +2,19 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import confetti from 'canvas-confetti';
 import {
   Bolt,
+  BadgeCheck,
   Clock,
   Copy,
   Crown,
   Download,
   Gift,
   Image,
+  ListChecks,
   Plus,
   Save,
   Settings,
   ShieldCheck,
+  Sparkles,
   Star,
   Trash2,
   Trophy,
@@ -452,11 +455,14 @@ const DEFAULT_PRIZES = [defaultPrize(0, 1)];
 const I = {
   trophy: <Trophy className="w-5 h-5" strokeWidth={1.5} />,
   users: <Users className="w-[18px] h-[18px]" strokeWidth={1.5} />,
+  listChecks: <ListChecks className="w-[18px] h-[18px]" strokeWidth={1.65} />,
   gift: <Gift className="w-[18px] h-[18px]" strokeWidth={1.5} />,
+  badgeCheck: <BadgeCheck className="w-[18px] h-[18px]" strokeWidth={1.65} />,
   clock: <Clock className="w-[18px] h-[18px]" strokeWidth={1.5} />,
   trash: <Trash2 className="w-4 h-4" strokeWidth={1.8} />,
   settings: <Settings className="w-[18px] h-[18px]" strokeWidth={1.5} />,
   bolt: <Bolt className="w-5 h-5 text-[#5ac8fa]" fill="currentColor" strokeWidth={1.2} />,
+  sparkles: <Sparkles className="w-[18px] h-[18px]" strokeWidth={1.7} />,
   close: <X className="w-4 h-4" strokeWidth={2} />,
   plus: <Plus className="w-4 h-4" strokeWidth={2} />,
   star: <Star className="w-3.5 h-3.5" fill="currentColor" strokeWidth={0} />,
@@ -1235,25 +1241,37 @@ function App() {
                     className="input-field px-4 py-3.5 text-[#1d1d1f] placeholder-gray-600 w-full text-[15px]" />
                 </label>
                 <div className="action-grid grid grid-cols-1 sm:grid-cols-4 gap-3">
-                  <button onClick={loadCandidates} disabled={isLoading} className={`btn-ghost action-btn action-step px-4 py-3.5 text-[#1d1d1f] font-bold whitespace-nowrap ${hasCandidates ? 'action-step-complete' : 'action-step-current'} ${isLoading ? 'action-step-active' : ''}`}>
+                  <button onClick={loadCandidates} disabled={isLoading} className={`btn-ghost action-btn action-step action-step-candidates px-4 py-3.5 text-[#1d1d1f] font-bold ${hasCandidates ? 'action-step-complete' : 'action-step-current'} ${isLoading ? 'action-step-active' : ''}`}>
                     <span className="action-step-dot">1</span>
-                    <span className="action-icon">{I.users}</span>
-                    <span>{isLoading ? '载入中...' : '载入候选'}</span>
+                    <span className="action-icon">{I.listChecks}</span>
+                    <span className="action-copy">
+                      <span className="action-title">{isLoading ? '载入中...' : '载入候选'}</span>
+                      <span className="action-hint">{hasCandidates ? `${displayPool.length} 人可抽` : '可见转发名单'}</span>
+                    </span>
                   </button>
-                  <button onClick={openPrizeSettings} className={`btn-ghost action-btn action-step px-4 py-3.5 text-[#1d1d1f] font-bold whitespace-nowrap ${totalSlots > 0 ? 'action-step-ready' : 'action-step-current'}`}>
+                  <button onClick={openPrizeSettings} className={`btn-ghost action-btn action-step action-step-prize px-4 py-3.5 text-[#1d1d1f] font-bold ${totalSlots > 0 ? 'action-step-ready' : 'action-step-current'}`}>
                     <span className="action-step-dot">2</span>
-                    <span className="action-icon">{I.gift}</span>
-                    <span>填写奖项</span>
+                    <span className="action-icon">{I.badgeCheck}</span>
+                    <span className="action-copy">
+                      <span className="action-title">填写奖项</span>
+                      <span className="action-hint">{totalSlots > 0 ? `${totalSlots} 个名额` : '一等奖默认 1 人'}</span>
+                    </span>
                   </button>
-                  <button onClick={drawAll} disabled={isDrawing || isLoading} className={`btn-primary action-btn action-step action-btn-primary px-4 py-3.5 font-bold relative z-10 breathe ${isDrawing ? 'action-step-active' : ''} ${hasResults ? 'action-step-complete' : 'action-step-current'}`}>
+                  <button onClick={drawAll} disabled={isDrawing || isLoading} className={`btn-primary action-btn action-step action-step-draw action-btn-primary px-4 py-3.5 font-bold relative z-10 breathe ${isDrawing ? 'action-step-active' : ''} ${hasResults ? 'action-step-complete' : 'action-step-current'}`}>
                     <span className="action-step-dot">3</span>
-                    <span className="action-icon action-icon-primary">{I.bolt}</span>
-                    <span>{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '一键开奖'}</span>
+                    <span className="action-icon action-icon-primary">{I.sparkles}</span>
+                    <span className="action-copy">
+                      <span className="action-title">{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '一键开奖'}</span>
+                      <span className="action-hint">公开种子洗牌</span>
+                    </span>
                   </button>
-                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !hasResults} className={`btn-ghost action-btn action-step px-4 py-3.5 text-[#1d1d1f] font-bold whitespace-nowrap ${hasResults ? 'action-step-current' : 'action-step-muted'}`}>
+                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !hasResults} className={`btn-ghost action-btn action-step action-step-record px-4 py-3.5 text-[#1d1d1f] font-bold ${hasResults ? 'action-step-current' : 'action-step-muted'}`}>
                     <span className="action-step-dot">4</span>
                     <span className="action-icon">{I.image}</span>
-                    <span>{isCapturing ? '生成中' : '记录图'}</span>
+                    <span className="action-copy">
+                      <span className="action-title">{isCapturing ? '生成中' : '记录图'}</span>
+                      <span className="action-hint">{hasResults ? '手机保存版' : '开奖后生成'}</span>
+                    </span>
                   </button>
                 </div>
               </div>
