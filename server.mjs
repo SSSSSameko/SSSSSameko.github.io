@@ -929,7 +929,7 @@ async function refreshWeiboLoginSession({ includeScreenshot = true } = {}) {
     await closeWeiboLoginSession(session.message);
     return await publicWeiboLoginState({ saved });
   } catch (error) {
-    if (error.status && error.status !== 400) {
+    if (error.status && error.status !== 400 && error.status !== 401 && !isCookieAuthError(error)) {
       session.status = 'error';
       session.error = safeError(error).message;
       session.message = session.error;
