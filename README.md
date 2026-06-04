@@ -38,6 +38,7 @@ http://127.0.0.1:4173/
 - `CORS_ORIGINS=https://你的前端域名`
 - `ADMIN_KEY=你的后台密钥`
 - `PLAYWRIGHT_BROWSERS_PATH=/opt/sameko-weibo-lottery/ms-playwright`
+- `MAX_DRAW_SAVE_BODY_BYTES=2097152`
 
 运行数据保存在 `output/`，浏览器登录资料保存在 `output/auth/weibo-login-profile/`。这些目录不提交到 Git。
 

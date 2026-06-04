@@ -70,10 +70,20 @@
     });
   }
 
+  function isWeiboUrlHost(hostname) {
+    const host = String(hostname || '').trim().toLowerCase();
+    return ['weibo.com', 'www.weibo.com', 'm.weibo.cn', 'weibo.cn', 'www.weibo.cn'].includes(host);
+  }
+
   function safeUrl(value) {
     try {
       const url = new URL(String(value || ''));
-      return ['http:', 'https:'].includes(url.protocol) ? url.href : '';
+      if (!['http:', 'https:'].includes(url.protocol) || !isWeiboUrlHost(url.hostname)) return '';
+      url.protocol = 'https:';
+      url.username = '';
+      url.password = '';
+      url.hash = '';
+      return url.href;
     } catch {
       return '';
     }

@@ -46,6 +46,8 @@ const sameStatusRequestGapMs = envNumber('SAME_STATUS_REQUEST_GAP_MS', 3000, 0);
 const weiboLoginSessionTtlMs = envNumber('WEIBO_LOGIN_SESSION_TTL_MS', 8 * 60_000, 60_000);
 const weiboKeepaliveIntervalMs = envNumber('WEIBO_KEEPALIVE_INTERVAL_MS', 2 * 24 * 60 * 60_000, 60_000);
 const weiboKeepaliveStartupDelayMs = envNumber('WEIBO_KEEPALIVE_STARTUP_DELAY_MS', 90_000, 10_000);
+const maxDrawAttemptBodyBytes = envNumber('MAX_DRAW_ATTEMPT_BODY_BYTES', 256 * 1024, 16 * 1024);
+const maxDrawSaveBodyBytes = envNumber('MAX_DRAW_SAVE_BODY_BYTES', 2 * 1024 * 1024, 64 * 1024);
 const enableWeiboKeepalive = !/^(0|false|no)$/i.test(String(process.env.WEIBO_KEEPALIVE_ENABLED ?? '1').trim());
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
@@ -62,6 +64,7 @@ const COOKIE_CHECK_URL = 'https://m.weibo.cn/api/config';
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 const WEIBO_QR_LOGIN_URL = 'https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&url=https%3A%2F%2Fweibo.com%2F';
+const WEIBO_URL_HOSTS = new Set(['weibo.com', 'www.weibo.com', 'm.weibo.cn', 'weibo.cn', 'www.weibo.cn']);
 const jobs = new Map();
 const jobQueue = [];
 const rateLimitBuckets = new Map();
@@ -303,6 +306,16 @@ function bidToMid(value) {
   return mid.replace(/^0+/, '') || bid;
 }
 
+function isWeiboUrlHost(hostname) {
+  const host = String(hostname || '').trim().toLowerCase();
+  return WEIBO_URL_HOSTS.has(host);
+}
+
+function canonicalStatusUrl(statusId) {
+  const id = String(statusId || '').trim();
+  return id ? `https://weibo.com/detail/${id}` : '';
+}
+
 function extractStatusId(input) {
   const text = String(input || '').trim();
   if (!text) return '';
@@ -311,6 +324,9 @@ function extractStatusId(input) {
 
   try {
     const url = new URL(text);
+    if (!isWeiboUrlHost(url.hostname)) return '';
+    const queryCandidate = url.searchParams.get('id') || url.searchParams.get('mid') || url.searchParams.get('mblogid');
+    if (queryCandidate && /^[0-9A-Za-z]+$/.test(queryCandidate)) return bidToMid(queryCandidate);
     const pathParts = url.pathname.split('/').filter(Boolean);
     const candidate = [...pathParts].reverse().find((part) => /^[0-9A-Za-z]+$/.test(part) && part.length >= 5);
     return candidate ? bidToMid(candidate) : '';
@@ -321,14 +337,19 @@ function extractStatusId(input) {
 }
 
 function normalizeStatusUrl(input, statusId) {
+  const fallback = canonicalStatusUrl(statusId);
   const text = String(input || '').trim();
-  if (!text) return statusId ? `https://weibo.com/detail/${statusId}` : '';
+  if (!text) return fallback;
   try {
     const url = new URL(text);
+    if (!['http:', 'https:'].includes(url.protocol) || !isWeiboUrlHost(url.hostname)) return fallback;
+    url.protocol = 'https:';
+    url.username = '';
+    url.password = '';
     url.hash = '';
     return url.toString();
   } catch {
-    return text;
+    return fallback;
   }
 }
 
@@ -2117,13 +2138,13 @@ async function handleDrawCount(req, res, url) {
 }
 
 async function handleDrawAttempt(req, res) {
-  const body = await readJsonBody(req, 2 * 1024 * 1024);
+  const body = await readJsonBody(req, maxDrawAttemptBodyBytes);
   const result = await recordDrawAttempt(body);
   return sendJson(res, 200, result);
 }
 
 async function handleSaveDraw(req, res) {
-  const body = await readJsonBody(req, 10 * 1024 * 1024);
+  const body = await readJsonBody(req, maxDrawSaveBodyBytes);
   const rawResultGroups = Array.isArray(body.results) ? body.results : [];
   const bodyWinners = Array.isArray(body.winners) ? body.winners : [];
   const rawWinners = bodyWinners.length ? bodyWinners : rawResultGroups.flatMap((item) => Array.isArray(item?.winners) ? item.winners : []);
