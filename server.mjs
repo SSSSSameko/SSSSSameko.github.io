@@ -140,9 +140,26 @@ function isApiPath(pathname) {
   return pathname === '/api/health' || pathname.startsWith('/api/');
 }
 
-function isAllowedCorsOrigin(origin) {
+function firstHeaderValue(value) {
+  return Array.isArray(value) ? value[0] || '' : String(value || '');
+}
+
+function requestOriginSet(req) {
+  const host = (firstHeaderValue(req.headers['x-forwarded-host']) || firstHeaderValue(req.headers.host)).trim();
+  if (!host) return new Set();
+  const forwardedProto = firstHeaderValue(req.headers['x-forwarded-proto']).split(',')[0].trim();
+  return new Set([
+    forwardedProto ? `${forwardedProto}://${host}` : '',
+    `https://${host}`,
+    `http://${host}`,
+  ].filter(Boolean).map(normalizeConfiguredOrigin).filter(Boolean));
+}
+
+function isAllowedCorsOrigin(req, origin) {
   if (!origin) return true;
-  const normalized = String(origin).replace(/\/+$/, '');
+  const normalized = normalizeConfiguredOrigin(origin);
+  if (!normalized) return false;
+  if (requestOriginSet(req).has(normalized)) return true;
   if (configuredCorsOrigins.includes(normalized)) return true;
   return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(normalized);
 }
@@ -150,7 +167,7 @@ function isAllowedCorsOrigin(origin) {
 function applyCors(req, res, pathname) {
   const origin = req.headers.origin;
   if (!origin || !isApiPath(pathname)) return true;
-  if (!isAllowedCorsOrigin(origin)) return false;
+  if (!isAllowedCorsOrigin(req, origin)) return false;
   res.setHeader('access-control-allow-origin', origin);
   res.setHeader('vary', 'Origin');
   res.setHeader('access-control-allow-methods', 'GET,POST,DELETE,OPTIONS');
