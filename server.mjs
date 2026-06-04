@@ -61,6 +61,7 @@ const MOBILE_MAX_PAGES = 120;
 const COOKIE_CHECK_URL = 'https://m.weibo.cn/api/config';
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+const WEIBO_QR_LOGIN_URL = 'https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&url=https%3A%2F%2Fweibo.com%2F';
 const jobs = new Map();
 const jobQueue = [];
 const rateLimitBuckets = new Map();
@@ -875,6 +876,102 @@ async function launchWeiboBrowserContext() {
   });
 }
 
+async function hasVisibleWeiboQrCode(page) {
+  return await page.evaluate(() => {
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width >= 100 && rect.height >= 100 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    return Array.from(document.querySelectorAll('img,canvas')).some((element) => {
+      if (!visible(element)) return false;
+      const src = element.getAttribute('src') || '';
+      return element.tagName === 'CANVAS' || src.includes('qr.weibo.cn') || src.includes('/qrcode/') || src.includes('/inf/gen');
+    });
+  });
+}
+
+async function clickWeiboQrLoginTab(page) {
+  return await page.evaluate(() => {
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width > 1 && rect.height > 1 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const scanLoginText = /\u626b\u7801\u767b\u5f55/;
+    const targets = Array.from(document.querySelectorAll('button,a,div,span'))
+      .filter((element) => visible(element) && scanLoginText.test((element.innerText || element.textContent || '').trim()))
+      .sort((left, right) => {
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return leftRect.width * leftRect.height - rightRect.width * rightRect.height;
+      });
+    const target = targets[0];
+    if (!target) return false;
+    target.click();
+    return true;
+  });
+}
+
+async function waitForWeiboQrCode(page, timeoutMs = 10_000) {
+  const endAt = Date.now() + timeoutMs;
+  while (Date.now() < endAt) {
+    if (await hasVisibleWeiboQrCode(page)) return true;
+    await page.waitForTimeout(400);
+  }
+  return await hasVisibleWeiboQrCode(page);
+}
+
+async function weiboLoginPageIsWaitingForScan(page) {
+  return await page.evaluate(() => {
+    const text = document.body?.innerText || '';
+    return /\u626b\u63cf\u4e8c\u7ef4\u7801\u767b\u5f55|\u6253\u5f00\u5fae\u535a\u624b\u673aAPP|\u5df2\u626b\u63cf|\u8bf7\u5728\u624b\u673a|\u786e\u8ba4/.test(text);
+  });
+}
+
+async function openWeiboQrLoginPage(page) {
+  const currentUrl = page.url();
+  if (!currentUrl.includes('passport.weibo.com/sso/signin')) {
+    await page.goto(WEIBO_QR_LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+  }
+  await page.waitForTimeout(1200);
+  if (await hasVisibleWeiboQrCode(page)) return true;
+  if (await weiboLoginPageIsWaitingForScan(page)) return false;
+
+  const clicked = await clickWeiboQrLoginTab(page);
+  if (clicked) await page.waitForTimeout(1200);
+  return await waitForWeiboQrCode(page, clicked ? 10_000 : 3000);
+}
+
+async function takeWeiboLoginScreenshot(page) {
+  const clip = await page.evaluate(() => {
+    const visible = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return rect.width >= 100 && rect.height >= 100 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    const qr = Array.from(document.querySelectorAll('img,canvas')).find((element) => {
+      if (!visible(element)) return false;
+      const src = element.getAttribute('src') || '';
+      return element.tagName === 'CANVAS' || src.includes('qr.weibo.cn') || src.includes('/qrcode/') || src.includes('/inf/gen');
+    });
+    if (!qr) return null;
+    const rect = qr.getBoundingClientRect();
+    const x = Math.max(0, Math.floor(rect.x - 110));
+    const y = Math.max(0, Math.floor(rect.y - 125));
+    const width = Math.min(window.innerWidth - x, Math.ceil(rect.width + 220));
+    const height = Math.min(window.innerHeight - y, Math.ceil(rect.height + 220));
+    return {
+      x,
+      y,
+      width: Math.max(1, width),
+      height: Math.max(1, height),
+    };
+  });
+  if (clip) return await page.screenshot({ type: 'png', clip });
+  return await page.screenshot({ type: 'png', fullPage: false });
+}
+
 async function cookieHeaderFromBrowserContext(context) {
   const cookies = await context.cookies(['https://weibo.com', 'https://m.weibo.cn', 'https://weibo.cn']);
   const byName = new Map();
@@ -964,8 +1061,8 @@ async function refreshWeiboLoginSession({ includeScreenshot = true } = {}) {
   let screenshot = '';
   if (includeScreenshot && session.page) {
     try {
-      await session.page.waitForTimeout(350);
-      const image = await session.page.screenshot({ type: 'png', fullPage: false });
+      await openWeiboQrLoginPage(session.page);
+      const image = await takeWeiboLoginScreenshot(session.page);
       screenshot = `data:image/png;base64,${Buffer.from(image).toString('base64')}`;
     } catch (error) {
       session.message = `二维码截图生成失败：${safeError(error).message}`;
@@ -998,8 +1095,7 @@ async function startWeiboLoginSession() {
   weiboLoginSession.timer.unref?.();
 
   try {
-    await page.goto('https://weibo.com/login.php', { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    await page.waitForTimeout(1500);
+    await openWeiboQrLoginPage(page);
     weiboLoginSession.status = 'waiting_scan';
     weiboLoginSession.message = '请用微博 App 扫码登录。';
     await writeWeiboLoginState({
