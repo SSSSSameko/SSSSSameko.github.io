@@ -1,0 +1,378 @@
+.brand-button,
+.navbar-actions button,
+.stack-navbar button,
+.root-tabbar button,
+.primary-button,
+.page-primary,
+.page-secondary,
+.list-row,
+.compact-records button,
+.people-list button,
+.history-list button,
+.app-summary,
+.editable-list button,
+.settings-navigation,
+.detail-group button,
+.winner-section button,
+.guide-list button,
+.page-action-row button,
+.inline-status,
+.show-more-button,
+.result-buttons button,
+.switch,
+.stepper button {
+  transition:
+    transform 140ms var(--ease-out),
+    opacity 140ms var(--ease-out),
+    background-color 180ms var(--ease-out),
+    color 180ms var(--ease-out),
+    box-shadow 180ms var(--ease-out);
+}
+
+.root-tabbar .tab-highlight {
+  transition: transform 380ms var(--ease-drawer);
+}
+
+.switch::after {
+  transition: transform 260ms var(--ease-drawer);
+}
+
+.root-navbar,
+.root-tabbar {
+  transition:
+    transform 420ms var(--ease-drawer),
+    opacity 240ms var(--ease-out);
+}
+
+.root-pages {
+  transition:
+    transform 420ms var(--ease-drawer),
+    opacity 260ms var(--ease-out);
+}
+
+.app-shell.stack-open .root-navbar {
+  opacity: 0.72;
+  transform: translateX(-12%);
+}
+
+.app-shell.stack-open .root-tabbar {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(calc(100% + var(--safe-bottom) + 12px));
+}
+
+.app-shell.stack-open .root-pages {
+  opacity: 0.84;
+  transform: translateX(-16%);
+}
+
+.stack-page {
+  transition:
+    transform 460ms var(--ease-drawer),
+    box-shadow 460ms var(--ease-out);
+}
+
+.stack-page.is-entered {
+  transform: translateX(0);
+}
+
+.stack-page.is-under {
+  pointer-events: none;
+  transform: translateX(-16%);
+}
+
+.stack-page.is-popping {
+  transform: translateX(100%);
+}
+
+.alert-layer {
+  transition:
+    opacity 220ms var(--ease-out),
+    visibility 220ms step-end;
+}
+
+.alert-layer.is-visible {
+  transition:
+    opacity 220ms var(--ease-out),
+    visibility 0ms step-start;
+}
+
+.alert-dialog {
+  transition:
+    transform 360ms var(--ease-drawer),
+    opacity 220ms var(--ease-out);
+}
+
+.alert-layer.is-visible .alert-dialog {
+  transform: translateY(0) scale(1);
+}
+
+.toast {
+  transition:
+    transform 340ms var(--ease-drawer),
+    opacity 220ms var(--ease-out),
+    visibility 340ms step-end;
+}
+
+.toast.is-visible {
+  transition:
+    transform 340ms var(--ease-drawer),
+    opacity 220ms var(--ease-out),
+    visibility 0ms step-start;
+}
+
+.app-shell[data-draw-state="running"] .draw-ready,
+.app-shell[data-draw-state="finished"] .draw-ready,
+.app-shell[data-draw-state="ready"] .draw-running,
+.app-shell[data-draw-state="finished"] .draw-running,
+.app-shell[data-draw-state="ready"] .draw-finished,
+.app-shell[data-draw-state="running"] .draw-finished {
+  display: none;
+}
+
+.app-shell[data-draw-state="running"] .draw-running,
+.app-shell[data-draw-state="finished"] .draw-finished {
+  display: flex;
+}
+
+.candidate-pass {
+  transition:
+    transform 460ms var(--ease-drawer),
+    opacity 240ms var(--ease-out),
+    box-shadow 260ms var(--ease-out);
+}
+
+.app-shell[data-draw-state="running"] .lens-center {
+  opacity: 0.88;
+  transform: scale(0.94);
+}
+
+.app-shell[data-draw-state="finished"] .lens-center {
+  opacity: 0;
+  transform: translateY(-12px) scale(0.92);
+}
+
+.lens-center {
+  transition:
+    transform 420ms var(--ease-drawer),
+    opacity 240ms var(--ease-out);
+}
+
+.winner-core {
+  transition:
+    transform 460ms var(--ease-drawer),
+    opacity 260ms var(--ease-out);
+}
+
+.app-shell[data-draw-state="finished"] .winner-core {
+  opacity: 1;
+  transform: translateY(-68px) scale(1);
+}
+
+.app-shell[data-draw-state="running"] .candidate-deck .pass-main {
+  opacity: 0.94;
+  box-shadow:
+    0 28px 48px rgba(46, 50, 69, 0.19),
+    inset 0 1px 0 #fff;
+}
+
+.app-shell[data-draw-state="running"] [data-deck-card] {
+  will-change: transform, opacity;
+}
+
+.app-shell[data-draw-state="running"] .scene-glint {
+  animation: draw-glint-orbit 1.35s linear infinite;
+}
+
+.app-shell[data-draw-state="running"] .scene-geometry {
+  animation: draw-scene-breathe 1.8s var(--ease-in-out) infinite alternate;
+}
+
+@keyframes draw-glint-orbit {
+  0% {
+    opacity: 0.48;
+    transform: translate3d(-4px, 4px, 0) rotate(0deg) scale(0.82);
+  }
+  48% {
+    opacity: 1;
+    transform: translate3d(230px, 128px, 0) rotate(170deg) scale(1.08);
+  }
+  100% {
+    opacity: 0.52;
+    transform: translate3d(6px, 228px, 0) rotate(360deg) scale(0.88);
+  }
+}
+
+@keyframes draw-scene-breathe {
+  from {
+    opacity: 0.72;
+    transform: scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1.015);
+  }
+}
+
+.app-shell[data-draw-state="finished"] .candidate-deck .pass-main {
+  opacity: 0;
+  transform: translate3d(-22px, -12px, -8px) rotate(-3deg) scale(0.96);
+}
+
+.app-shell[data-draw-state="finished"] .candidate-deck .pass-under {
+  opacity: 0.24;
+}
+
+.app-shell[data-draw-state="finished"] .candidate-deck .winner-core {
+  opacity: 1;
+  transform: translate3d(0, -60px, 0) rotate(0deg) scale(1);
+}
+
+.scene-caption {
+  transition:
+    opacity 220ms var(--ease-out),
+    transform 300ms var(--ease-drawer);
+}
+
+.app-shell[data-draw-state="finished"] .scene-caption {
+  opacity: 0.2;
+  transform: translateY(8px);
+}
+
+.app-shell[data-draw-state="finished"] .result-rail {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.result-rail {
+  transition:
+    transform 480ms var(--ease-drawer),
+    opacity 260ms var(--ease-out);
+}
+
+.winner-list button {
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    transform 360ms var(--ease-drawer),
+    opacity 240ms var(--ease-out);
+}
+
+.app-shell[data-draw-state="finished"] .winner-list button {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(1) {
+  transition-delay: 120ms;
+}
+
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(2) {
+  transition-delay: 165ms;
+}
+
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(3) {
+  transition-delay: 210ms;
+}
+
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(4) {
+  transition-delay: 255ms;
+}
+
+.progress-indicator {
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+button:active,
+.brand-button:active,
+.app-summary:active,
+.list-row:active {
+  opacity: 0.72;
+  transform: scale(0.97);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .navbar-actions button:hover,
+  .stack-navbar button:hover,
+  .root-tabbar button:hover,
+  .result-buttons button:hover {
+    background: rgba(10, 122, 255, 0.08);
+  }
+
+  .list-row:hover,
+  .compact-records > button:hover,
+  .people-list > button:hover,
+  .history-list button:hover,
+  .editable-list > button:hover,
+  .settings-navigation:hover,
+  .detail-group > button:hover,
+  .winner-section > button:hover,
+  .guide-list > button:hover {
+    background: rgba(118, 118, 128, 0.07);
+  }
+
+  .primary-button:hover,
+  .page-primary:hover {
+    background: var(--system-blue-pressed);
+    box-shadow: 0 10px 28px rgba(10, 122, 255, 0.26);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-delay: 0ms !important;
+    transition-duration: 1ms !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass,
+  .alert-dialog,
+  .toast {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+
+  .glass,
+  .alert-dialog {
+    background: #f9f9fb;
+  }
+
+  .toast {
+    background: #26262d;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --label-secondary: #48484f;
+    --label-tertiary: #66666f;
+    --separator: rgba(22, 22, 28, 0.22);
+  }
+
+  .glass,
+  .grouped-list,
+  .compact-records,
+  .people-list,
+  .history-list,
+  .editable-list,
+  .settings-group,
+  .detail-group,
+  .winner-section,
+  .code-group,
+  .guide-list {
+    border-color: rgba(20, 20, 28, 0.2);
+  }
+}

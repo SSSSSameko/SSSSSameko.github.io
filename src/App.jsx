@@ -1,28 +1,32 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import confetti from 'canvas-confetti';
 import {
-  Bolt,
+  AlertCircle,
   BadgeCheck,
+  BookOpen,
+  ChevronRight,
+  CheckCircle2,
+  CircleHelp,
   Clock,
-  Copy,
-  Crown,
   Download,
+  Ellipsis,
+  FileText,
   Gift,
-  Image,
+  Info,
+  Link2,
   ListChecks,
+  Minus,
   Plus,
-  Save,
+  RefreshCw,
   Settings,
   ShieldCheck,
   Sparkles,
-  Star,
+  Shuffle,
   Trash2,
-  Trophy,
+  Upload,
   Users,
   X,
 } from 'lucide-react';
 import {
-  SOURCE_LABELS,
   buildFilterSummary,
   cleanApiBase,
   digestCandidates,
@@ -35,6 +39,23 @@ import {
   toCsv,
   writeStoredValue,
 } from './lib/appCore.js';
+import CandidateAvatar from './components/CandidateAvatar.jsx';
+import DrawResultSheet from './components/DrawResultSheet.jsx';
+import {
+  cancelDrawDeckMotion,
+  settleDrawDeckMotion,
+  startDrawDeckMotion,
+} from './lib/drawDeckMotion.js';
+import {
+  buildFairnessSummary,
+  drawCountCopy,
+  normalizeDrawReceipt,
+  readDrawHistory,
+  upsertDrawReceipt,
+  winnerIdsForStatus,
+  writeDrawHistory,
+} from './lib/drawReceipts.js';
+import { createResultPoster } from './lib/resultPoster.js';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const publicAsset = (name) => `${import.meta.env.BASE_URL}${name}`;
@@ -99,348 +120,8 @@ function winnerPostText(results, statusUrl) {
     .filter((item) => item.winners.length)
     .map((item) => `${item.prize.name}：${winnerMentionText(item.winners)}`);
   const linkLine = statusUrl ? `\n原微博：${statusUrl}` : '';
-  return `开奖啦！本次微博转发抽奖结果：\n${lines.join('\n')}${linkLine}\n恭喜以上用户，请留意私信～`;
+  return `本次微博转发抽奖结果如下：\n${lines.join('\n')}${linkLine}\n请中奖用户留意私信。`;
 }
-function formatDateTime(value = new Date()) {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) return '';
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}:${String(date.getSeconds()).padStart(2, '0')}`;
-}
-function drawRoundedRect(ctx, x, y, width, height, radius, fill, stroke = '') {
-  ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + width, y, x + width, y + height, radius);
-  ctx.arcTo(x + width, y + height, x, y + height, radius);
-  ctx.arcTo(x, y + height, x, y, radius);
-  ctx.arcTo(x, y, x + width, y, radius);
-  ctx.closePath();
-  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
-  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1; ctx.stroke(); }
-}
-function loadCanvasImage(src) {
-  return new Promise((resolve) => {
-    const image = new window.Image();
-    image.decoding = 'async';
-    image.onload = () => resolve(image);
-    image.onerror = () => resolve(null);
-    image.src = src;
-  });
-}
-function drawRoundedImage(ctx, image, x, y, width, height, radius) {
-  const imageW = image.naturalWidth || image.width;
-  const imageH = image.naturalHeight || image.height;
-  const scale = Math.max(width / imageW, height / imageH);
-  const sourceW = width / scale;
-  const sourceH = height / scale;
-  const sourceX = (imageW - sourceW) / 2;
-  const sourceY = (imageH - sourceH) / 2;
-  ctx.save();
-  ctx.beginPath();
-  ctx.moveTo(x + radius, y);
-  ctx.arcTo(x + width, y, x + width, y + height, radius);
-  ctx.arcTo(x + width, y + height, x, y + height, radius);
-  ctx.arcTo(x, y + height, x, y, radius);
-  ctx.arcTo(x, y, x + width, y, radius);
-  ctx.closePath();
-  ctx.clip();
-  ctx.drawImage(image, sourceX, sourceY, sourceW, sourceH, x, y, width, height);
-  ctx.restore();
-}
-function wrapCanvasText(ctx, text, maxWidth) {
-  const raw = String(text || '');
-  const lines = [];
-  for (const paragraph of raw.split('\n')) {
-    let line = '';
-    for (const char of paragraph) {
-      const next = line + char;
-      if (ctx.measureText(next).width > maxWidth && line) {
-        lines.push(line);
-        line = char;
-      } else {
-        line = next;
-      }
-    }
-    lines.push(line);
-  }
-  return lines.filter((line) => line !== '');
-}
-function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, color, font) {
-  ctx.fillStyle = color;
-  ctx.font = font;
-  const lines = wrapCanvasText(ctx, text, maxWidth);
-  lines.forEach((line, index) => ctx.fillText(line, x, y + index * lineHeight));
-  return lines.length * lineHeight;
-}
-async function createRecordImage(payload) {
-  const width = 720;
-  const dpr = Math.min(2, window.devicePixelRatio || 2);
-  const pad = 36;
-  const innerW = width - pad * 2;
-  const results = Array.isArray(payload.results) ? payload.results : [];
-  const avatarImage = await loadCanvasImage(publicAsset('avatar.jpg'));
-  const linkText = payload.statusUrl || payload.statusId || '未记录微博链接';
-  const prizeLayouts = results.map((item) => {
-    const names = item.winners.map((winner) => safeMentionName(winner.screenName || winner.uid) || '未命名用户');
-    const rows = Math.max(1, names.reduce((sum, name) => sum + Math.max(1, Math.ceil(String(name).length / 15)), 0));
-    return { item, names, height: 96 + rows * 38 };
-  });
-  const prizeHeight = prizeLayouts.reduce((sum, item) => sum + item.height + 18, 0);
-  const auditRows = [
-    ['随机算法', '随机种子 + SHA-256 洗牌'],
-    ['随机种子', payload.seed || '未记录'],
-    ['名单摘要', payload.candidateDigest || '未记录'],
-    ['数据来源', friendlyProviderText(payload.providerText) || '可见转发接口'],
-    ['接口总转发', payload.totalNumber === null || payload.totalNumber === undefined ? '未返回' : `${payload.totalNumber} 条`],
-    ['筛选规则', payload.filterSummary],
-    ['奖项设置', payload.prizeSummary],
-  ];
-  const linkBoxEstimate = Math.max(72, 50 + Math.ceil(String(linkText).length / 30) * 22);
-  const auditHeight = 96 + auditRows.reduce((sum, [, value]) => sum + Math.max(32, Math.ceil(String(value).length / 26) * 23 + 8), 0);
-  const height = Math.max(1280, 620 + linkBoxEstimate + prizeHeight + auditHeight);
-  const canvas = document.createElement('canvas');
-  canvas.width = Math.round(width * dpr);
-  canvas.height = Math.round(height * dpr);
-  canvas.style.width = `${width}px`;
-  canvas.style.height = `${height}px`;
-  const ctx = canvas.getContext('2d');
-  ctx.scale(dpr, dpr);
-  ctx.textBaseline = 'top';
-
-  const bg = ctx.createLinearGradient(0, 0, width, height);
-  bg.addColorStop(0, '#ffffff');
-  bg.addColorStop(0.42, '#f8fbff');
-  bg.addColorStop(1, '#f1f6fb');
-  ctx.fillStyle = bg;
-  ctx.fillRect(0, 0, width, height);
-
-  const topWash = ctx.createLinearGradient(0, 0, width, height * 0.48);
-  topWash.addColorStop(0, 'rgba(255,220,231,0.36)');
-  topWash.addColorStop(0.36, 'rgba(255,246,232,0.24)');
-  topWash.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = topWash;
-  ctx.fillRect(0, 0, width, height);
-  const sideWash = ctx.createLinearGradient(width, 0, 0, height);
-  sideWash.addColorStop(0, 'rgba(126,184,255,0.13)');
-  sideWash.addColorStop(0.54, 'rgba(84,198,168,0.055)');
-  sideWash.addColorStop(1, 'rgba(255,255,255,0)');
-  ctx.fillStyle = sideWash;
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.strokeStyle = 'rgba(82,116,160,0.026)';
-  ctx.lineWidth = 1;
-  for (let x = 42; x < width; x += 42) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, height); ctx.stroke(); }
-  for (let gy = 42; gy < height; gy += 42) { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(width, gy); ctx.stroke(); }
-
-  function softCard(x, cardY, cardW, cardH, radius = 26, fill = 'rgba(255,255,255,0.82)', stroke = 'rgba(60,60,67,0.12)') {
-    ctx.shadowColor = 'rgba(52,87,132,0.12)';
-    ctx.shadowBlur = 30;
-    ctx.shadowOffsetY = 12;
-    drawRoundedRect(ctx, x, cardY, cardW, cardH, radius, fill, stroke);
-    ctx.shadowColor = 'transparent';
-    ctx.shadowBlur = 0;
-    ctx.shadowOffsetY = 0;
-  }
-
-  let y = 28;
-  ctx.shadowColor = 'rgba(58,84,120,0.13)';
-  ctx.shadowBlur = 32;
-  ctx.shadowOffsetY = 14;
-  drawRoundedRect(ctx, pad, y, innerW, 102, 30, 'rgba(255,255,255,0.86)', 'rgba(60,60,67,0.12)');
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-
-  const badgeGradient = ctx.createLinearGradient(pad + 20, y + 20, pad + 78, y + 78);
-  badgeGradient.addColorStop(0, '#fff5e8');
-  badgeGradient.addColorStop(0.5, '#e4f4ff');
-  badgeGradient.addColorStop(1, '#b8ddff');
-  const logoX = pad + 18;
-  const logoY = y + 18;
-  const logoSize = 66;
-  ctx.shadowColor = 'rgba(86,142,206,0.14)';
-  ctx.shadowBlur = 14;
-  ctx.shadowOffsetY = 6;
-  drawRoundedRect(ctx, logoX, logoY, logoSize, logoSize, 22, badgeGradient, 'rgba(104,174,247,0.14)');
-  ctx.shadowColor = 'transparent';
-  ctx.shadowBlur = 0;
-  ctx.shadowOffsetY = 0;
-  if (avatarImage) {
-    drawRoundedImage(ctx, avatarImage, logoX + 4, logoY + 4, logoSize - 8, logoSize - 8, 19);
-    drawRoundedRect(ctx, logoX + 4, logoY + 4, logoSize - 8, logoSize - 8, 19, '', 'rgba(255,255,255,0.60)');
-  } else {
-    ctx.fillStyle = '#4f9fff';
-    ctx.font = '30px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillText('S', logoX + 24, logoY + 17);
-  }
-
-  ctx.font = '29px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#101014';
-  ctx.fillText('微博转发抽奖助手', pad + 100, y + 28);
-  ctx.font = '17px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#86868b';
-  ctx.fillText('by.sameko · 手机保存版', pad + 100, y + 66);
-  ctx.textAlign = 'right';
-  drawRoundedRect(ctx, width - pad - 178, y + 34, 146, 40, 17, 'rgba(104,174,247,0.08)', 'rgba(104,174,247,0.14)');
-  ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#4f9fff';
-  ctx.fillText(formatDateTime(payload.drawnAt).slice(0, 10), width - pad - 48, y + 45);
-  ctx.textAlign = 'left';
-  y += 132;
-
-  ctx.font = '40px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  const titleGradient = ctx.createLinearGradient(pad, y, width - pad, y);
-  titleGradient.addColorStop(0, '#111827');
-  titleGradient.addColorStop(0.58, '#6fb6ff');
-  titleGradient.addColorStop(1, '#d7b7ff');
-  ctx.fillStyle = titleGradient;
-  ctx.fillText('微博转发抽奖结果', pad, y);
-  y += 52;
-  ctx.font = '17px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  const linkLines = wrapCanvasText(ctx, linkText, innerW - 48);
-  const linkBoxH = Math.max(76, 46 + linkLines.length * 23);
-  softCard(pad, y, innerW, linkBoxH, 24, 'rgba(255,255,255,0.70)', 'rgba(60,60,67,0.10)');
-  ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#86868b';
-  ctx.fillText('微博来源', pad + 22, y + 16);
-  ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#3a3a40';
-  linkLines.forEach((line, index) => ctx.fillText(line, pad + 22, y + 39 + index * 23));
-  y += linkBoxH + 16;
-
-  const stats = [
-    ['候选记录', payload.candidateCount, '#68aef7'],
-    ['可抽人数', payload.eligibleCount, '#76b7ff'],
-    ['中奖人数', payload.winnerCount, '#54c6a8'],
-    ['本链接已抽', payload.drawCount, '#8f93f5'],
-  ];
-  const statGap = 12;
-  const statW = (innerW - statGap) / 2;
-  stats.forEach(([label, value, color], index) => {
-    const sx = pad + (index % 2) * (statW + statGap);
-    const sy = y + Math.floor(index / 2) * 82;
-    const statFill = ctx.createLinearGradient(sx, sy, sx + statW, sy + 74);
-    statFill.addColorStop(0, 'rgba(255,255,255,0.92)');
-    statFill.addColorStop(1, index === 2 ? 'rgba(235,255,242,0.78)' : 'rgba(239,247,255,0.78)');
-    drawRoundedRect(ctx, sx, sy, statW, 74, 22, statFill, 'rgba(60,60,67,0.11)');
-    ctx.font = '29px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = color;
-    ctx.fillText(String(value ?? 0), sx + 20, sy + 11);
-    ctx.font = '15px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = '#86868b';
-    ctx.fillText(label, sx + 20, sy + 48);
-  });
-  y += 174;
-
-  drawRoundedRect(ctx, pad, y, innerW, 60, 22, 'rgba(255,255,255,0.80)', 'rgba(104,174,247,0.14)');
-  ctx.font = '24px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#1d1d1f';
-  ctx.fillText('中奖名单', pad + 22, y + 17);
-  ctx.textAlign = 'right';
-  drawRoundedRect(ctx, width - pad - 104, y + 15, 82, 30, 15, 'rgba(104,174,247,0.08)', 'rgba(104,174,247,0.12)');
-  ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#4f9fff';
-  ctx.fillText(`${payload.winnerCount || 0} 人`, width - pad - 44, y + 21);
-  ctx.textAlign = 'left';
-  y += 74;
-
-  prizeLayouts.forEach(({ item, names, height: cardH }, prizeIndex) => {
-    softCard(pad, y, innerW, cardH, 26, 'rgba(255,255,255,0.84)', 'rgba(60,60,67,0.10)');
-    ctx.fillStyle = item.prize.color || '#4f9fff';
-    ctx.beginPath();
-    ctx.arc(pad + 30, y + 32, 7, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.font = '24px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = '#101014';
-    ctx.fillText(item.prize.name, pad + 48, y + 18);
-    drawRoundedRect(ctx, width - pad - 92, y + 18, 72, 30, 15, 'rgba(104,174,247,0.08)', 'rgba(104,174,247,0.12)');
-    ctx.textAlign = 'right';
-    ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = '#4f9fff';
-    ctx.fillText(`${item.winners.length} 人`, width - pad - 36, y + 24);
-    ctx.textAlign = 'left';
-    ctx.strokeStyle = 'rgba(60,60,67,0.08)';
-    ctx.beginPath();
-    ctx.moveTo(pad + 22, y + 64);
-    ctx.lineTo(width - pad - 22, y + 64);
-    ctx.stroke();
-    let wy = y + 76;
-    names.forEach((name, nameIndex) => {
-      const text = `@${name}`;
-      ctx.font = '18px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-      const lines = wrapCanvasText(ctx, text, innerW - 92);
-      const rowH = Math.max(36, lines.length * 23 + 11);
-      drawRoundedRect(ctx, pad + 22, wy, innerW - 44, rowH, 18, prizeIndex === 0 ? 'rgba(104,174,247,0.060)' : 'rgba(246,248,252,0.78)', 'rgba(60,60,67,0.08)');
-      drawRoundedRect(ctx, pad + 34, wy + 9, 24, 20, 10, 'rgba(104,174,247,0.12)', '');
-      ctx.font = '12px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-      ctx.fillStyle = '#4f9fff';
-      ctx.textAlign = 'center';
-      ctx.fillText(String(nameIndex + 1), pad + 46, wy + 12);
-      ctx.textAlign = 'left';
-      lines.forEach((line, lineIndex) => {
-        ctx.font = '17px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-        ctx.fillStyle = '#1d1d1f';
-        ctx.fillText(line, pad + 70, wy + 8 + lineIndex * 23);
-      });
-      wy += rowH + 8;
-    });
-    y += cardH + 18;
-  });
-
-  y += 4;
-  ctx.font = '15px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  const auditRowLayouts = auditRows.map(([label, value]) => {
-    const valueLines = wrapCanvasText(ctx, String(value), innerW - 132);
-    return { label, valueLines, height: Math.max(30, valueLines.length * 22 + 8) };
-  });
-  const actualAuditHeight = 78 + auditRowLayouts.reduce((sum, row) => sum + row.height, 0) + 22;
-  softCard(pad, y, innerW, actualAuditHeight, 28, 'rgba(255,255,255,0.80)', 'rgba(60,60,67,0.12)');
-  ctx.font = '25px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#101014';
-  ctx.fillText('抽奖摘要', pad + 24, y + 24);
-  const auditX = pad + 24;
-  let ay = y + 74;
-  auditRowLayouts.forEach(({ label, valueLines, height: rowH }) => {
-    ctx.font = '15px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-    ctx.fillStyle = '#86868b';
-    ctx.fillText(label, auditX, ay);
-    ctx.fillStyle = '#3a3a40';
-    valueLines.forEach((line, lineIndex) => ctx.fillText(line, auditX + 104, ay + lineIndex * 22));
-    ay += rowH;
-  });
-  y += actualAuditHeight + 28;
-
-  ctx.strokeStyle = 'rgba(60,60,67,0.12)';
-  ctx.beginPath();
-  ctx.moveTo(pad, y);
-  ctx.lineTo(width - pad, y);
-  ctx.stroke();
-  y += 20;
-  ctx.font = '14px "Noto Sans SC", "Microsoft YaHei", sans-serif';
-  ctx.fillStyle = '#86868b';
-  drawWrappedText(ctx, '由微博转发抽奖助手生成，记录本次抽奖快照。', pad, y, innerW, 22, '#86868b', '14px "Noto Sans SC", "Microsoft YaHei", sans-serif');
-  y += 54;
-
-  const finalHeight = Math.min(height, Math.max(1280, Math.ceil(y + 22)));
-  if (finalHeight === height) return canvas;
-  const finalCanvas = document.createElement('canvas');
-  finalCanvas.width = Math.round(width * dpr);
-  finalCanvas.height = Math.round(finalHeight * dpr);
-  finalCanvas.style.width = `${width}px`;
-  finalCanvas.style.height = `${finalHeight}px`;
-  finalCanvas.getContext('2d').drawImage(
-    canvas,
-    0,
-    0,
-    finalCanvas.width,
-    finalCanvas.height,
-    0,
-    0,
-    finalCanvas.width,
-    finalCanvas.height,
-  );
-  return finalCanvas;
-}
-
 const COLORS = ['#4f9fff', '#54c6a8', '#e6ad61', '#8f93f5', '#9bd7ff', '#ee8fa1'];
 const PRIZE_NAMES = ['一等奖', '二等奖', '三等奖', '幸运奖'];
 function defaultPrize(index = 0, count = 1) {
@@ -452,178 +133,1199 @@ function defaultPrize(index = 0, count = 1) {
 }
 const DEFAULT_PRIZES = [defaultPrize(0, 1)];
 
-const I = {
-  trophy: <Trophy className="w-5 h-5" strokeWidth={1.5} />,
-  users: <Users className="w-[18px] h-[18px]" strokeWidth={1.5} />,
-  listChecks: <ListChecks className="w-[18px] h-[18px]" strokeWidth={1.65} />,
-  gift: <Gift className="w-[18px] h-[18px]" strokeWidth={1.5} />,
-  badgeCheck: <BadgeCheck className="w-[18px] h-[18px]" strokeWidth={1.65} />,
-  clock: <Clock className="w-[18px] h-[18px]" strokeWidth={1.5} />,
-  trash: <Trash2 className="w-4 h-4" strokeWidth={1.8} />,
-  settings: <Settings className="w-[18px] h-[18px]" strokeWidth={1.5} />,
-  bolt: <Bolt className="w-5 h-5 text-[#9bd7ff]" fill="currentColor" strokeWidth={1.2} />,
-  sparkles: <Sparkles className="w-[18px] h-[18px]" strokeWidth={1.7} />,
-  close: <X className="w-4 h-4" strokeWidth={2} />,
-  plus: <Plus className="w-4 h-4" strokeWidth={2} />,
-  star: <Star className="w-3.5 h-3.5" fill="currentColor" strokeWidth={0} />,
-  crown: <Crown className="w-8 h-8" fill="currentColor" strokeWidth={0} />,
-  shield: <ShieldCheck className="w-4 h-4" strokeWidth={1.7} />,
-  download: <Download className="w-4 h-4" strokeWidth={1.8} />,
-  save: <Save className="w-4 h-4" strokeWidth={1.8} />,
-  copy: <Copy className="w-4 h-4" strokeWidth={1.8} />,
-  image: <Image className="w-4 h-4" strokeWidth={1.8} />,
+const SOURCE_OPTIONS = [
+  { value: 'mobile', label: 'H5 抓取' },
+  { value: 'manual', label: '手动名单' },
+  { value: 'official', label: '官方接口' },
+];
+
+const GUIDE_STEPS = [
+  ['1', '填写微博链接', '粘贴微博正文链接、mid 或 bid。填写自己的 Cookie 时优先使用，未填写才使用服务器 Cookie。'],
+  ['2', '确认候选名单', '可以使用 H5 抓取，也可以切换为手动导入，粘贴名单或读取 CSV / TXT / JSON 文件。'],
+  ['3', '设置奖项', '为每个奖项填写名称和中奖人数，页面会同步统计总名额。'],
+  ['4', '开始抽奖', '使用随机种子和名单摘要完成洗牌，开奖后可保存记录图。'],
+];
+
+const LEGAL_DOCUMENTS = {
+  disclaimer: {
+    title: '免责声明',
+    subtitle: '服务边界与使用责任',
+    sections: [
+      ['数据完整性', '候选名单取决于微博当时可见的数据、接口返回及筛选条件。转发不可见、接口限制、网络异常或账号权限可能导致名单不完整。'],
+      ['抽奖责任', '本工具提供随机抽取与记录能力，不替代活动主办方对规则、公示、奖品履行、税务及其他义务的审查。正式开奖前请核对候选、奖项和筛选规则。'],
+      ['账号安全', '请只使用本人有权使用的微博登录凭据，不要在公共设备上留下 Cookie 或访问密钥。'],
+    ],
+  },
+  privacy: {
+    title: '隐私政策',
+    subtitle: '候选、Cookie 与记录如何处理',
+    sections: [
+      ['处理的数据', '抽奖过程会处理微博链接、公开转发用户信息、筛选条件、奖项设置和开奖结果。候选信息可能包含昵称、UID、头像地址及转发文本。'],
+      ['Cookie', '用户主动填写的 Cookie 仅用于当前抓取请求，不写入服务器 Cookie 池；未填写时才使用服务器可用登录态。'],
+      ['本机与服务器记录', '浏览器可暂存候选、设置和最近记录。服务器可能保存开奖时间、微博标识、候选摘要、随机种子和获奖结果，但不会在页面中公开完整 Cookie。'],
+      ['删除与控制', '可以在“更多”中清理当前页面的候选、结果和手动 Cookie。服务器后台记录由服务管理者按实际运营需要维护。'],
+    ],
+  },
+  terms: {
+    title: '用户协议',
+    subtitle: '使用规则与禁止事项',
+    sections: [
+      ['允许使用', '本工具用于在合法活动中整理公开候选、配置奖项、随机抽取并保存可复查记录。使用者应确保活动规则和奖品安排真实且可履行。'],
+      ['禁止事项', '不得利用本工具绕过平台限制、批量骚扰、非法收集个人信息、盗用账号、操纵结果，或从事违反法律法规及平台规则的行为。'],
+      ['结果确认', '点击开奖前应确认候选名单、排除条件、奖项顺序与名额。随机摘要和记录用于复查，不构成第三方认证。'],
+    ],
+  },
+  copyright: {
+    title: '版权说明',
+    subtitle: '应用、用户与平台内容',
+    sections: [
+      ['应用内容', '除开源组件及另有说明的内容外，本应用的界面、文字与程序代码由相应权利人保留权利。'],
+      ['用户与平台内容', '微博昵称、头像、转发内容及活动素材的权利归原权利人所有，本工具仅在完成用户发起的抽奖流程时展示和处理这些信息。'],
+      ['商标', '“微博”及相关标识属于其权利人。本工具为独立辅助工具，不代表微博官方提供、赞助或背书。'],
+    ],
+  },
+  licenses: {
+    title: '开源许可',
+    subtitle: '第三方软件与许可证',
+    sections: [
+      ['MIT License', 'React、React DOM、Vite 与 Tailwind CSS。'],
+      ['ISC License', 'Lucide。'],
+      ['Apache License 2.0', 'Playwright。各组件仍以其随附许可证和版权声明为准。'],
+    ],
+  },
 };
 
-function StatCard({ value, label, gradient, delay }) {
-  return (
-    <div className={`stat-card px-3 py-3 text-left slide-up min-w-0 ${delay}`}>
-      <div className="stat-label flex items-center gap-2 text-[10px] uppercase text-gray-500 whitespace-nowrap">
-        <span className="h-1.5 w-1.5 rounded-full bg-[#4f9fff]" />
-        {label}
-      </div>
-      <div className={`stat-value mt-2 text-[22px] sm:text-[26px] leading-none font-semibold bg-clip-text text-transparent bg-gradient-to-r ${gradient} truncate`}>{value}</div>
-    </div>
-  );
-}
+const I = {
+  users: <Users className="icon-18" strokeWidth={1.5} />,
+  listChecks: <ListChecks className="icon-18" strokeWidth={1.65} />,
+  book: <BookOpen className="icon-18" strokeWidth={1.7} />,
+  chevron: <ChevronRight className="icon-16" strokeWidth={1.8} />,
+  help: <CircleHelp className="icon-16" strokeWidth={1.8} />,
+  alert: <AlertCircle className="icon-18" strokeWidth={1.9} />,
+  check: <CheckCircle2 className="icon-18" strokeWidth={1.9} />,
+  file: <FileText className="icon-18" strokeWidth={1.7} />,
+  link: <Link2 className="icon-18" strokeWidth={1.8} />,
+  gift: <Gift className="icon-18" strokeWidth={1.5} />,
+  badgeCheck: <BadgeCheck className="icon-18" strokeWidth={1.65} />,
+  clock: <Clock className="icon-18" strokeWidth={1.5} />,
+  refresh: <RefreshCw className="icon-16" strokeWidth={1.8} />,
+  shuffle: <Shuffle className="icon-20" strokeWidth={2} />,
+  trash: <Trash2 className="icon-16" strokeWidth={1.8} />,
+  settings: <Settings className="icon-18" strokeWidth={1.5} />,
+  sparkles: <Sparkles className="icon-18" strokeWidth={1.7} />,
+  close: <X className="icon-16" strokeWidth={2} />,
+  plus: <Plus className="icon-16" strokeWidth={2} />,
+  minus: <Minus className="icon-16" strokeWidth={2} />,
+  upload: <Upload className="icon-16" strokeWidth={1.8} />,
+  shield: <ShieldCheck className="icon-16" strokeWidth={1.7} />,
+  download: <Download className="icon-16" strokeWidth={1.8} />,
+  more: <Ellipsis className="icon-19" strokeWidth={1.8} />,
+  info: <Info className="icon-18" strokeWidth={1.8} />,
+};
 
-function RollingBox({ isRolling, name, names = [], phase }) {
-  const displayName = name || '抽取中';
-  const reelItems = [...names, displayName]
-    .map((item) => String(item || '').trim())
-    .filter(Boolean)
-    .slice(-6);
-  const visibleItems = reelItems.length ? reelItems : [displayName];
-  return (
-    <div className={`stage-shell w-full h-40 sm:h-44 flex items-center justify-center relative overflow-hidden ${isRolling ? 'is-rolling' : ''}`}>
-      <div className="stage-sparkles" aria-hidden="true">
-        <i /><i /><i /><i />
-      </div>
-      <div className="absolute inset-0 shimmer-line pointer-events-none" />
-      <div className="reel-vignette" aria-hidden="true" />
-      <div className="reel-center-line" aria-hidden="true" />
-      {isRolling ? (
-        <div className="reel-window z-10">
-          <div className="reel-card roll-in" key={displayName}>
-            <div className="reel-mask">
-              <div className="reel-track" style={{ '--reel-items': visibleItems.length }}>
-                {visibleItems.map((item, index) => (
-                  <span key={`${item}-${index}`}>{item}</span>
-                ))}
-              </div>
-            </div>
-            <div className="reel-phase">{phase}</div>
-          </div>
-        </div>
-      ) : (
-        <div className="reel-idle z-10">
-          <span className="reel-idle-icon">{I.star}</span>
-          <span>准备开奖</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function EmptyState({ icon, title, detail, compact = false }) {
-  return (
-    <div className={`empty-state ${compact ? 'empty-state-compact' : ''}`}>
-      <div className="empty-state-icon">{icon}</div>
-      <div>
-        <div className="empty-state-title">{title}</div>
-        {detail && <div className="empty-state-detail">{detail}</div>}
-      </div>
-    </div>
-  );
-}
-
-function PrizeCard({ prize, winners, isNew, index }) {
-  return (
-    <div className={`glass overflow-hidden ${isNew ? 'reveal' : ''}`} style={isNew ? { animationDelay: `${index * 0.12}s` } : {}}>
-      <div className="h-0.5" style={{ background: `linear-gradient(90deg, ${prize.color}, transparent)` }} />
-      <div className="p-5">
-        <div className="flex items-center gap-2.5 mb-3">
-          <div className="w-2 h-2 rounded-full pulse-dot" style={{ background: prize.color }} />
-          <span className="text-[#1d1d1f] font-semibold text-sm">{prize.name}</span>
-          <span className="text-[11px] text-gray-500 ml-auto bg-white/5 px-2 py-0.5 rounded-full">{winners.length}人</span>
-        </div>
-        <div className="flex flex-wrap gap-1.5">
-          {winners.map((winner, j) => (
-            <span key={j} className="inline-flex items-center gap-1 hard-chip px-3 py-1.5 text-[13px] text-[#1d1d1f]">
-              <span className="text-[#4f9fff]">{I.star}</span>{winner.screenName || winner.uid || `中奖用户${j + 1}`}
-            </span>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WinnerModal({ results, onClose, onCopyNames, onCopyPost, onCreateShareImage, isCapturing }) {
-  useEffect(() => {
-    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return undefined;
-    const end = Date.now() + 4200;
-    const colors = COLORS;
-    const fire = () => {
-      confetti?.({ particleCount: 4, angle: 60, spread: 60, origin: { x: 0 }, colors, gravity: 0.8 });
-      confetti?.({ particleCount: 4, angle: 120, spread: 60, origin: { x: 1 }, colors, gravity: 0.8 });
-      if (Date.now() < end) requestAnimationFrame(fire);
-    };
-    fire();
-  }, []);
-  const total = results.reduce((sum, item) => sum + item.winners.length, 0);
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
-      <div className="absolute inset-0 bg-[#1d1d1f]/20 backdrop-blur-md" />
-      <div data-share-modal className="relative glass-elevated share-capture p-6 sm:p-8 max-w-lg w-full reveal overflow-y-auto max-h-[90vh]" onClick={(event) => event.stopPropagation()}>
-        <button onClick={onClose} className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/70 flex items-center justify-center text-gray-500 hover:text-[#1d1d1f] hover:bg-white/90 transition">{I.close}</button>
-        <div className="text-center mb-6">
-          <div className="inline-flex items-center justify-center w-16 h-16 rounded-lg bg-gradient-to-br from-[#f1f8ff] to-[#9bd7ff] mb-4 shadow-lg shadow-blue-500/10">
-            <span className="text-slate-950">{I.crown}</span>
-          </div>
-          <h2 className="text-2xl font-bold text-[#1d1d1f] tracking-tight">开奖完成</h2>
-          <p className="text-sm text-gray-400 mt-1">共 <span className="text-[#4f9fff] font-semibold">{total}</span> 位幸运用户</p>
-        </div>
-        <div className="space-y-3 mb-6">
-          {results.map((item, i) => (
-            <PrizeCard key={i} prize={item.prize} winners={item.winners} isNew={true} index={i} />
-          ))}
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-3">
-          <button onClick={onCopyNames} className="btn-ghost px-3 py-2.5 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center justify-center gap-1.5">{I.copy} 复制@名单</button>
-          <button onClick={onCopyPost} className="btn-ghost px-3 py-2.5 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center justify-center gap-1.5">{I.copy} 复制开奖文案</button>
-          <button data-testid="modal-record-image" onClick={onCreateShareImage} disabled={isCapturing} className="btn-ghost px-3 py-2.5 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center justify-center gap-1.5">{I.image} {isCapturing ? '生成中' : '开奖记录图'}</button>
-        </div>
-        <button onClick={onClose} className="btn-primary px-6 py-3 rounded-xl text-white font-semibold relative z-10 w-full">
-          <span className="relative z-10">好的</span>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function History({ list, onClear }) {
-  if (!list.length) {
+function NoticeToast({ notice, onClose }) {
+  if (!notice) return null;
+  if (notice.tone === 'error') {
     return (
-      <EmptyState icon={I.clock} title="暂无开奖记录" detail="完成开奖后会自动留在这里，方便复查和保存。" compact />
+      <div className="v3-alert-backdrop" role="presentation" onClick={onClose}>
+        <section className="v3-alert-dialog" role="alertdialog" aria-modal="true" aria-labelledby={`notice-${notice.id}`} onClick={(event) => event.stopPropagation()}>
+          <span className="v3-alert-icon">{I.alert}</span>
+          <h2 id={`notice-${notice.id}`}>{notice.title}</h2>
+          <p>{notice.message}</p>
+          <button type="button" onClick={onClose}>知道了</button>
+        </section>
+      </div>
     );
   }
+  const icon = notice.tone === 'success' ? I.check : I.alert;
   return (
-    <div>
-      <div className="flex items-center justify-between mb-2.5">
-        <span className="text-[11px] text-gray-500">{list.length} 条记录</span>
-        <button onClick={onClear} className="text-[11px] text-gray-500 hover:text-[#ee8fa1] transition flex items-center gap-1">{I.trash} 清空</button>
+    <div className={`flow-notice flow-notice-${notice.tone || 'neutral'}`} role="alert" aria-live="assertive">
+      <span className="flow-notice-icon">{icon}</span>
+      <div>
+        <strong>{notice.title}</strong>
+        <p>{notice.message}</p>
       </div>
-      <div className="space-y-1.5 max-h-52 overflow-y-auto">
-        {list.map((item, i) => (
-          <div key={i} className="glass rounded-lg p-2.5 hover:bg-white/[0.03] transition">
-            <div className="flex items-center justify-between mb-1">
-              <span className="text-[#4f9fff] text-[11px]">{item.time}</span>
-              <span className="text-[10px] text-gray-600">{item.total}人中奖</span>
+      <button type="button" aria-label="关闭提示" onClick={onClose}>{I.close}</button>
+    </div>
+  );
+}
+
+function SheetFrame({ title, subtitle, icon, onClose, children, className = '' }) {
+  return (
+    <div className="flow-sheet-backdrop" onClick={onClose}>
+      <div className={`flow-sheet ${className}`} role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
+        <div className="flow-sheet-grabber" aria-hidden="true" />
+        <div className="flow-sheet-head">
+          <div className="flow-sheet-title">
+            <span>{icon}</span>
+            <div>
+              <h2>{title}</h2>
+              {subtitle && <p>{subtitle}</p>}
             </div>
-            <div className="text-[11px] text-gray-500 truncate">{item.summary}</div>
+          </div>
+          <button type="button" aria-label={`关闭${title}`} onClick={onClose} className="flow-sheet-close">{I.close}</button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function GuideSheet({ onClose }) {
+  return (
+    <SheetFrame title="使用教程" subtitle="从载入候选到保存结果" icon={I.book} onClose={onClose} className="flow-guide-sheet">
+      <div className="flow-guide-list">
+        {GUIDE_STEPS.map(([step, title, detail]) => (
+          <div key={step} className="flow-guide-row">
+            <span>{step}</span>
+            <div>
+              <strong>{title}</strong>
+              <p>{detail}</p>
+            </div>
           </div>
         ))}
       </div>
+      <button type="button" onClick={onClose} className="flow-sheet-primary v3-primary-action">知道了</button>
+    </SheetFrame>
+  );
+}
+
+function LegalSheet({ document, onClose }) {
+  if (!document) return null;
+  return (
+    <SheetFrame title={document.title} subtitle={document.subtitle} icon={I.file} onClose={onClose} className="flow-legal-sheet">
+      <p className="flow-legal-date">更新日期：2026 年 7 月 24 日</p>
+      <div className="flow-legal-sections">
+        {document.sections.map(([title, detail]) => (
+          <section key={title}>
+            <h3>{title}</h3>
+            <p>{detail}</p>
+          </section>
+        ))}
+      </div>
+      <button type="button" onClick={onClose} className="flow-sheet-primary v3-primary-action">完成</button>
+    </SheetFrame>
+  );
+}
+
+function SectionTitle({ eyebrow, title, action, onAction }) {
+  return (
+    <header className="section-header">
+      <div>
+        {eyebrow && <span>{eyebrow}</span>}
+        <h2>{title}</h2>
+      </div>
+      {action && <button type="button" onClick={onAction}>{action}</button>}
+    </header>
+  );
+}
+
+function AppListRow({ icon, tone = 'blue', title, detail, value, onClick }) {
+  return (
+    <button className="list-row" type="button" onClick={onClick}>
+      <span className={`row-icon ${tone}`}>{icon}</span>
+      <span className="row-copy">
+        <strong>{title}</strong>
+        {detail && <small>{detail}</small>}
+      </span>
+      {value && <span className="row-value">{value}</span>}
+      {I.chevron}
+    </button>
+  );
+}
+
+function AppleNavigationV3({ controller: c }) {
+  const drawState = c.isDrawing ? 'running' : c.hasResults ? 'finished' : 'ready';
+  const drawDeckRef = useRef(null);
+  const deckAnimationsRef = useRef([]);
+  const previousDrawStateRef = useRef(drawState);
+
+  useEffect(() => {
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const deck = drawDeckRef.current;
+    const previousState = previousDrawStateRef.current;
+    cancelDrawDeckMotion(deckAnimationsRef.current);
+    deckAnimationsRef.current = [];
+
+    if (drawState === 'running') {
+      deckAnimationsRef.current = startDrawDeckMotion(deck, { reducedMotion });
+    } else if (drawState === 'finished' && previousState === 'running') {
+      deckAnimationsRef.current = settleDrawDeckMotion(deck, { reducedMotion });
+    }
+    previousDrawStateRef.current = drawState;
+  }, [drawState]);
+
+  useEffect(() => () => {
+    cancelDrawDeckMotion(deckAnimationsRef.current);
+  }, []);
+
+  const tabIndex = { home: 0, candidates: 1, history: 2, more: 3 }[c.activeTab] ?? 0;
+  const identityOf = (candidate) => String(
+    candidate?.uid || candidate?.screenName || candidate?.id || '',
+  ).toLowerCase();
+  const eligibleIds = new Set(c.eligible.map(identityOf));
+  const excludedCandidates = c.candidates.filter((candidate) => !eligibleIds.has(identityOf(candidate)));
+  const segmentCandidates = c.candidateSegment === 'all'
+    ? c.candidates
+    : c.candidateSegment === 'excluded'
+      ? excludedCandidates
+      : c.eligible;
+  const query = c.candidateQuery.trim().toLowerCase();
+  const visibleCandidates = segmentCandidates
+    .filter((candidate) => !query || [
+      candidate.screenName,
+      candidate.uid,
+      candidate.text,
+    ].some((value) => String(value || '').toLowerCase().includes(query)))
+    .slice(0, 100);
+  const visibleHistory = c.historyExpanded ? c.drawHistory : c.drawHistory.slice(0, 3);
+  const totalHistoricWinners = c.drawHistory.reduce((sum, item) => sum + Number(item.total || 0), 0);
+  const latestHistory = c.drawHistory.slice(0, 2);
+  const sourceDetail = {
+    mobile: '微博 H5 可见转发',
+    manual: '粘贴、填写或文件导入',
+    official: '微博官方接口',
+  }[c.source];
+  const stageCandidate = c.isDrawing
+    ? c.rollingCandidate || c.eligible[0] || c.candidates[0]
+    : c.eligible[0] || c.candidates[0];
+  const primaryResult = c.results.find((item) => item.winners?.length);
+  const primaryWinner = primaryResult?.winners?.[0];
+  const visibleWinners = c.results
+    .flatMap((item) => item.winners.map((winner) => ({
+      candidate: winner,
+      prizeName: item.prize.name,
+    })))
+    .slice(0, 4);
+  const stageName = stageCandidate?.screenName || stageCandidate?.uid || '候选用户';
+  const compactUid = (candidate) => {
+    const uid = String(candidate?.uid || '');
+    if (!uid) return friendlyProviderText(candidate?.source) || '微博候选';
+    return uid.length > 8 ? `UID ${uid.slice(0, 4)}••••${uid.slice(-2)}` : `UID ${uid}`;
+  };
+
+  const switchTab = (tab) => {
+    c.setActiveTab(tab);
+    window.requestAnimationFrame(() => {
+      document.querySelector(`[data-root-view="${tab}"] .root-scroll`)?.scrollTo({
+        top: 0,
+        behavior: 'smooth',
+      });
+    });
+  };
+
+  return (
+    <div
+      className="app-shell v3-app-shell"
+      data-draw-state={drawState}
+      data-root-tab={c.activeTab === 'home' ? 'draw' : c.activeTab}
+    >
+      <header className="root-navbar glass">
+        <button className="brand-button" type="button" onClick={() => switchTab('more')}>
+          <img src={publicAsset('avatar.jpg')} alt="" />
+          <span>
+            <strong>微博转发抽奖</strong>
+            <small>by.sameko</small>
+          </span>
+        </button>
+        <div className="navbar-actions">
+          <button type="button" onClick={() => c.setShowGuide(true)} aria-label="使用教程">
+            {I.book}
+          </button>
+          <button type="button" onClick={() => c.setShowSettings(true)} aria-label="设置">
+            {I.settings}
+          </button>
+        </div>
+      </header>
+
+      <NoticeToast notice={c.notice} onClose={c.dismissNotice} />
+
+      <main className="root-pages">
+        <section className={`root-view ${c.activeTab === 'home' ? 'is-active' : ''}`} data-root-view="home" hidden={c.activeTab !== 'home'}>
+          <div className="root-scroll">
+            <section className={`draw-studio ${!c.hasCandidates ? 'is-empty' : ''}`} aria-label="抽奖控制台">
+              <header className="studio-header">
+                <div>
+                  <span className={`title-status ${c.isLoading || c.isDrawing ? 'is-busy' : ''}`}>
+                    <i />
+                    {c.isLoading
+                      ? '正在载入候选'
+                      : c.isDrawing
+                        ? '正在随机抽取'
+                        : c.hasResults
+                          ? '本轮开奖已完成'
+                          : c.hasCandidates
+                            ? '本次抽奖已准备'
+                            : '等待载入候选'}
+                  </span>
+                  <strong>
+                    {c.hasCandidates
+                      ? `${c.eligible.length.toLocaleString()} 名候选 · ${c.normalizedPrizes.length} 个奖项 · ${c.totalSlots} 个名额`
+                      : '粘贴微博链接，自动载入候选'}
+                  </strong>
+                </div>
+                <button type="button" onClick={() => c.setShowFilters(true)}>
+                  {I.listChecks}
+                  筛选
+                </button>
+              </header>
+
+              {!c.hasCandidates ? (
+                <>
+                  <div className="draw-scene v3-intake-scene">
+                    <div className="scene-geometry" aria-hidden="true"><i /><i /></div>
+                    <div className="scene-glint" aria-hidden="true" />
+                    <div className="candidate-deck v3-intake-deck">
+                      <article className="candidate-pass pass-under pass-coral" aria-hidden="true"><span /><i /></article>
+                      <article className="candidate-pass pass-under pass-blue" aria-hidden="true"><span /><i /></article>
+                      <article className="candidate-pass pass-main lens-center">
+                        <header>
+                          <span>候选</span>
+                          {I.shield}
+                        </header>
+                        <div className="pass-identity">
+                          <span className="pass-avatar v3-intake-symbol">
+                            {I.link}
+                            <i>{I.sparkles}</i>
+                          </span>
+                          <span>
+                            <small>等待微博链接</small>
+                            <strong>粘贴即可载入</strong>
+                            <em>自动获取公开可见的转发用户</em>
+                          </span>
+                        </div>
+                        <footer>
+                          <span><small>来源</small><strong>微博转发</strong></span>
+                          <span><small>方式</small><strong>自动载入</strong></span>
+                          <span><small>状态</small><strong>待开始</strong></span>
+                        </footer>
+                      </article>
+                    </div>
+                    <div className="scene-caption" aria-hidden="true">
+                      <span><i /><b>WAITING</b></span>
+                      <small>WEIBO DRAW</small>
+                    </div>
+                  </div>
+                  <div className="v3-intake-controls">
+                    <label className="v3-link-field">
+                      <span className="sr-only">微博链接、mid 或 bid</span>
+                      <input
+                        ref={c.statusInputRef}
+                        value={c.statusUrl}
+                        onChange={(event) => {
+                          c.setStatusUrl(event.target.value);
+                          c.setCurrentStatusUrl(event.target.value);
+                        }}
+                        onPaste={c.handleStatusPaste}
+                        name="weiboStatusUrl"
+                        autoComplete="off"
+                        inputMode="url"
+                        placeholder="粘贴微博正文链接、mid 或 bid"
+                      />
+                      {c.statusUrl.trim() && (
+                        <button
+                          type="button"
+                          aria-label="清空微博链接"
+                          onClick={() => {
+                            c.setStatusUrl('');
+                            c.setCurrentStatusUrl('');
+                            c.statusInputRef.current?.focus();
+                          }}
+                        >
+                          {I.close}
+                        </button>
+                      )}
+                    </label>
+                    <button
+                      className="primary-button v3-load-button v3-primary-action"
+                      type="button"
+                      onClick={c.pasteAndLoadCandidates}
+                      disabled={c.isLoading}
+                    >
+                      <span className="draw-button-icon">{c.isLoading ? I.refresh : I.link}</span>
+                      <span>
+                        <strong>{c.isLoading ? '正在载入候选' : c.statusUrl.trim() ? '载入候选' : '粘贴链接并载入'}</strong>
+                        <small>使用自己的 Cookie 时会优先采用</small>
+                      </span>
+                      {I.chevron}
+                    </button>
+                    <button className="v3-text-action" type="button" onClick={() => c.selectCandidateSource('manual')}>
+                      没有微博链接？手动导入名单
+                      {I.chevron}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="draw-scene">
+                    <div className="scene-geometry" aria-hidden="true"><i /><i /></div>
+                    <div className="scene-glint" aria-hidden="true" />
+                    <div className="candidate-deck" ref={drawDeckRef}>
+                      <article className="candidate-pass pass-under pass-coral" data-deck-card aria-hidden="true"><span /><i /></article>
+                      <article className="candidate-pass pass-under pass-blue" data-deck-card aria-hidden="true"><span /><i /></article>
+                      <article className="candidate-pass pass-main lens-center" data-deck-card>
+                        <header>
+                          <span>{c.isDrawing ? '正在抽取候选' : '候选'}</span>
+                          {I.shield}
+                        </header>
+                        <div className="pass-identity">
+                          <CandidateAvatar candidate={stageCandidate} className="pass-avatar" />
+                          <span>
+                            <small>{c.isDrawing ? c.phase || '正在随机匹配候选' : '候选已载入'}</small>
+                            <strong>{c.isDrawing ? stageName : c.eligible.length.toLocaleString()}</strong>
+                            <em>{c.isDrawing ? compactUid(stageCandidate) : '名候选'}</em>
+                          </span>
+                        </div>
+                        <footer>
+                          <span><small>奖项</small><strong>{c.normalizedPrizes.length} 个</strong></span>
+                          <span><small>名额</small><strong>{c.totalSlots} 名</strong></span>
+                          <span><small>状态</small><strong>{c.isDrawing ? '抽取中' : c.eligible.length ? '可开奖' : '需调整'}</strong></span>
+                        </footer>
+                      </article>
+                      <article className="candidate-pass winner-core" aria-hidden={!c.hasResults}>
+                        <header>
+                          <span>中奖卡</span>
+                          {I.badgeCheck}
+                        </header>
+                        <div className="pass-identity">
+                          <CandidateAvatar candidate={primaryWinner} className="pass-avatar" />
+                          <span>
+                            <small>{primaryResult?.prize?.name || '幸运奖'}</small>
+                            <strong>{primaryWinner?.screenName || primaryWinner?.uid || '幸运用户'}</strong>
+                            <em>{compactUid(primaryWinner)}</em>
+                          </span>
+                        </div>
+                        <footer>
+                          <span><small>奖项</small><strong>{primaryResult?.prize?.name || '幸运奖'}</strong></span>
+                          <span><small>结果</small><strong>已记录</strong></span>
+                        </footer>
+                      </article>
+                    </div>
+                    <div className="scene-caption" aria-hidden="true">
+                      <span><i /><b>{c.isDrawing ? 'DRAWING' : c.hasResults ? 'COMPLETE' : 'READY'}</b></span>
+                      <small>LUCKY DRAW</small>
+                    </div>
+                    <div className="result-rail" aria-label="中奖结果">
+                      <header>
+                        <div>
+                          <span>开奖结果</span>
+                          <strong>{c.resultTotal} 名幸运用户</strong>
+                        </div>
+                        <button type="button" onClick={() => c.setSelectedReceipt(c.drawHistory[0] || null)}>查看结果</button>
+                      </header>
+                      <div className="winner-list">
+                        {visibleWinners.map(({ candidate, prizeName }, index) => (
+                          <button
+                            type="button"
+                            key={candidate.id || candidate.uid || candidate.screenName || index}
+                            onClick={() => c.showStatus(compactUid(candidate), 'success', {
+                              popup: true,
+                              title: candidate.screenName || candidate.uid || '获奖用户',
+                            })}
+                          >
+                            <CandidateAvatar candidate={candidate} className={`avatar ${['pink', 'blue', 'lilac', 'mint'][index % 4]}`} />
+                            <strong>{candidate.screenName || candidate.uid || `获奖用户 ${index + 1}`}</strong>
+                            <small>{prizeName}</small>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="draw-specs">
+                    <button type="button" onClick={() => c.setShowSourceEditor(true)}>
+                      <span className="spec-icon blue">{I.users}</span>
+                      <span><small>候选</small><strong>{c.eligible.length.toLocaleString()}</strong></span>
+                    </button>
+                    <button type="button" onClick={() => c.setShowPrizeEditor(true)}>
+                      <span className="spec-icon coral">{I.gift}</span>
+                      <span><small>奖项</small><strong>{c.normalizedPrizes.length} 个</strong></span>
+                    </button>
+                    <button type="button" onClick={() => c.setShowFilters(true)}>
+                      <span className="spec-icon mint">{I.badgeCheck}</span>
+                      <span><small>规则</small><strong>{c.filterEnabledText}</strong></span>
+                    </button>
+                  </div>
+                  <div className="v3-draw-count">
+                    {I.shield}
+                    <span>
+                      <strong>{c.drawCountText}</strong>
+                      <small>仅统计成功保存的结果</small>
+                    </span>
+                  </div>
+                  <div className="draw-control">
+                    <div className="draw-control-state draw-ready">
+                      <button
+                        className="primary-button v3-primary-action"
+                        type="button"
+                        onClick={c.eligible.length ? c.drawAll : () => c.setShowFilters(true)}
+                        disabled={c.isDrawing || c.isLoading}
+                      >
+                        <span className="draw-button-icon">{c.eligible.length ? I.shuffle : I.listChecks}</span>
+                        <span>
+                          <strong>{c.eligible.length ? '开始抽奖' : '调整筛选'}</strong>
+                          <small>
+                            {c.eligible.length
+                              ? `随机抽取 ${c.totalSlots} 名用户`
+                              : '当前没有符合条件的候选'}
+                          </small>
+                        </span>
+                        {I.chevron}
+                      </button>
+                    </div>
+                    <div className="draw-control-state draw-running">
+                      <span className="progress-indicator" />
+                      <span>
+                        <small>{c.phase || '正在随机匹配候选'}</small>
+                        <strong>{stageName}</strong>
+                      </span>
+                    </div>
+                    <div className="draw-control-state draw-finished">
+                      <div>
+                        <span className="complete-icon">{I.check}</span>
+                        <span><small>开奖完成</small><strong>{c.drawCountText}</strong></span>
+                      </div>
+                      <div className="result-buttons">
+                        <button type="button" aria-label="再次抽奖" onClick={c.drawAll}>{I.shuffle}</button>
+                        <button type="button" aria-label="查看开奖结果" onClick={() => c.setSelectedReceipt(c.drawHistory[0] || null)}>{I.clock}</button>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {c.progress && (
+                <div className="v3-progress">
+                  <span>{c.progress.message || '正在处理'}</span>
+                  <strong>{Math.round(c.progress.percent || 0)}%</strong>
+                  <i style={{ width: `${Math.max(0, Math.min(100, Number(c.progress.percent || 0)))}%` }} />
+                </div>
+              )}
+            </section>
+
+            <section className="content-section">
+              <SectionTitle eyebrow="本次抽奖" title="配置" />
+              <div className="grouped-list">
+                <AppListRow
+                  icon={I.link}
+                  title="候选来源"
+                  detail={sourceDetail}
+                  value={c.hasCandidates ? `${c.loadedCandidateCount.toLocaleString()} 人` : '待载入'}
+                  onClick={() => c.setShowSourceEditor(true)}
+                />
+                <AppListRow
+                  icon={I.gift}
+                  tone="coral"
+                  title="奖项设置"
+                  detail={`${c.normalizedPrizes.length} 个奖项，共 ${c.totalSlots} 个名额`}
+                  onClick={() => c.setShowPrizeEditor(true)}
+                />
+                <AppListRow
+                  icon={I.listChecks}
+                  tone="mint"
+                  title="筛选规则"
+                  detail={c.filterSummary}
+                  onClick={() => c.setShowFilters(true)}
+                />
+              </div>
+            </section>
+
+            <section className="content-section">
+              <SectionTitle
+                eyebrow="最近完成"
+                title="开奖记录"
+                action={c.drawHistory.length ? '查看全部' : ''}
+                onAction={() => switchTab('history')}
+              />
+              {latestHistory.length ? (
+                <div className="compact-records">
+                  {latestHistory.map((item, index) => (
+                    <button
+                      type="button"
+                      key={`${item.time}-${index}`}
+                      onClick={() => c.setSelectedReceipt(item)}
+                    >
+                      <span className={`record-mark ${index ? 'blue' : 'pink'}`}>{index ? I.sparkles : I.gift}</span>
+                      <span><strong>{item.results?.[0]?.prize?.name || '微博转发抽奖'}</strong><small>{item.total} 名获奖用户</small></span>
+                      <time>{String(item.time || '').slice(5, 10).replace('-', '.')}</time>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="v3-section-empty">
+                  <span>{I.clock}</span>
+                  <div><strong>暂无开奖记录</strong><small>完成开奖后会自动保存在这里</small></div>
+                </div>
+              )}
+            </section>
+            <div className="bottom-space" />
+          </div>
+        </section>
+
+        <section className={`root-view ${c.activeTab === 'candidates' ? 'is-active' : ''}`} data-root-view="candidates" hidden={c.activeTab !== 'candidates'}>
+          <div className="root-scroll">
+            <header className="large-title">
+              <span className={`title-status ${c.hasCandidates ? '' : 'neutral'}`}><i /> {c.hasCandidates ? '名单已载入' : '等待候选数据'}</span>
+              <h1>候选名单</h1>
+              <p>{c.hasCandidates ? `${c.eligible.length.toLocaleString()} 人符合当前筛选规则` : '从微博抓取，也可以手动导入或填写名单'}</p>
+            </header>
+
+            <section className="content-section v3-source-section">
+              <SectionTitle eyebrow="候选来源" title="载入名单" action={c.hasCandidates ? '刷新' : ''} onAction={() => c.safeLoadCandidates({ jumpAfterLoad: false })} />
+              <div className="segmented-control v3-source-control">
+                {SOURCE_OPTIONS.map(({ value, label }) => (
+                  <button
+                    key={value}
+                    type="button"
+                    className={c.source === value ? 'is-active' : ''}
+                    onClick={() => c.setSource(value)}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {c.source === 'mobile' && (
+                <div className="v3-source-form">
+                  <label className="v3-link-field">
+                    <span className="sr-only">微博链接、mid 或 bid</span>
+                    <input
+                      ref={c.activeTab === 'candidates' ? c.statusInputRef : null}
+                      value={c.statusUrl}
+                      onChange={(event) => {
+                        c.setStatusUrl(event.target.value);
+                        c.setCurrentStatusUrl(event.target.value);
+                      }}
+                      onPaste={c.handleStatusPaste}
+                      name="candidateStatusUrl"
+                      inputMode="url"
+                      autoComplete="off"
+                      placeholder="微博正文链接、mid 或 bid"
+                    />
+                  </label>
+                  <button className="v3-solid-action v3-primary-action" type="button" onClick={c.pasteAndLoadCandidates} disabled={c.isLoading}>
+                    {c.isLoading ? I.refresh : I.link}
+                    {c.isLoading ? '正在载入' : c.statusUrl.trim() ? '载入候选' : '粘贴并载入'}
+                  </button>
+                  <div className="v3-cookie-row">
+                    <span className="row-icon blue">{I.shield}</span>
+                    <span><strong>{c.accountStatusText}</strong><small>未填写时使用服务器 Cookie</small></span>
+                    <button type="button" onClick={() => c.loadCookieStatus(true)}>校验</button>
+                  </div>
+                  <button className="v3-disclosure" type="button" onClick={() => c.setManualCookieOpen((value) => !value)} aria-expanded={c.manualCookieOpen}>
+                    <span>使用自己的 Cookie（优先）</span>
+                    <span>{c.manualCookieOpen ? '收起' : '展开'} {I.chevron}</span>
+                  </button>
+                  {c.manualCookieOpen && (
+                    <textarea
+                      className="v3-textarea"
+                      value={c.mobileCookie}
+                      onChange={(event) => c.setMobileCookie(event.target.value)}
+                      name="mobileCookie"
+                      aria-label="用户微博 Cookie"
+                      placeholder="仅用于本次请求，不会保存；留空时使用服务器 Cookie。"
+                    />
+                  )}
+                </div>
+              )}
+
+              {c.source === 'manual' && (
+                <div className="v3-source-form">
+                  <textarea
+                    className="v3-textarea v3-list-input"
+                    value={c.manualInput}
+                    onChange={(event) => c.setManualInput(event.target.value)}
+                    name="manualCandidateInput"
+                    aria-label="手动候选名单"
+                    placeholder="每行一位用户，支持 CSV、TSV、JSON；也可以选择文件导入。"
+                  />
+                  <div className="v3-action-row">
+                    <label className="v3-file-action">
+                      {I.upload}
+                      <span>选择文件</span>
+                      <input type="file" accept=".csv,.txt,.tsv,.json,text/csv,text/plain,application/json" onChange={c.importCandidateFile} />
+                    </label>
+                    <button type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false })}>替换名单</button>
+                    <button type="button" onClick={c.addManualNames}>追加</button>
+                  </div>
+                </div>
+              )}
+
+              {c.source === 'official' && (
+                <div className="v3-source-form">
+                  <label className="v3-link-field">
+                    <span className="sr-only">官方访问令牌</span>
+                    <input
+                      value={c.accessToken}
+                      onChange={(event) => c.setAccessToken(event.target.value)}
+                      name="accessToken"
+                      type="password"
+                      placeholder="输入官方访问令牌"
+                    />
+                  </label>
+                  <button className="v3-solid-action v3-primary-action" type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false })} disabled={c.isLoading}>
+                    {I.download}
+                    通过官方接口载入
+                  </button>
+                </div>
+              )}
+            </section>
+
+            {c.hasCandidates && (
+              <>
+                <div className="search-field">
+                  {I.users}
+                  <input
+                    type="search"
+                    value={c.candidateQuery}
+                    onChange={(event) => c.setCandidateQuery(event.target.value)}
+                    placeholder="搜索昵称或 UID"
+                    aria-label="搜索候选"
+                  />
+                  <button type="button" onClick={() => c.setShowFilters(true)} aria-label="筛选候选">{I.listChecks}</button>
+                </div>
+                <div className="segmented-control">
+                  <button type="button" className={c.candidateSegment === 'eligible' ? 'is-active' : ''} onClick={() => c.setCandidateSegment('eligible')}>可抽 {c.eligible.length}</button>
+                  <button type="button" className={c.candidateSegment === 'all' ? 'is-active' : ''} onClick={() => c.setCandidateSegment('all')}>全部 {c.candidates.length}</button>
+                  <button type="button" className={c.candidateSegment === 'excluded' ? 'is-active' : ''} onClick={() => c.setCandidateSegment('excluded')}>已排除 {excludedCandidates.length}</button>
+                </div>
+              </>
+            )}
+
+            <section className="content-section candidate-section">
+              <SectionTitle
+                eyebrow={c.hasCandidates ? '按载入顺序' : '尚未载入'}
+                title="候选用户"
+                action={c.hasCandidates ? '导出' : ''}
+                onAction={() => download('eligible-candidates.csv', toCsv(c.eligible.map((item) => ({ tier: '', ...item }))))}
+              />
+              {visibleCandidates.length ? (
+                <div className="people-list">
+                  {visibleCandidates.map((candidate, index) => (
+                    <button
+                      type="button"
+                      key={candidate.id || candidate.uid || candidate.screenName || index}
+                      onClick={() => c.showStatus(candidate.text || candidate.uid || '候选用户', 'neutral', {
+                        popup: true,
+                        title: candidate.screenName || candidate.uid || `候选用户 ${index + 1}`,
+                      })}
+                    >
+                      <CandidateAvatar candidate={candidate} className="candidate-avatar-list" />
+                      <span>
+                        <strong>{candidate.screenName || candidate.uid || `候选用户 ${index + 1}`}</strong>
+                        <small>{candidate.uid ? `UID ${candidate.uid}` : friendlyProviderText(candidate.source) || '候选名单'}</small>
+                      </span>
+                      <span className={eligibleIds.has(identityOf(candidate)) ? 'status-badge' : 'status-badge is-excluded'}>
+                        {eligibleIds.has(identityOf(candidate)) ? '符合' : '排除'}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="v3-section-empty v3-candidate-empty">
+                  <span>{I.users}</span>
+                  <div><strong>{c.hasCandidates ? '没有匹配的候选用户' : '候选名单为空'}</strong><small>{c.hasCandidates ? '调整搜索或筛选条件后再查看' : '载入微博转发后，候选用户会显示在这里'}</small></div>
+                </div>
+              )}
+            </section>
+            <div className="bottom-space" />
+          </div>
+        </section>
+
+        <section className={`root-view ${c.activeTab === 'history' ? 'is-active' : ''}`} data-root-view="history" hidden={c.activeTab !== 'history'}>
+          <div className="root-scroll">
+            <header className="large-title">
+              <span className="title-status neutral"><i /> 本机与服务器记录</span>
+              <h1>开奖记录</h1>
+              <p>{c.drawHistory.length ? `共 ${c.drawHistory.length} 次开奖，${totalHistoricWinners} 名获奖用户` : '完成开奖后，记录会自动保存在这里'}</p>
+            </header>
+
+            <section className="history-summary">
+              <div><span>总开奖</span><strong>{c.drawHistory.length}</strong><small>次</small></div>
+              <div><span>获奖用户</span><strong>{totalHistoricWinners}</strong><small>人</small></div>
+              <div><span>最近开奖</span><strong>{c.drawHistory[0]?.time?.slice(5, 10).replace('-', '.') || '--'}</strong><small>{c.drawHistory[0]?.time?.slice(11, 16) || '暂无'}</small></div>
+            </section>
+
+            <section className="content-section">
+              <SectionTitle eyebrow="最近在前" title="全部记录" />
+              {visibleHistory.length ? (
+                <>
+                  <div className="history-list">
+                    {visibleHistory.map((item, index) => {
+                      const date = String(item.time || '').slice(5, 10).split('-');
+                      return (
+                        <button
+                          type="button"
+                          key={`${item.time}-${index}`}
+                          onClick={() => c.setSelectedReceipt(item)}
+                        >
+                          <span className={`date-block ${index % 3 === 1 ? 'blue' : index % 3 === 2 ? 'mint' : ''}`}>
+                            <strong>{date[1] || '--'}</strong><small>{date[0] || '--'} 月</small>
+                          </span>
+                          <span><strong>{item.results?.[0]?.prize?.name || '微博转发抽奖'}</strong><small>{item.results?.length || 1} 个奖项 · {item.total} 名获奖用户</small></span>
+                          {I.chevron}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {c.drawHistory.length > 3 && (
+                    <button className="show-more-button" type="button" onClick={() => c.setHistoryExpanded((value) => !value)}>
+                      {c.historyExpanded ? '收起较早记录' : `展开全部 ${c.drawHistory.length} 条`}
+                    </button>
+                  )}
+                </>
+              ) : (
+                <div className="v3-section-empty v3-history-empty">
+                  <span>{I.clock}</span>
+                  <div><strong>暂无开奖记录</strong><small>完成一次抽奖后再来查看</small></div>
+                </div>
+              )}
+            </section>
+            <div className="bottom-space" />
+          </div>
+        </section>
+
+        <section className={`root-view ${c.activeTab === 'more' ? 'is-active' : ''}`} data-root-view="more" hidden={c.activeTab !== 'more'}>
+          <div className="root-scroll">
+            <header className="large-title more-title">
+              <span className="title-status neutral"><i /> 应用与支持</span>
+              <h1>更多</h1>
+              <p>数据、服务、设置与法律信息</p>
+            </header>
+
+            <button className="app-summary" type="button" onClick={() => c.setShowSettings(true)}>
+              <img src={publicAsset('avatar.jpg')} alt="" />
+              <span><strong>微博转发抽奖</strong><small>版本 2.1 · by.sameko</small></span>
+              <em>设置</em>
+              {I.chevron}
+            </button>
+
+            <section className="content-section">
+              <SectionTitle eyebrow="当前设备" title="数据与服务" />
+              <div className="grouped-list">
+                <AppListRow icon={I.users} tone="coral" title="本机数据" detail="候选缓存与开奖记录" value={`${c.drawHistory.length} 条记录`} onClick={() => c.setShowSettings(true)} />
+                <AppListRow icon={I.shield} title="Cookie 使用" detail="用户输入优先，未填再用服务器" value={c.accountStatusText.replace('服务器 Cookie ', '')} onClick={() => c.loadCookieStatus(true)} />
+                <AppListRow icon={I.refresh} tone="mint" title="服务状态" detail="候选抓取接口与任务队列" value={c.progress ? '运行中' : '已连接'} onClick={c.testApiConnection} />
+              </div>
+            </section>
+
+            <section className="content-section">
+              <SectionTitle eyebrow="应用" title="偏好与帮助" />
+              <div className="grouped-list">
+                <AppListRow icon={I.settings} tone="gray" title="设置" detail="数据与连接设置" onClick={() => c.setShowSettings(true)} />
+                <AppListRow icon={I.book} tone="coral" title="使用教程" detail="完整抽奖流程" onClick={() => c.setShowGuide(true)} />
+                <AppListRow icon={I.info} tone="lilac" title="关于" detail="版本、作者与服务说明" onClick={() => c.showStatus('微博转发抽奖 · 版本 2.1 · by.sameko', 'neutral', { popup: true, title: '关于' })} />
+              </div>
+            </section>
+
+            <section className="content-section">
+              <SectionTitle eyebrow="文档" title="法律与许可" />
+              <div className="grouped-list">
+                <AppListRow icon={I.alert} tone="coral" title="免责声明" detail="服务边界与使用责任" onClick={() => c.openLegalDocument('disclaimer')} />
+                <AppListRow icon={I.shield} title="隐私政策" detail="Cookie、候选与记录如何处理" onClick={() => c.openLegalDocument('privacy')} />
+                <AppListRow icon={I.file} tone="mint" title="用户协议" detail="使用规则与禁止事项" onClick={() => c.openLegalDocument('terms')} />
+                <AppListRow icon={I.info} tone="lilac" title="版权说明" detail="应用、用户与平台内容" onClick={() => c.openLegalDocument('copyright')} />
+                <AppListRow icon={I.file} tone="gray" title="开源许可" detail="第三方软件与许可证" onClick={() => c.openLegalDocument('licenses')} />
+              </div>
+            </section>
+            <div className="bottom-space" />
+          </div>
+        </section>
+      </main>
+
+      <nav className="root-tabbar glass" aria-label="主要导航" style={{ '--tab-index': tabIndex }}>
+        <span className="tab-highlight" />
+        <button className={c.activeTab === 'home' ? 'is-active' : ''} type="button" onClick={() => switchTab('home')}>
+          {I.sparkles}<span>抽奖</span>
+        </button>
+        <button className={c.activeTab === 'candidates' ? 'is-active' : ''} type="button" onClick={() => switchTab('candidates')}>
+          {I.users}<span>名单</span>
+        </button>
+        <button className={c.activeTab === 'history' ? 'is-active' : ''} type="button" onClick={() => switchTab('history')}>
+          {I.clock}<span>记录</span>
+        </button>
+        <button className={c.activeTab === 'more' ? 'is-active' : ''} type="button" onClick={() => switchTab('more')}>
+          {I.more}<span>更多</span>
+        </button>
+      </nav>
+
+      {c.showGuide && <GuideSheet onClose={() => c.setShowGuide(false)} />}
+      {c.legalDocument && <LegalSheet document={c.legalDocument} onClose={() => c.setLegalDocument(null)} />}
+
+      {c.showSourceEditor && (
+        <SheetFrame title="候选来源" subtitle={sourceDetail} icon={I.link} onClose={() => c.setShowSourceEditor(false)} className="v3-editor-sheet v3-source-sheet">
+          <div className="segmented-control v3-source-control">
+            {SOURCE_OPTIONS.map(({ value, label }) => (
+              <button
+                key={value}
+                type="button"
+                className={c.source === value ? 'is-active' : ''}
+                onClick={() => {
+                  c.setSource(value);
+                  c.clearResult();
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {c.source === 'mobile' && (
+            <div className="v3-source-form v3-sheet-source-form">
+              <div className="v3-sheet-callout">
+                <span className="row-icon blue">{I.link}</span>
+                <div><strong>微博 H5 可见转发</strong><small>粘贴正文链接后自动载入候选</small></div>
+              </div>
+              <label className="v3-link-field">
+                <span className="sr-only">微博链接、mid 或 bid</span>
+                <input
+                  ref={c.statusInputRef}
+                  value={c.statusUrl}
+                  onChange={(event) => {
+                    c.setStatusUrl(event.target.value);
+                    c.setCurrentStatusUrl(event.target.value);
+                  }}
+                  onPaste={c.handleStatusPaste}
+                  name="sourceSheetStatusUrl"
+                  inputMode="url"
+                  autoComplete="off"
+                  placeholder="微博正文链接、mid 或 bid"
+                />
+              </label>
+              <button className="v3-pearl-action v3-primary-action" type="button" onClick={c.pasteAndLoadCandidates} disabled={c.isLoading}>
+                <span className="v3-pearl-icon">{c.isLoading ? I.refresh : I.link}</span>
+                <span className="v3-pearl-copy">
+                  <strong>{c.isLoading ? '正在载入候选' : c.statusUrl.trim() ? '载入候选' : '粘贴链接并载入'}</strong>
+                  <small>自动识别微博正文链接、mid 或 bid</small>
+                </span>
+                <span className="v3-pearl-arrow">{I.chevron}</span>
+              </button>
+              <div className="v3-cookie-row">
+                <span className="row-icon blue">{I.shield}</span>
+                <span><strong>{c.accountStatusText}</strong><small>未填写时使用服务器 Cookie</small></span>
+                <button type="button" onClick={() => c.loadCookieStatus(true)}>校验</button>
+              </div>
+              <button className="v3-disclosure" type="button" onClick={() => c.setManualCookieOpen((value) => !value)} aria-expanded={c.manualCookieOpen}>
+                <span>使用自己的 Cookie（优先）</span>
+                <span>{c.manualCookieOpen ? '收起' : '展开'} {I.chevron}</span>
+              </button>
+              {c.manualCookieOpen && (
+                <textarea
+                  className="v3-textarea"
+                  value={c.mobileCookie}
+                  onChange={(event) => c.setMobileCookie(event.target.value)}
+                  name="sourceSheetMobileCookie"
+                  aria-label="用户微博 Cookie"
+                  placeholder="仅用于本次请求，不会保存；留空时使用服务器 Cookie。"
+                />
+              )}
+            </div>
+          )}
+
+          {c.source === 'manual' && (
+            <div className="v3-source-form v3-sheet-source-form">
+              <div className="v3-sheet-callout">
+                <span className="row-icon coral">{I.users}</span>
+                <div><strong>手动名单</strong><small>直接填写，也可以导入 CSV、TSV 或 JSON</small></div>
+              </div>
+              <textarea
+                className="v3-textarea v3-list-input"
+                value={c.manualInput}
+                onChange={(event) => c.setManualInput(event.target.value)}
+                name="sourceSheetManualCandidates"
+                aria-label="弹窗手动候选名单"
+                placeholder="每行一位用户，支持 CSV、TSV、JSON。"
+              />
+              <div className="v3-action-row">
+                <label className="v3-file-action">
+                  {I.upload}
+                  <span>选择文件</span>
+                  <input type="file" accept=".csv,.txt,.tsv,.json,text/csv,text/plain,application/json" onChange={c.importCandidateFile} />
+                </label>
+                <button type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false })}>替换名单</button>
+                <button type="button" onClick={c.addManualNames}>追加</button>
+              </div>
+            </div>
+          )}
+
+          {c.source === 'official' && (
+            <div className="v3-source-form v3-sheet-source-form">
+              <div className="v3-sheet-callout">
+                <span className="row-icon mint">{I.shield}</span>
+                <div><strong>官方接口</strong><small>使用微博官方访问令牌载入候选</small></div>
+              </div>
+              <label className="v3-link-field">
+                <span className="sr-only">官方访问令牌</span>
+                <input
+                  value={c.accessToken}
+                  onChange={(event) => c.setAccessToken(event.target.value)}
+                  name="sourceSheetAccessToken"
+                  type="password"
+                  placeholder="输入官方访问令牌"
+                />
+              </label>
+              <button className="v3-pearl-action v3-primary-action" type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false })} disabled={c.isLoading}>
+                <span className="v3-pearl-icon">{c.isLoading ? I.refresh : I.download}</span>
+                <span className="v3-pearl-copy"><strong>{c.isLoading ? '正在载入候选' : '通过官方接口载入'}</strong><small>令牌仅用于当前页面请求</small></span>
+                <span className="v3-pearl-arrow">{I.chevron}</span>
+              </button>
+            </div>
+          )}
+
+          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => c.setShowSourceEditor(false)}>完成</button>
+        </SheetFrame>
+      )}
+
+      {c.showPrizeEditor && (
+        <SheetFrame title="奖项设置" subtitle={`${c.normalizedPrizes.length} 个奖项 · ${c.totalSlots} 个名额`} icon={I.gift} onClose={() => c.setShowPrizeEditor(false)} className="v3-editor-sheet">
+          <div className="v3-sheet-toolbar">
+            <span>按顺序依次抽取</span>
+            <button type="button" onClick={c.addPrize}>{I.plus} 添加奖项</button>
+          </div>
+          <div className="v3-prize-list">
+            {c.prizes.map((prize, index) => (
+              <section className="v3-prize-item" key={index}>
+                <span className="v3-prize-number" style={{ '--prize-color': prize.color || COLORS[index % COLORS.length] }}>{index + 1}</span>
+                <div>
+                  <label>
+                    <span>奖项名称</span>
+                    <input
+                      ref={index === 0 ? c.firstPrizeNameRef : null}
+                      value={prize.name}
+                      onChange={(event) => c.updatePrize(index, { name: event.target.value })}
+                      name={`prizeName-${index}`}
+                      placeholder="例如：一等奖 / 幸运奖"
+                    />
+                  </label>
+                  <div className="v3-prize-footer">
+                    <span>中奖人数</span>
+                    <div className="v3-stepper">
+                      <button
+                        type="button"
+                        aria-label={`减少第 ${index + 1} 个奖项名额`}
+                        onClick={() => c.updatePrizeCount(index, Number(prize.count || 1) - 1)}
+                        disabled={Number(prize.count || 1) <= 1}
+                      >
+                        {I.minus}
+                      </button>
+                      <input type="number" min="1" value={prize.count} onChange={(event) => c.updatePrizeCount(index, event.target.value)} aria-label={`第 ${index + 1} 个奖项中奖人数`} />
+                      <button
+                        type="button"
+                        aria-label={`增加第 ${index + 1} 个奖项名额`}
+                        onClick={() => c.updatePrizeCount(index, Number(prize.count || 1) + 1)}
+                      >
+                        {I.plus}
+                      </button>
+                    </div>
+                    <button
+                      className="v3-delete-prize"
+                      type="button"
+                      aria-label={`删除第 ${index + 1} 个奖项`}
+                      onClick={() => c.removePrize(index)}
+                      disabled={c.prizes.length <= 1}
+                    >
+                      {I.trash}
+                    </button>
+                  </div>
+                </div>
+              </section>
+            ))}
+          </div>
+          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => c.setShowPrizeEditor(false)}>完成</button>
+        </SheetFrame>
+      )}
+
+      {c.showFilters && (
+        <SheetFrame title="筛选规则" subtitle="调整本轮可抽候选" icon={I.listChecks} onClose={() => c.setShowFilters(false)} className="v3-editor-sheet">
+          <div className="v3-filter-presets">
+            <button
+              type="button"
+              className={!c.keyword && Number(c.mentionMin) === 0 ? 'is-active' : ''}
+              aria-pressed={!c.keyword && Number(c.mentionMin) === 0}
+              onClick={() => { c.setKeyword(''); c.setMentionMin(0); c.clearResult('筛选规则已更新，请重新开奖。'); }}
+            >
+              不限内容
+            </button>
+            <button
+              type="button"
+              className={c.keyword === '抽奖' && Number(c.mentionMin) === 0 ? 'is-active' : ''}
+              aria-pressed={c.keyword === '抽奖' && Number(c.mentionMin) === 0}
+              onClick={() => { c.setKeyword('抽奖'); c.setMentionMin(0); c.clearResult('筛选规则已更新，请重新开奖。'); }}
+            >
+              含“抽奖”
+            </button>
+            <button
+              type="button"
+              className={!c.keyword && Number(c.mentionMin) === 1 ? 'is-active' : ''}
+              aria-pressed={!c.keyword && Number(c.mentionMin) === 1}
+              onClick={() => { c.setKeyword(''); c.setMentionMin(1); c.clearResult('筛选规则已更新，请重新开奖。'); }}
+            >
+              至少 @1
+            </button>
+            <button
+              type="button"
+              className={!c.keyword && Number(c.mentionMin) === 2 ? 'is-active' : ''}
+              aria-pressed={!c.keyword && Number(c.mentionMin) === 2}
+              onClick={() => { c.setKeyword(''); c.setMentionMin(2); c.clearResult('筛选规则已更新，请重新开奖。'); }}
+            >
+              至少 @2
+            </button>
+          </div>
+          <div className="v3-form-group">
+            <label><span>转发关键词</span><input value={c.keyword} onChange={(event) => { c.setKeyword(event.target.value); c.clearResult('筛选规则已更新，请重新开奖。'); }} placeholder="留空表示不限" /></label>
+            <label><span>至少 @ 人数</span><input type="number" min="0" max="10" value={c.mentionMin} onChange={(event) => { c.setMentionMin(event.target.value); c.clearResult('筛选规则已更新，请重新开奖。'); }} /></label>
+            <label><span>排除名单</span><textarea value={c.blocklist} onChange={(event) => { c.setBlocklist(event.target.value); c.clearResult('筛选规则已更新，请重新开奖。'); }} placeholder="每行一个 UID 或昵称" /></label>
+          </div>
+          <div className="v3-toggle-list">
+            <label><span><strong>候选去重</strong><small>同一用户只保留一次</small></span><input type="checkbox" checked={c.uniqueByUser} onChange={(event) => c.setUniqueByUser(event.target.checked)} /></label>
+            <label><span><strong>排除已中奖用户</strong><small>避免同一轮重复中奖</small></span><input type="checkbox" checked={c.excludePrevious} onChange={(event) => c.setExcludePrevious(event.target.checked)} /></label>
+          </div>
+          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => c.setShowFilters(false)}>应用筛选</button>
+        </SheetFrame>
+      )}
+
+      {c.showSettings && (
+        <SheetFrame title="设置" subtitle="数据与连接" icon={I.settings} onClose={() => c.setShowSettings(false)} className="v3-editor-sheet">
+          <div className="flow-app-summary">
+            <img src={publicAsset('avatar.jpg')} alt="" />
+            <div><strong>微博转发抽奖</strong><p>版本 2.1 · by.sameko</p></div>
+            <span>{c.accountStatusText.replace(/^服务器\s*/, '')}</span>
+          </div>
+          <h3 className="flow-settings-caption">本机数据</h3>
+          <div className="flow-settings-list">
+            <button type="button" onClick={() => { c.setCandidates([]); c.setResults([]); c.setLastPool(null); c.setShowSettings(false); c.showStatus('已清空候选和结果。', 'success', { popup: true, title: '已清空' }); }}>
+              <span>{I.trash}</span><div><strong>清空候选和结果</strong><small>服务器 Cookie 和后台记录不受影响</small></div>{I.chevron}
+            </button>
+            <button type="button" onClick={() => { c.setMobileCookie(''); c.showStatus('已清空当前输入的 Cookie。', 'success', { popup: true, title: '已清空' }); }}>
+              <span>{I.shield}</span><div><strong>清空手动 Cookie</strong><small>仅清空当前页面输入</small></div>{I.chevron}
+            </button>
+            <button type="button" onClick={() => { c.setDrawHistory([]); c.showStatus('已清空本机开奖记录。', 'success', { popup: true, title: '已清空' }); }}>
+              <span>{I.clock}</span><div><strong>清空本机开奖记录</strong><small>服务器后台记录不受影响</small></div>{I.chevron}
+            </button>
+          </div>
+          <details className="flow-connection-details">
+            <summary>高级连接设置</summary>
+            <div className="flow-settings-form">
+              <label className="flow-field-block"><span>后端接口地址</span><input value={c.apiBase} onChange={(event) => c.setApiBase(cleanApiBase(event.target.value))} placeholder="https://111.228.11.206" /></label>
+              <label className="flow-field-block"><span>访问密钥（可选）</span><input value={c.apiKey} onChange={(event) => c.setApiKey(event.target.value)} type="password" placeholder="公开模式不用填写" /></label>
+              <div className="flow-settings-actions">
+                <button type="button" onClick={c.testApiConnection}>测试连接</button>
+                <button type="button" onClick={() => { c.setApiBase(''); c.setApiKey(''); c.showStatus('已切换为同域后端。', 'success', { popup: true, title: '已切换' }); }}>同域模式</button>
+              </div>
+            </div>
+          </details>
+          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => c.setShowSettings(false)}>完成</button>
+        </SheetFrame>
+      )}
+
+      <DrawResultSheet
+        receipt={c.selectedReceipt}
+        isCapturing={c.isCapturing}
+        onClose={() => c.setSelectedReceipt(null)}
+        onSaveImage={() => c.createShareImage(c.selectedReceipt)}
+        onCopyPost={() => c.copyReceiptPost(c.selectedReceipt)}
+        onCopyFairness={() => c.copyReceiptFairness(c.selectedReceipt)}
+        onRetrySave={() => c.retrySaveReceipt(c.selectedReceipt)}
+      />
     </div>
   );
 }
@@ -649,26 +1351,34 @@ function App() {
   const [currentStatusId, setCurrentStatusId] = useState('');
   const [currentStatusUrl, setCurrentStatusUrl] = useState('');
   const [drawCount, setDrawCount] = useState(null);
-  const [drawCountLastAt, setDrawCountLastAt] = useState('');
   const [cookieInfo, setCookieInfo] = useState({ hasCookie: false, cookieCount: 0, lastValidAt: '' });
-  const [status, setStatus] = useState('准备就绪。粘贴微博链接后，可以载入候选并开奖。');
+  const [status, setStatus] = useState('等待载入候选。');
   const [statusTone, setStatusTone] = useState('neutral');
   const [progress, setProgress] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isDrawing, setIsDrawing] = useState(false);
-  const [rollingName, setRollingName] = useState('');
-  const [rollingNames, setRollingNames] = useState([]);
+  const [rollingCandidate, setRollingCandidate] = useState(null);
   const [phase, setPhase] = useState('');
-  const [drawHistory, setDrawHistory] = useState([]);
-  const [showModal, setShowModal] = useState(false);
+  const [drawHistory, setDrawHistory] = useState(() => readDrawHistory());
+  const [selectedReceipt, setSelectedReceipt] = useState(null);
+  const [pendingReceipt, setPendingReceipt] = useState(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showGuide, setShowGuide] = useState(false);
+  const [legalDocument, setLegalDocument] = useState(null);
+  const [notice, setNotice] = useState(null);
+  const [activeTab, setActiveTab] = useState('home');
+  const [showSourceEditor, setShowSourceEditor] = useState(false);
+  const [showPrizeEditor, setShowPrizeEditor] = useState(false);
+  const [showFilters, setShowFilters] = useState(false);
+  const [candidateQuery, setCandidateQuery] = useState('');
+  const [candidateSegment, setCandidateSegment] = useState('eligible');
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [manualCookieOpen, setManualCookieOpen] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
-  const [recordImageUrl, setRecordImageUrl] = useState('');
-  const [recordImageName, setRecordImageName] = useState('');
   const [apiBase, setApiBase] = useState(initialApiBase);
   const [apiKey, setApiKey] = useState('');
-  const prizeSettingsRef = useRef(null);
   const firstPrizeNameRef = useRef(null);
+  const statusInputRef = useRef(null);
 
   const normalizedPrizes = useMemo(() => prizes
     .map((prize, index) => ({
@@ -679,9 +1389,6 @@ function App() {
     }))
     .filter((prize) => prize.name && prize.count > 0), [prizes]);
   const totalSlots = normalizedPrizes.reduce((sum, prize) => sum + prize.count, 0);
-  const prizeSummary = normalizedPrizes.length
-    ? `${normalizedPrizes.length} 个奖项，共 ${totalSlots} 个名额`
-    : '请填写奖项名额';
 
   const rules = useMemo(() => {
     const blocked = new Set(blocklist.split(/\r?\n|,/).map((item) => item.trim().toLowerCase()).filter(Boolean));
@@ -690,13 +1397,12 @@ function App() {
 
   function filterEligibleCandidates(sourceCandidates, activeRules = rules, activeHistoryUids = historyUids) {
     const seen = new Set();
-    let duplicates = 0;
     const list = [];
     for (const candidate of sourceCandidates) {
       const identity = String(candidate.uid || candidate.screenName || candidate.id || '').toLowerCase();
       const name = String(candidate.screenName || '').toLowerCase();
       if (activeRules.uniqueByUser && identity) {
-        if (seen.has(identity)) { duplicates += 1; continue; }
+        if (seen.has(identity)) continue;
         seen.add(identity);
       }
       if (activeRules.excludePrevious && identity && activeHistoryUids.has(identity)) continue;
@@ -706,10 +1412,13 @@ function App() {
       if (activeRules.mentionMin && mentionCount < activeRules.mentionMin) continue;
       list.push(candidate);
     }
-    return { eligible: list, duplicateCount: duplicates };
+    return list;
   }
 
-  const { eligible, duplicateCount } = useMemo(() => filterEligibleCandidates(candidates), [candidates, rules, historyUids]);
+  const eligible = useMemo(
+    () => filterEligibleCandidates(candidates),
+    [candidates, rules, historyUids],
+  );
 
   const displayPool = lastPool || eligible;
   const winners = results.flatMap((item) => item.winners);
@@ -729,27 +1438,90 @@ function App() {
     if (apiKey.trim()) headers.set('x-api-key', apiKey.trim());
     return fetch(apiPath(path), { ...options, headers });
   }
-  function showStatus(message, tone = 'neutral') {
+  function showStatus(message, tone = 'neutral', options = {}) {
     setStatus(message);
     setStatusTone(tone);
+    if (tone === 'error' || options.popup) {
+      setNotice({
+        id: Date.now(),
+        tone,
+        title: options.title || (tone === 'error' ? '操作失败' : '提示'),
+        message,
+      });
+    }
+  }
+  function dismissNotice() {
+    setNotice(null);
+  }
+  function openLegalDocument(key) {
+    setShowSettings(false);
+    setLegalDocument(LEGAL_DOCUMENTS[key] || null);
+  }
+  function selectCandidateSource(value) {
+    setSource(value);
+    clearResult();
+    setShowSourceEditor(true);
+  }
+  function safeLoadCandidates(options) {
+    loadCandidates(options).catch(() => {});
+  }
+  async function pasteAndLoadCandidates() {
+    if (isLoading || isDrawing) return;
+    const existingValue = statusUrl.trim();
+    if (existingValue) {
+      setSource('mobile');
+      safeLoadCandidates({
+        jumpAfterLoad: false,
+        sourceOverride: 'mobile',
+        statusUrlOverride: existingValue,
+      });
+      return;
+    }
+    try {
+      if (!navigator.clipboard?.readText) throw new Error('clipboard-unavailable');
+      const pastedValue = (await navigator.clipboard.readText()).trim();
+      if (!pastedValue) throw new Error('clipboard-empty');
+      setStatusUrl(pastedValue);
+      setCurrentStatusUrl(pastedValue);
+      setSource('mobile');
+      safeLoadCandidates({
+        jumpAfterLoad: false,
+        sourceOverride: 'mobile',
+        statusUrlOverride: pastedValue,
+      });
+    } catch {
+      statusInputRef.current?.focus();
+      showStatus('请在输入框中粘贴微博正文链接、mid 或 bid。', 'neutral', {
+        popup: true,
+        title: '粘贴微博链接',
+      });
+    }
+  }
+  function handleStatusPaste(event) {
+    const pastedValue = event.clipboardData?.getData('text')?.trim();
+    if (!pastedValue || isLoading || isDrawing) return;
+    event.preventDefault();
+    setStatusUrl(pastedValue);
+    setCurrentStatusUrl(pastedValue);
+    setSource('mobile');
+    safeLoadCandidates({
+      jumpAfterLoad: false,
+      sourceOverride: 'mobile',
+      statusUrlOverride: pastedValue,
+    });
   }
   function clearResult(message) {
     if (message && results.length) showStatus(message);
     setResults([]);
     setLastPool(null);
     setLastAudit(null);
-    setRecordImageUrl('');
-    setRecordImageName('');
+    setSelectedReceipt(null);
   }
   function jumpToPrizeSettings() {
+    setShowPrizeEditor(true);
     requestAnimationFrame(() => {
-      prizeSettingsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      window.setTimeout(() => firstPrizeNameRef.current?.focus(), 650);
+      window.setTimeout(() => firstPrizeNameRef.current?.focus(), 380);
     });
-  }
-  function openPrizeSettings() {
-    jumpToPrizeSettings();
-    showStatus('填写奖项名称和中奖人数后，就可以开始开奖。');
   }
   function ensurePrizeSettingsReady() {
     if (!normalizedPrizes.length || totalSlots < 1) {
@@ -759,6 +1531,27 @@ function App() {
     }
     return true;
   }
+  function updatePrize(index, patch) {
+    setPrizes((previous) => previous.map((prize, prizeIndex) => (
+      prizeIndex === index ? { ...prize, ...patch } : prize
+    )));
+    clearResult('奖项已更新，请重新开奖。');
+  }
+  function updatePrizeCount(index, nextCount) {
+    updatePrize(index, { count: Math.max(1, parseInt(nextCount, 10) || 1) });
+  }
+  function addPrize() {
+    setPrizes((previous) => [...previous, defaultPrize(previous.length, 1)]);
+    clearResult('奖项已更新，请重新开奖。');
+  }
+  function removePrize(index) {
+    if (prizes.length <= 1) {
+      showStatus('至少保留一个奖项。', 'error');
+      return;
+    }
+    setPrizes((previous) => previous.filter((_, prizeIndex) => prizeIndex !== index));
+    clearResult('奖项已更新，请重新开奖。');
+  }
 
   async function loadCookieStatus(check = false) {
     try {
@@ -767,16 +1560,17 @@ function App() {
       if (!json.ok) throw new Error(json.error || '服务器 Cookie 状态读取失败');
       setCookieInfo(json);
       if (check) {
+        const accountCount = Number(json.accountCount ?? json.cookieCount ?? 0);
         if (json.checkSkipped) {
-          showStatus('服务器 Cookie 已受站长密钥保护，普通访客只能查看可用数量。');
+          showStatus('服务器 Cookie 状态受站长密钥保护，普通访客只能查看可用数量。');
         } else {
           showStatus(json.hasCookie
-            ? `服务器端已有 ${json.cookieCount || 1} 个可用 Cookie，失效项会自动删除。`
-            : '服务器端暂无可用 Cookie，粘贴有效 Cookie 后载入即可保存。');
+            ? `服务器 Cookie 池有 ${accountCount || 1} 项通过校验，失效项会自动移除。`
+            : '服务器端暂无可用 Cookie，可以展开并填写自己的 Cookie。');
         }
       }
     } catch (error) {
-      if (check) showStatus(error.message, 'error');
+      if (check && !/Unexpected token|not valid JSON/i.test(error.message || '')) showStatus(error.message, 'error');
     }
   }
 
@@ -794,7 +1588,6 @@ function App() {
   async function refreshDrawCount(value = statusUrl) {
     if (source === 'manual' || !value.trim()) {
       setDrawCount(null);
-      setDrawCountLastAt('');
       return;
     }
     try {
@@ -804,10 +1597,8 @@ function App() {
       setCurrentStatusId(json.statusId || '');
       setCurrentStatusUrl(json.statusUrl || value);
       setDrawCount(json.drawCount);
-      setDrawCountLastAt(json.lastDrawnAt || '');
     } catch {
       setDrawCount(null);
-      setDrawCountLastAt('');
     }
   }
 
@@ -817,9 +1608,26 @@ function App() {
     writeStoredValue('weibo-draw-api-base', cleaned && isTrustedApiBase(cleaned) ? cleaned : '');
   }, [apiBase]);
   useEffect(() => {
+    try {
+      writeDrawHistory(window.localStorage, drawHistory);
+    } catch {
+      setStatus('本机存储不可用，刷新后不会保留开奖记录。');
+      setStatusTone('neutral');
+    }
+  }, [drawHistory]);
+  useEffect(() => {
     const timer = setTimeout(() => refreshDrawCount(statusUrl), 420);
     return () => clearTimeout(timer);
   }, [statusUrl, source, apiBase]);
+  useEffect(() => {
+    if (!pendingReceipt || isDrawing) return undefined;
+    const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const timer = window.setTimeout(() => {
+      setSelectedReceipt(pendingReceipt);
+      setPendingReceipt(null);
+    }, reducedMotion ? 420 : 720);
+    return () => window.clearTimeout(timer);
+  }, [pendingReceipt, isDrawing]);
 
   async function fetchRepostsWithProgress(payload) {
     setProgress({ percent: 3, message: '创建抓取任务' });
@@ -847,52 +1655,60 @@ function App() {
   }
 
   async function loadCandidates(options = {}) {
-    const { jumpAfterLoad = true } = options;
+    const {
+      jumpAfterLoad = true,
+      sourceOverride = source,
+      statusUrlOverride = statusUrl,
+    } = options;
+    const effectiveSource = sourceOverride;
+    const effectiveStatusUrl = String(statusUrlOverride || '').trim();
     setIsLoading(true);
     clearResult();
     try {
-      if (source === 'manual') {
+      if (effectiveSource === 'manual') {
         const parsed = parseManualInput(manualInput);
+        if (!parsed.length) throw new Error('请先粘贴或导入候选名单。');
         const freshHistory = new Set();
         setCandidates(parsed);
         setCurrentStatusId('');
         setCurrentStatusUrl('');
         setDrawCount(null);
-        setDrawCountLastAt('');
         setSourceMeta({ provider: 'manual' });
         setHistoryUids(freshHistory);
         showStatus(`已导入 ${parsed.length} 位候选用户，请确认奖项设置。`, 'success');
         if (jumpAfterLoad) jumpToPrizeSettings();
         return {
           candidates: parsed,
-          eligible: filterEligibleCandidates(parsed, rules, freshHistory).eligible,
+          eligible: filterEligibleCandidates(parsed, rules, freshHistory),
           statusId: '',
           statusUrl: '',
           sourceMeta: { provider: 'manual' },
         };
       }
-      if (!statusUrl.trim()) throw new Error('请先粘贴微博正文链接、mid 或 bid。');
-      if (source === 'official' && !accessToken.trim()) throw new Error('官方模式需要填写访问凭据。');
-      showStatus(source === 'mobile'
+      if (!effectiveStatusUrl) throw new Error('请先粘贴微博正文链接、mid 或 bid。');
+      if (effectiveSource === 'official' && !accessToken.trim()) throw new Error('官方模式需要填写访问凭据。');
+      setStatusUrl(effectiveStatusUrl);
+      setCurrentStatusUrl(effectiveStatusUrl);
+      showStatus(effectiveSource === 'mobile'
         ? '正在抓取微博可见转发；未填写 Cookie 时会自动使用服务器 Cookie 池。'
         : '正在通过官方接口分页抓取可见转发。');
       const json = await fetchRepostsWithProgress({
-        source,
-        statusUrl,
+        source: effectiveSource,
+        statusUrl: effectiveStatusUrl,
         accessToken,
-        mobileCookie: source === 'mobile' ? mobileCookie : '',
+        mobileCookie: effectiveSource === 'mobile' ? mobileCookie : '',
       });
       if (!json.ok) throw new Error(json.error || '微博数据拉取失败');
       const loadedCandidates = json.candidates || [];
-      const freshHistory = new Set();
+      const loadedStatusId = json.statusId || '';
+      const freshHistory = winnerIdsForStatus(drawHistory, loadedStatusId);
       setCandidates(loadedCandidates);
-      setCurrentStatusId(json.statusId || '');
-      setCurrentStatusUrl(json.statusUrl || statusUrl.trim());
+      setCurrentStatusId(loadedStatusId);
+      setCurrentStatusUrl(json.statusUrl || effectiveStatusUrl);
       setDrawCount(json.drawCount ?? 0);
-      setDrawCountLastAt(json.lastDrawnAt || '');
       setSourceMeta({ ...(json.meta || {}), statusId: json.statusId, statusUrl: json.statusUrl });
       setHistoryUids(freshHistory);
-      if (source === 'mobile') await loadCookieStatus(false);
+      if (effectiveSource === 'mobile') await loadCookieStatus(false);
       const pageCount = Array.isArray(json.meta?.pages) ? json.meta.pages.length : 0;
       const totalNumber = Number(json.meta?.totalNumber);
       const totalText = Number.isFinite(totalNumber) ? `接口显示总转发约 ${totalNumber} 条。` : '';
@@ -900,9 +1716,9 @@ function App() {
       if (jumpAfterLoad) jumpToPrizeSettings();
       return {
         candidates: loadedCandidates,
-        eligible: filterEligibleCandidates(loadedCandidates, rules, freshHistory).eligible,
+        eligible: filterEligibleCandidates(loadedCandidates, rules, freshHistory),
         statusId: json.statusId || '',
-        statusUrl: json.statusUrl || statusUrl.trim(),
+        statusUrl: json.statusUrl || effectiveStatusUrl,
         sourceMeta: { ...(json.meta || {}), statusId: json.statusId, statusUrl: json.statusUrl },
       };
     } catch (error) {
@@ -914,37 +1730,8 @@ function App() {
     }
   }
 
-  async function recordDrawAttempt(seed, candidateDigest, drawEligible = eligible, drawCandidates = candidates, drawContext = {}) {
-    if (source === 'manual') return null;
-    const response = await apiFetch('/api/weibo/draw-attempts', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        source,
-        statusId: drawContext.statusId || currentStatusId,
-        statusUrl: drawContext.statusUrl || currentStatusUrl || statusUrl.trim(),
-        seed,
-        eligibleCount: drawEligible.length,
-        candidateCount: drawCandidates.length,
-        prizeCount: totalSlots,
-        candidateDigest,
-        rules: {
-          filters: { keyword, mentionMin: Number(mentionMin || 0), uniqueByUser, excludePrevious },
-          prizes: normalizedPrizes,
-        },
-      }),
-    });
-    const json = await response.json();
-    if (!json.ok) throw new Error(json.error || '抽奖次数登记失败');
-    setCurrentStatusId(json.statusId || currentStatusId);
-    setCurrentStatusUrl(json.statusUrl || currentStatusUrl);
-    setDrawCount(json.drawCount ?? drawCount);
-    setDrawCountLastAt(json.lastDrawnAt || json.drawnAt || drawCountLastAt);
-    return json;
-  }
-
   async function drawAll() {
-    if (isDrawing || isLoading) return;
+    if (isDrawing || isLoading || pendingReceipt) return;
     if (!ensurePrizeSettingsReady()) return;
     let drawCandidates = candidates;
     let drawEligible = eligible;
@@ -976,15 +1763,11 @@ function App() {
     }
     setIsDrawing(true);
     setResults([]);
+    setRollingCandidate(null);
     try {
       const seed = randomSeedHex();
       const candidateDigest = await digestCandidates(drawEligible);
-      if (source !== 'manual') {
-        showStatus('正在登记本次开始抽奖次数。');
-        await recordDrawAttempt(seed, candidateDigest, drawEligible, drawCandidates, drawContext);
-      }
       const pool = await seededShuffle(drawEligible, `${seed}:${candidateDigest}`);
-      const rollingPool = pool.map((item) => item.screenName || item.uid || item.id).filter(Boolean);
       const all = [];
       let offset = 0;
       for (let prizeIndex = 0; prizeIndex < normalizedPrizes.length; prizeIndex += 1) {
@@ -997,16 +1780,12 @@ function App() {
         const startedAt = Date.now();
         let tick = 0;
         while (Date.now() - startedAt < duration) {
-          const index = rollingPool.length ? (prizeIndex * 19 + tick * 7 + Math.floor(tick / 3)) % rollingPool.length : 0;
-          const nextRollingName = rollingPool[index] || `候选用户 ${tick + 1}`;
-          setRollingName(nextRollingName);
-          setRollingNames((previous) => [...previous, nextRollingName].slice(-6));
+          const index = pool.length ? (prizeIndex * 19 + tick * 7 + Math.floor(tick / 3)) % pool.length : 0;
+          setRollingCandidate(pool[index] || null);
           await sleep(Math.min(96, 46 + tick * 4));
           tick += 1;
         }
-        const winnerNames = prizeWinners.map((winner) => winner.screenName || winner.uid).filter(Boolean);
-        setRollingName(winnerNames.join(' / '));
-        setRollingNames(winnerNames);
+        setRollingCandidate(prizeWinners.at(-1) || null);
         setPhase(`${prize.name} 开奖完成`);
         await sleep(380);
         all.push({ prize, winners: prizeWinners });
@@ -1030,36 +1809,55 @@ function App() {
         eligibleCount: drawEligible.length,
       };
       setLastAudit(audit);
-      const now = new Date();
-      const time = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')} ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-      setDrawHistory((previous) => [{
-        time,
-        results: all,
-        total: all.reduce((sum, item) => sum + item.winners.length, 0),
-        summary: all.map((item) => `${item.prize.name}: ${item.winners.map((winner) => winner.screenName || winner.uid).join('、')}`).join(' | '),
-      }, ...previous].slice(0, 50));
+      const activeSourceMeta = {
+        ...(drawContext.sourceMeta || sourceMeta || {}),
+        statusId: drawContext.statusId || currentStatusId,
+        statusUrl: drawContext.statusUrl || currentStatusUrl || statusUrl.trim(),
+      };
       const saved = await saveResult({
         silent: true,
         results: all,
+        source,
         statusId: drawContext.statusId || currentStatusId,
         statusUrl: drawContext.statusUrl || currentStatusUrl || statusUrl.trim(),
-        sourceMeta: {
-          ...(drawContext.sourceMeta || sourceMeta || {}),
-          statusId: drawContext.statusId || currentStatusId,
-          statusUrl: drawContext.statusUrl || currentStatusUrl || statusUrl.trim(),
-        },
+        sourceMeta: activeSourceMeta,
         totalCount: drawCandidates.length,
         eligibleCount: drawEligible.length,
         audit,
       });
-      showStatus(`已抽出 ${all.reduce((sum, item) => sum + item.winners.length, 0)} 位中奖用户${saved?.file ? '，后台已记录。' : '。'}`, 'success');
-      setShowModal(true);
+      const manualDrawNumber = source === 'manual' && saved?.file
+        ? drawHistory.filter((item) => item.source === 'manual' && item.recordState === 'server').length + 1
+        : null;
+      const receipt = normalizeDrawReceipt({
+        id: saved?.auditHash || `local-${audit.drawnAt}`,
+        source,
+        statusId: audit.statusId,
+        statusUrl: audit.statusUrl,
+        drawNumber: saved?.drawNumber ?? manualDrawNumber,
+        drawnAt: audit.drawnAt,
+        savedAt: saved?.savedAt || '',
+        results: all,
+        candidateCount: drawCandidates.length,
+        eligibleCount: drawEligible.length,
+        rules: audit.rules,
+        sourceMeta: activeSourceMeta,
+        seed: audit.seed,
+        candidateDigest: audit.candidateDigest,
+        auditHash: saved?.auditHash || '',
+        recordState: saved?.file ? 'server' : 'local',
+      });
+      setDrawHistory((previous) => upsertDrawReceipt(previous, receipt));
+      setPendingReceipt(receipt);
+      showStatus(
+        saved?.file
+          ? `已抽出 ${receipt.total} 位中奖用户，结果已保存。`
+          : `已抽出 ${receipt.total} 位中奖用户，结果仅保存在本机。`,
+        'success',
+      );
     } catch (error) {
       showStatus(error.message, 'error');
     } finally {
       setPhase('');
-      setRollingName('');
-      setRollingNames([]);
       setIsDrawing(false);
     }
   }
@@ -1074,7 +1872,7 @@ function App() {
       const activeStatusId = opts.statusId ?? currentStatusId;
       const activeStatusUrl = opts.statusUrl ?? currentStatusUrl;
       const payload = {
-        source,
+        source: opts.source ?? source,
         statusId: activeStatusId,
         statusUrl: activeStatusUrl,
         sourceMeta: {
@@ -1095,6 +1893,9 @@ function App() {
       });
       const json = await response.json();
       if (!json.ok) throw new Error(json.error || '保存失败');
+      if (json.statusId) setCurrentStatusId(json.statusId);
+      if (json.statusUrl) setCurrentStatusUrl(json.statusUrl);
+      if (json.drawCount !== null && json.drawCount !== undefined) setDrawCount(json.drawCount);
       if (!opts.silent) showStatus(`开奖记录已保存：${json.file}`, 'success');
       return json;
     } catch (error) {
@@ -1128,16 +1929,90 @@ function App() {
     }
   }
 
-  function copyWinnerMentions() {
-    copyToClipboard(winnerMentionText(winners), '中奖用户 @名单已复制。');
+  function currentReceiptSnapshot() {
+    return normalizeDrawReceipt({
+      id: lastAudit?.candidateDigest ? `current-${lastAudit.candidateDigest}` : 'current-result',
+      source,
+      statusId: currentStatusId,
+      statusUrl: currentStatusUrl || statusUrl.trim(),
+      drawNumber: source === 'manual' ? null : drawCount,
+      drawnAt: lastAudit?.drawnAt || '',
+      results,
+      candidateCount: candidates.length,
+      eligibleCount: lastAudit?.eligibleCount ?? eligible.length,
+      rules: lastAudit?.rules || null,
+      sourceMeta: sourceMeta || {},
+      seed: lastAudit?.seed || '',
+      candidateDigest: lastAudit?.candidateDigest || '',
+      recordState: 'local',
+    });
   }
 
-  function copyWinnerPost() {
-    copyToClipboard(winnerPostText(results, currentStatusUrl || statusUrl.trim()), '可直接发微博的开奖文案已复制。');
+  function resolveReceipt(receiptInput) {
+    if (receiptInput?.nativeEvent) return selectedReceipt || currentReceiptSnapshot();
+    if (receiptInput) return normalizeDrawReceipt(receiptInput);
+    return selectedReceipt || currentReceiptSnapshot();
   }
 
-  async function createShareImage() {
-    if (!results.length) {
+  function copyReceiptPost(receiptInput) {
+    const receipt = resolveReceipt(receiptInput);
+    copyToClipboard(
+      winnerPostText(receipt.results, receipt.statusUrl),
+      '开奖文案已复制。',
+    );
+  }
+
+  function copyReceiptFairness(receiptInput) {
+    copyToClipboard(
+      buildFairnessSummary(resolveReceipt(receiptInput)),
+      '公平摘要已复制。',
+    );
+  }
+
+  async function retrySaveReceipt(receiptInput) {
+    const receipt = resolveReceipt(receiptInput);
+    const saved = await saveResult({
+      silent: false,
+      source: receipt.source,
+      results: receipt.results,
+      statusId: receipt.statusId,
+      statusUrl: receipt.statusUrl,
+      sourceMeta: receipt.sourceMeta,
+      totalCount: receipt.candidateCount,
+      eligibleCount: receipt.eligibleCount,
+      audit: {
+        seed: receipt.seed,
+        drawnAt: receipt.drawnAt,
+        statusId: receipt.statusId,
+        statusUrl: receipt.statusUrl,
+        rules: receipt.rules,
+        candidateDigest: receipt.candidateDigest,
+        eligibleCount: receipt.eligibleCount,
+      },
+    });
+    if (!saved?.file) return;
+    const manualDrawNumber = receipt.source === 'manual'
+      ? drawHistory.filter((item) => (
+        item.id !== receipt.id
+        && item.source === 'manual'
+        && item.recordState === 'server'
+      )).length + 1
+      : null;
+    const updated = normalizeDrawReceipt({
+      ...receipt,
+      id: receipt.id,
+      drawNumber: saved.drawNumber ?? manualDrawNumber,
+      savedAt: saved.savedAt,
+      auditHash: saved.auditHash,
+      recordState: 'server',
+    });
+    setDrawHistory((history) => upsertDrawReceipt(history, updated));
+    setSelectedReceipt(updated);
+  }
+
+  async function createShareImage(receiptInput) {
+    const receipt = resolveReceipt(receiptInput);
+    if (!receipt.results.length) {
       showStatus('请先开奖，再生成开奖记录图。', 'error');
       return;
     }
@@ -1146,29 +2021,42 @@ function App() {
       showStatus('正在生成开奖记录图。');
       await sleep(80);
       const providerText = [
-        ...(Array.isArray(sourceMeta?.providers) ? sourceMeta.providers : [sourceMeta?.provider]).filter(Boolean),
-        sourceMeta?.complete === false ? '未完整' : '',
+        ...(Array.isArray(receipt.sourceMeta?.providers)
+          ? receipt.sourceMeta.providers
+          : [receipt.sourceMeta?.provider]).filter(Boolean),
+        receipt.sourceMeta?.complete === false ? '仅公开可见' : '',
       ].filter(Boolean).join(' / ');
-      const canvas = await createRecordImage({
-        results,
-        statusUrl: currentStatusUrl || statusUrl.trim(),
-        statusId: currentStatusId || sourceMeta?.statusId || '',
-        drawnAt: lastAudit?.drawnAt || new Date(),
-        seed: lastAudit?.seed || '',
-        candidateDigest: lastAudit?.candidateDigest || '',
-        candidateCount: candidates.length,
-        eligibleCount: lastAudit?.eligibleCount || eligible.length,
-        winnerCount: winners.length,
-        drawCount: drawCount ?? 0,
-        totalNumber: sourceMeta?.totalNumber,
+      const canvas = await createResultPoster({
+        results: receipt.results,
+        statusUrl: receipt.statusUrl,
+        statusId: receipt.statusId,
+        drawnAt: receipt.drawnAt || new Date(),
+        seed: receipt.seed,
+        auditHash: receipt.auditHash,
+        candidateDigest: receipt.candidateDigest,
+        candidateCount: receipt.candidateCount,
+        eligibleCount: receipt.eligibleCount,
+        winnerCount: receipt.total,
+        drawCount: receipt.drawNumber
+          ? drawCountCopy({
+            source: receipt.source,
+            count: receipt.drawNumber,
+            completed: true,
+          })
+          : '未计入开奖次数',
+        totalNumber: receipt.sourceMeta?.totalNumber,
         providerText,
-        filterSummary: buildFilterSummary({ keyword, mentionMin, uniqueByUser, excludePrevious }),
-        prizeSummary: normalizedPrizes.map((prize) => `${prize.name} x ${prize.count}`).join(' / '),
+        filterSummary: receipt.rules?.filters
+          ? buildFilterSummary(receipt.rules.filters)
+          : '未记录',
+        prizeSummary: receipt.results
+          .map((group) => `${group.prize.name} x ${group.winners.length}`)
+          .join(' / '),
+      }, {
+        brandAssetUrl: publicAsset('avatar.jpg'),
       });
       const imageUrl = canvas.toDataURL('image/png');
       const imageName = `weibo-draw-record-${Date.now()}.png`;
-      setRecordImageUrl(imageUrl);
-      setRecordImageName(imageName);
       downloadUrl(imageName, imageUrl);
       showStatus('开奖记录图已生成。', 'success');
     } catch (error) {
@@ -1181,7 +2069,7 @@ function App() {
   function addManualNames() {
     try {
       const parsed = parseManualInput(manualInput);
-      if (!parsed.length) return;
+      if (!parsed.length) throw new Error('请先粘贴或导入候选名单。');
       setCandidates((previous) => {
         const merged = [...previous];
         const seen = new Set(previous.map((item) => item.uid || item.screenName || item.id));
@@ -1197,355 +2085,164 @@ function App() {
       showStatus(error.message, 'error');
     }
   }
+  async function importCandidateFile(event) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      setSource('manual');
+      setManualInput(text);
+      showStatus(`已读取 ${file.name}，确认后可导入候选名单。`, 'success', { popup: true, title: '文件已读取' });
+    } catch (error) {
+      showStatus(`文件读取失败：${error.message}`, 'error');
+    } finally {
+      event.target.value = '';
+    }
+  }
 
-  const drawCountText = source === 'manual'
-    ? '手动名单不统计微博链接'
-    : !statusUrl.trim()
-      ? '输入链接后显示'
-      : drawCount === null
-        ? '查询中'
-        : `已开始抽奖 ${drawCount} 次`;
-  const drawCountMeta = drawCountLastAt
-    ? `最近开始：${new Date(drawCountLastAt).toLocaleString()}`
-    : currentStatusId ? `微博 mid：${currentStatusId}` : '点击开始开奖才会计数';
-  const hasCandidates = displayPool.length > 0;
+  const manualDrawCount = drawHistory.filter((item) => (
+    item.source === 'manual' && item.recordState === 'server'
+  )).length;
+  const activeReceipt = selectedReceipt?.drawnAt === lastAudit?.drawnAt
+    ? selectedReceipt
+    : null;
+  const drawCountText = activeReceipt
+    ? activeReceipt.drawNumber
+      ? drawCountCopy({
+        source: activeReceipt.source,
+        count: activeReceipt.drawNumber,
+        completed: true,
+      })
+      : '本次结果未计入次数'
+    : source === 'manual'
+      ? drawCountCopy({ source, count: manualDrawCount, completed: false })
+      : !statusUrl.trim()
+        ? '输入链接后显示'
+        : drawCount === null
+          ? '正在查询记录'
+          : drawCountCopy({ source, count: drawCount, completed: false });
+  const hasCandidates = candidates.length > 0;
   const hasResults = results.length > 0;
+  const serverAccountCount = Number(cookieInfo.accountCount ?? cookieInfo.cookieCount ?? 0);
+  const accountStatusText = serverAccountCount > 0 ? '服务器 Cookie 可用' : '服务器 Cookie 待校验';
+  const loadedCandidateCount = displayPool.length || candidates.length;
+  const resultTotal = winners.length;
+  const filterEnabledText = keyword.trim() || Number(mentionMin || 0) > 0 || blocklist.trim() || excludePrevious ? '已开启' : '默认';
+  const filterSummary = buildFilterSummary({
+    keyword,
+    mentionMin,
+    uniqueByUser,
+    excludePrevious,
+  });
   return (
-    <div className="relative z-10 min-h-screen flex flex-col app-shell">
-      <header className="glass-subtle app-header sticky top-0 z-40">
-        <div className="app-header-inner max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="brand-avatar w-11 h-11 rounded-lg bg-white/80 p-1 shadow-md shadow-slate-300/50 ring-1 ring-black/10">
-              <img src={publicAsset('avatar.jpg')} alt="sameko 头像" className="h-full w-full rounded-lg object-cover" />
-            </div>
-            <div className="leading-tight">
-              <h1 className="app-brand-title text-[14px] font-semibold text-[#1d1d1f]">微博转发抽奖助手</h1>
-              <div className="app-brand-subtitle text-[10px] text-gray-500">by.sameko</div>
-            </div>
-          </div>
-          <div className="hidden md:flex items-center gap-2 text-[11px] text-gray-500">
-            <span className="hard-chip px-2 py-1">接口 {apiBase ? '远程' : '本地'}</span>
-            <span className="hard-chip px-2 py-1">任务 {progress ? '运行中' : '空闲'}</span>
-          </div>
-          <button onClick={() => setShowSettings(true)} aria-label="打开设置" className="btn-ghost w-9 h-9 flex items-center justify-center text-gray-500 hover:text-[#1d1d1f]">
-            {I.settings}
-          </button>
-        </div>
-      </header>
-
-      <main className="share-capture app-main flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-5 gap-5">
-          <div className="main-column lg:col-span-3 space-y-5">
-            <section className="glass hero-panel hero-stage-panel p-5 sm:p-6 border-glow">
-              <div className="mb-5 flex flex-col gap-4">
-                <div>
-                  <h2 className="hero-title text-[28px] sm:text-4xl font-semibold text-[#101014] leading-tight">微博转发抽奖助手</h2>
-                </div>
-                <div className="hero-metrics grid grid-cols-3 gap-2 text-[11px] text-gray-500">
-                  <div className="hard-chip px-3 py-2">
-                    <div>来源</div>
-                    <strong className="mt-1 block text-[#1d1d1f] text-[12px]">{SOURCE_LABELS[source]}</strong>
-                  </div>
-                  <div className="hard-chip px-3 py-2">
-                    <div>奖项</div>
-                    <strong className="mt-1 block text-[#1d1d1f] text-[12px]">{prizes.length}</strong>
-                  </div>
-                  <div className="hard-chip px-3 py-2">
-                    <div>状态</div>
-                    <strong className={`mt-1 block text-[12px] ${statusTone === 'error' ? 'status-bad' : statusTone === 'success' ? 'status-ok' : 'status-warn'}`}>
-                      {isLoading ? '载入中' : isDrawing ? '开奖中' : '就绪'}
-                    </strong>
-                  </div>
-                </div>
-              </div>
-
-              <div className="stage-wrap">
-                <RollingBox isRolling={isDrawing} name={rollingName} names={rollingNames} phase={phase || '开奖中'} />
-              </div>
-            </section>
-
-            <section className="glass action-panel p-5 sm:p-6">
-              <div className="grid gap-3">
-                <label className="grid gap-2">
-                  <span className="text-[12px] text-gray-500 font-semibold">微博链接 / mid / bid</span>
-                  <input value={statusUrl} onChange={(event) => { setStatusUrl(event.target.value); setCurrentStatusUrl(event.target.value); }}
-                    placeholder="粘贴微博链接 / mid / bid"
-                    className="input-field px-4 py-3.5 text-[#1d1d1f] placeholder-gray-600 w-full text-[15px]" />
-                </label>
-                <div className="action-grid grid grid-cols-1 sm:grid-cols-4 gap-3">
-                  <button onClick={loadCandidates} disabled={isLoading} className={`btn-ghost action-btn action-step action-step-candidates px-4 py-3.5 text-[#1d1d1f] font-bold ${hasCandidates ? 'action-step-complete' : 'action-step-current'} ${isLoading ? 'action-step-active' : ''}`}>
-                    <span className="action-step-dot">1</span>
-                    <span className="action-icon">{I.listChecks}</span>
-                    <span className="action-copy">
-                      <span className="action-title">{isLoading ? '载入中...' : '载入候选'}</span>
-                    </span>
-                  </button>
-                  <button onClick={openPrizeSettings} className={`btn-ghost action-btn action-step action-step-prize px-4 py-3.5 text-[#1d1d1f] font-bold ${totalSlots > 0 ? 'action-step-ready' : 'action-step-current'}`}>
-                    <span className="action-step-dot">2</span>
-                    <span className="action-icon">{I.badgeCheck}</span>
-                    <span className="action-copy">
-                      <span className="action-title">填写奖项</span>
-                      <span className="action-hint">{prizeSummary}</span>
-                    </span>
-                  </button>
-                  <button onClick={drawAll} disabled={isDrawing || isLoading} className={`btn-primary action-btn action-step action-step-draw action-btn-primary px-4 py-3.5 font-bold relative z-10 breathe ${isDrawing ? 'action-step-active' : ''} ${hasResults ? 'action-step-complete' : 'action-step-current'}`}>
-                    <span className="action-step-dot">3</span>
-                    <span className="action-icon action-icon-primary">{I.sparkles}</span>
-                    <span className="action-copy">
-                      <span className="action-title">{isDrawing ? '抽奖中...' : isLoading ? '载入中...' : '一键开奖'}</span>
-                    </span>
-                  </button>
-                  <button data-testid="hero-record-image" onClick={createShareImage} disabled={isCapturing || !hasResults} className={`btn-ghost action-btn action-step action-step-record px-4 py-3.5 text-[#1d1d1f] font-bold ${hasResults ? 'action-step-current' : 'action-step-muted'}`}>
-                    <span className="action-step-dot">4</span>
-                    <span className="action-icon">{I.image}</span>
-                    <span className="action-copy">
-                      <span className="action-title">{isCapturing ? '生成中' : '记录图'}</span>
-                      <span className="action-hint">{hasResults ? '手机保存版' : '开奖后生成'}</span>
-                    </span>
-                  </button>
-                </div>
-              </div>
-
-              {progress && (
-                <div className="progress-card p-3 mt-4">
-                  <div className="flex items-center justify-between text-[12px] text-gray-400 mb-2">
-                    <span className="truncate">{progress.message || '处理中'}</span>
-                    <strong className="text-[#4f9fff]">{Math.round(progress.percent || 0)}%</strong>
-                  </div>
-                  <div className="h-2 rounded-full bg-white/[0.05] overflow-hidden">
-                    <div className="h-full rounded-full bg-gradient-to-r from-[#4f9fff] via-[#9bd7ff] to-[#54c6a8] transition-all" style={{ width: `${Math.max(0, Math.min(100, Number(progress.percent || 0)))}%` }} />
-                  </div>
-                </div>
-              )}
-
-              <div className="hero-stats mt-5 grid grid-cols-3 gap-2">
-                <StatCard value={displayPool.length} label="可抽人数" gradient="from-[#4f9fff] to-[#9bd7ff]" delay="d1" />
-                <StatCard value={totalSlots} label="中奖名额" gradient="from-[#9bd7ff] to-[#54c6a8]" delay="d2" />
-                <StatCard value={drawCount ?? 0} label="本链接已抽" gradient="from-[#8f93f5] to-[#4f9fff]" delay="d3" />
-              </div>
-
-              <div className={`status-line mt-4 text-[13px] ${statusTone === 'error' ? 'status-bad' : statusTone === 'success' ? 'status-ok' : 'text-gray-500'}`}>
-                {status}
-              </div>
-            </section>
-
-            <section className="glass pool-stats-panel p-4">
-              <div className="pool-stats-grid grid grid-cols-4 gap-2">
-                <StatCard value={candidates.length} label="候选" gradient="from-[#4f9fff] to-[#9bd7ff]" delay="d1" />
-                <StatCard value={eligible.length} label="可抽" gradient="from-[#9bd7ff] to-[#54c6a8]" delay="d2" />
-                <StatCard value={duplicateCount} label="去重" gradient="from-[#8f93f5] to-[#4f9fff]" delay="d2" />
-                <StatCard value={winners.length} label="中奖" gradient="from-[#54c6a8] to-[#e6ad61]" delay="d3" />
-              </div>
-              {isDrawing && <div className="mt-3 text-[12px] text-[#4f9fff] truncate">{phase || '开奖中'} {rollingName ? `：${rollingName}` : ''}</div>}
-            </section>
-
-            {results.length > 0 && (
-              <section className="share-capture glass p-4 space-y-3">
-                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                  <h3 className="text-base font-semibold text-[#1d1d1f] flex items-center gap-2"><span className="text-[#4f9fff]">{I.trophy}</span> 中奖结果</h3>
-                  <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2">
-                    <button onClick={saveResult} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.save} 保存记录</button>
-                    <button onClick={copyWinnerMentions} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.copy} @名单</button>
-                    <button onClick={copyWinnerPost} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.copy} 开奖文案</button>
-                    <button data-testid="results-record-image" onClick={createShareImage} disabled={isCapturing} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.image} {isCapturing ? '生成中' : '开奖记录图'}</button>
-                    <button onClick={() => download('weibo-winners.csv', toCsv(winners))} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.download} 导出名单</button>
-                  </div>
-                </div>
-                {results.map((item, index) => <PrizeCard key={index} prize={item.prize} winners={item.winners} isNew={true} index={index} />)}
-                {recordImageUrl && (
-                  <div className="record-preview-card glass p-3 border border-white/[0.06]">
-                    <div className="flex items-center justify-between gap-3 mb-3">
-                      <div>
-                        <div className="text-[13px] text-[#1d1d1f] font-semibold">开奖记录图预览</div>
-                        <div className="text-[11px] text-gray-500">含中奖名单、候选统计和抽奖摘要</div>
-                      </div>
-                      <button onClick={() => downloadUrl(recordImageName || `weibo-draw-record-${Date.now()}.png`, recordImageUrl)} className="btn-ghost px-3 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.download} 保存图片</button>
-                    </div>
-                    <img src={recordImageUrl} alt="开奖记录图预览" className="record-preview-image w-full rounded-xl border border-white/[0.06]" />
-                  </div>
-                )}
-              </section>
-            )}
-
-            <section className="glass list-panel p-5">
-              <h3 className="text-sm font-semibold text-[#1d1d1f] mb-3 flex items-center gap-2">{I.users} 候选列表</h3>
-              <div className="max-h-72 overflow-y-auto space-y-1.5">
-                {displayPool.length ? displayPool.slice(0, 160).map((candidate, index) => (
-                  <div key={candidate.id || index} className="candidate-row flex items-center justify-between gap-3 px-3 py-2">
-                    <div className="min-w-0">
-                      <div className="text-[13px] text-[#1d1d1f] font-medium truncate">{candidate.screenName || candidate.uid || `候选人 ${index + 1}`}</div>
-                      <div className="text-[11px] text-gray-600 truncate">{candidate.text || candidate.uid || candidate.source}</div>
-                    </div>
-                    <span className="text-[10px] text-gray-500 bg-white/[0.04] rounded-full px-2 py-0.5">{friendlyProviderText(candidate.source) || '手动名单'}</span>
-                  </div>
-                )) : (
-                  <EmptyState icon={I.users} title="候选名单为空" detail="载入微博转发后，候选用户会按可抽规则显示在这里。" />
-                )}
-              </div>
-              {displayPool.length > 0 && (
-                <button onClick={() => download('eligible-candidates.csv', toCsv(displayPool.map((item) => ({ tier: '', ...item }))))} className="mt-3 btn-ghost px-4 py-2 rounded-xl text-[12px] text-[#1d1d1f] font-semibold flex items-center gap-1.5">{I.download} 导出候选</button>
-              )}
-            </section>
-          </div>
-
-          <aside className="lg:col-span-2 space-y-5">
-            <section className="glass p-5">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-[#1d1d1f] flex items-center gap-2">{I.settings} 数据源</h3>
-                <span className="hard-chip text-[11px] text-[#4f9fff] px-2 py-0.5">{SOURCE_LABELS[source]}</span>
-              </div>
-              <div className="grid grid-cols-3 gap-2 mb-3">
-                {[
-                  ['mobile', 'H5', '推荐'],
-                  ['manual', '导入', '每行一人'],
-                  ['official', '官方', '凭据'],
-                ].map(([value, label, desc]) => (
-                  <button key={value} onClick={() => { setSource(value); clearResult(); }}
-                      className={`source-tab p-3 text-left border transition rounded-lg ${source === value ? 'source-tab-active' : ''}`}>
-                    <div className="text-[13px] font-bold">{label}</div>
-                    <div className="text-[10px] opacity-70 mt-0.5">{desc}</div>
-                  </button>
-                ))}
-              </div>
-              {source === 'mobile' && (
-                <div className="space-y-2">
-                  <textarea value={mobileCookie} onChange={(event) => setMobileCookie(event.target.value)}
-                    placeholder="微博 Cookie 可不填，服务器有可用 Cookie 时会自动使用"
-                    className="input-field secret-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full h-20 resize-none" />
-                  <div className="flex flex-wrap gap-2">
-                    <button onClick={() => loadCookieStatus(true)} className="btn-ghost px-3 py-2 rounded-lg text-[#1d1d1f] text-[12px] font-medium flex items-center gap-1.5">{I.shield} 校验服务器 Cookie</button>
-                    <span className="text-[11px] text-gray-600 self-center">可用 Cookie：{cookieInfo.cookieCount || 0}</span>
-                  </div>
-                </div>
-              )}
-              {source === 'official' && (
-                <input value={accessToken} onChange={(event) => setAccessToken(event.target.value)}
-                  type="password" placeholder="输入官方访问凭据"
-                  className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full" />
-              )}
-              {source === 'manual' && (
-                <div className="space-y-2">
-                  <textarea value={manualInput} onChange={(event) => setManualInput(event.target.value)}
-                    placeholder="每行一位用户，支持 CSV / TSV / JSON"
-                    className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full h-28 resize-none" />
-                  <div className="flex gap-2">
-                    <button onClick={loadCandidates} className="flex-1 btn-primary px-3 py-2 rounded-lg text-white text-[13px] font-medium relative z-10"><span className="relative z-10">导入并替换</span></button>
-                    <button onClick={addManualNames} className="flex-1 btn-ghost px-3 py-2 rounded-lg text-[#1d1d1f] text-[13px] font-medium">追加名单</button>
-                  </div>
-                </div>
-              )}
-            </section>
-
-            <section ref={prizeSettingsRef} className="glass p-5 scroll-mt-8">
-              <h3 className="text-sm font-semibold text-[#1d1d1f] mb-3 flex items-center gap-2">{I.gift} 奖项设置</h3>
-              <div className="grid grid-cols-3 gap-2 mb-3">
-                <button onClick={() => { setPrizes([defaultPrize(0, 1)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">一等奖 1人</button>
-                <button onClick={() => { setPrizes([defaultPrize(0, 3)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">一等奖 3人</button>
-                <button onClick={() => { setPrizes([defaultPrize(0, 10)]); clearResult('奖项已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">一等奖 10人</button>
-              </div>
-              <div className="space-y-2">
-                {prizes.map((prize, index) => (
-                  <div key={index} className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: prize.color }} />
-                    <input ref={index === 0 ? firstPrizeNameRef : null} value={prize.name} onChange={(event) => { const next = [...prizes]; next[index] = { ...next[index], name: event.target.value }; setPrizes(next); clearResult('奖项已更新，请重新开奖。'); }}
-                      className="input-field rounded-lg px-2.5 py-1.5 text-[13px] text-[#1d1d1f] flex-1 bg-transparent min-w-0" />
-                    <input type="number" value={prize.count} min={1} onChange={(event) => { const next = [...prizes]; next[index] = { ...next[index], count: Math.max(1, parseInt(event.target.value, 10) || 1) }; setPrizes(next); clearResult('奖项已更新，请重新开奖。'); }}
-                      className="input-field rounded-lg px-2 py-1.5 text-[13px] text-[#1d1d1f] w-14 text-center bg-transparent" />
-                    <button onClick={() => { if (prizes.length <= 1) return; setPrizes(prizes.filter((_, i) => i !== index)); clearResult('奖项已更新，请重新开奖。'); }} disabled={prizes.length <= 1} className={`transition flex-shrink-0 ${prizes.length <= 1 ? 'text-gray-700 cursor-not-allowed' : 'text-gray-500 hover:text-[#ee8fa1]'}`}>{I.trash}</button>
-                  </div>
-                ))}
-              </div>
-              <button onClick={() => { setPrizes([...prizes, defaultPrize(prizes.length, 1)]); clearResult('奖项已更新，请重新开奖。'); }}
-                className="mt-2.5 w-full add-prize-btn rounded-lg py-2 text-[12px] transition flex items-center justify-center gap-1">{I.plus} 添加奖项</button>
-            </section>
-
-            <section className="glass p-5">
-              <h3 className="text-sm font-semibold text-[#1d1d1f] mb-3 flex items-center gap-2">{I.shield} 筛选规则</h3>
-              <div className="grid grid-cols-2 gap-2 mb-3">
-                <button onClick={() => { setKeyword(''); setMentionMin(0); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">不筛选</button>
-                <button onClick={() => { setKeyword('抽奖'); setMentionMin(0); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">含“抽奖”</button>
-                <button onClick={() => { setKeyword(''); setMentionMin(1); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">至少 @1</button>
-                <button onClick={() => { setKeyword(''); setMentionMin(2); clearResult('筛选规则已更新，请重新开奖。'); }} className="btn-ghost rounded-xl px-2 py-2 text-[12px] text-[#1d1d1f]">至少 @2</button>
-              </div>
-              <div className="grid grid-cols-2 gap-2 mb-2">
-                <input value={keyword} onChange={(event) => { setKeyword(event.target.value); clearResult('筛选规则已更新，请重新开奖。'); }} placeholder="关键词"
-                  className="input-field px-3 py-2 text-[13px] text-[#1d1d1f] placeholder-gray-600" />
-                <input type="number" value={mentionMin} min="0" max="10" onChange={(event) => { setMentionMin(event.target.value); clearResult('筛选规则已更新，请重新开奖。'); }}
-                  className="input-field px-3 py-2 text-[13px] text-[#1d1d1f] placeholder-gray-600" />
-              </div>
-              <textarea value={blocklist} onChange={(event) => { setBlocklist(event.target.value); clearResult('筛选规则已更新，请重新开奖。'); }}
-                placeholder="排除名单：每行一个 UID 或昵称"
-                className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full h-20 resize-none" />
-              <label className="mt-3 flex items-center gap-2 text-[13px] text-gray-400"><input type="checkbox" checked={uniqueByUser} onChange={(event) => setUniqueByUser(event.target.checked)} className="accent-[#4f9fff]" /> 同一用户只保留一次</label>
-              <label className="mt-2 flex items-center gap-2 text-[13px] text-gray-400"><input type="checkbox" checked={excludePrevious} onChange={(event) => setExcludePrevious(event.target.checked)} className="accent-[#4f9fff]" /> 排除本轮已中奖用户</label>
-            </section>
-
-            <section className="glass p-5">
-              <h3 className="text-sm font-semibold text-[#1d1d1f] mb-3 flex items-center gap-2">{I.clock} 开奖记录</h3>
-              <History list={drawHistory} onClear={() => setDrawHistory([])} />
-            </section>
-
-            <section className="glass p-5">
-              <h3 className="text-sm font-semibold text-[#1d1d1f] mb-3">随机记录</h3>
-              <div className="grid gap-2 text-[12px]">
-                <div className="flex justify-between gap-3"><span className="text-gray-600">随机种子</span><strong className="text-[#1d1d1f] truncate">{lastAudit?.seed || '未开奖'}</strong></div>
-                <div className="flex justify-between gap-3"><span className="text-gray-600">名单摘要</span><strong className="text-[#1d1d1f] truncate">{lastAudit?.candidateDigest?.slice(0, 16) || '未生成'}</strong></div>
-                <div className="flex justify-between gap-3"><span className="text-gray-600">抽奖次数</span><strong className="text-[#1d1d1f] truncate">{drawCountText}</strong></div>
-                <div className="text-gray-600 truncate">{drawCountMeta}</div>
-              </div>
-            </section>
-          </aside>
-        </div>
-      </main>
-
-      <footer className="glass-subtle border-t border-white/[0.03] py-4 mt-4">
-        <div className="max-w-6xl mx-auto px-4 text-center">
-          <p className="text-[10px] text-gray-600 tracking-wider">微博转发抽奖助手 · by.sameko</p>
-        </div>
-      </footer>
-
-      {showModal && (
-        <WinnerModal
-          results={results}
-          onClose={() => setShowModal(false)}
-          onCopyNames={copyWinnerMentions}
-          onCopyPost={copyWinnerPost}
-          onCreateShareImage={createShareImage}
-          isCapturing={isCapturing}
-        />
-      )}
-      {showSettings && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={() => setShowSettings(false)}>
-          <div className="absolute inset-0 bg-[#1d1d1f]/20 backdrop-blur-md" />
-          <div className="relative glass-elevated p-6 max-w-md w-full border border-white/[0.08] reveal" onClick={(event) => event.stopPropagation()}>
-            <button onClick={() => setShowSettings(false)} className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/70 flex items-center justify-center text-gray-500 hover:text-[#1d1d1f] hover:bg-white/90 transition">{I.close}</button>
-            <h2 className="text-lg font-bold text-[#1d1d1f] mb-4 flex items-center gap-2">{I.settings} 快速操作</h2>
-            <button onClick={() => { setCandidates([]); setResults([]); setLastPool(null); setShowSettings(false); showStatus('已清空候选和结果。'); }} className="btn-ghost px-4 py-3 rounded-xl text-[#1d1d1f] text-sm font-semibold w-full mb-2">清空候选和结果</button>
-            <button onClick={() => { setMobileCookie(''); setShowSettings(false); showStatus('已清空当前输入框里的 Cookie，服务器 Cookie 池不受影响。'); }} className="btn-ghost px-4 py-3 rounded-xl text-[#1d1d1f] text-sm font-semibold w-full mb-2">清空输入框 Cookie</button>
-            <label className="grid gap-2 mt-3">
-              <span className="text-[12px] text-gray-500 font-semibold">后端接口地址</span>
-              <input value={apiBase} onChange={(event) => setApiBase(cleanApiBase(event.target.value))}
-                placeholder="https://111.228.11.206"
-                className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full" />
-            </label>
-            <label className="grid gap-2 mt-3">
-              <span className="text-[12px] text-gray-500 font-semibold">访问密钥（可选）</span>
-              <input value={apiKey} onChange={(event) => setApiKey(event.target.value)}
-                type="password"
-                placeholder="公开模式不用填写"
-                className="input-field px-3 py-2.5 text-[13px] text-[#1d1d1f] placeholder-gray-600 w-full" />
-            </label>
-            <div className="grid grid-cols-2 gap-2 mt-2">
-              <button onClick={testApiConnection} className="btn-ghost px-3 py-2 rounded-xl text-[#1d1d1f] text-[12px] font-semibold">测试连接</button>
-              <button onClick={() => { setApiBase(''); setApiKey(''); showStatus('已改回同域后端，并清空本机访问密钥。'); }} className="btn-ghost px-3 py-2 rounded-xl text-[#1d1d1f] text-[12px] font-semibold">同域模式</button>
-            </div>
-            <button onClick={() => setShowSettings(false)} className="mt-4 btn-primary px-6 py-2.5 rounded-xl text-white font-medium relative z-10 w-full">
-              <span className="relative z-10">完成</span>
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
+    <AppleNavigationV3
+      controller={{
+        source,
+        statusUrl,
+        accessToken,
+        mobileCookie,
+        manualInput,
+        candidates,
+        eligible,
+        displayPool,
+        prizes,
+        normalizedPrizes,
+        keyword,
+        mentionMin,
+        blocklist,
+        uniqueByUser,
+        excludePrevious,
+        results,
+        winners,
+        drawHistory,
+        selectedReceipt,
+        cookieInfo,
+        status,
+        statusTone,
+        progress,
+        isLoading,
+        isDrawing,
+        rollingCandidate,
+        phase,
+        activeTab,
+        showSourceEditor,
+        showPrizeEditor,
+        showFilters,
+        candidateQuery,
+        candidateSegment,
+        historyExpanded,
+        showSettings,
+        showGuide,
+        legalDocument,
+        notice,
+        apiBase,
+        apiKey,
+        totalSlots,
+        hasCandidates,
+        hasResults,
+        loadedCandidateCount,
+        resultTotal,
+        filterEnabledText,
+        accountStatusText,
+        drawCountText,
+        filterSummary,
+        manualCookieOpen,
+        isCapturing,
+        statusInputRef,
+        firstPrizeNameRef,
+        setSource,
+        setStatusUrl,
+        setCurrentStatusUrl,
+        setAccessToken,
+        setMobileCookie,
+        setManualInput,
+        setCandidates,
+        setPrizes,
+        setKeyword,
+        setMentionMin,
+        setBlocklist,
+        setUniqueByUser,
+        setExcludePrevious,
+        setResults,
+        setLastPool,
+        setDrawHistory,
+        setSelectedReceipt,
+        setActiveTab,
+        setShowSourceEditor,
+        setShowPrizeEditor,
+        setShowFilters,
+        setCandidateQuery,
+        setCandidateSegment,
+        setHistoryExpanded,
+        setShowSettings,
+        setShowGuide,
+        setLegalDocument,
+        setApiBase,
+        setApiKey,
+        setManualCookieOpen,
+        dismissNotice,
+        openLegalDocument,
+        selectCandidateSource,
+        safeLoadCandidates,
+        pasteAndLoadCandidates,
+        handleStatusPaste,
+        clearResult,
+        updatePrize,
+        updatePrizeCount,
+        addPrize,
+        removePrize,
+        loadCookieStatus,
+        testApiConnection,
+        drawAll,
+        showStatus,
+        importCandidateFile,
+        addManualNames,
+        createShareImage,
+        copyReceiptPost,
+        copyReceiptFairness,
+        retrySaveReceipt,
+      }}
+    />
   );
 }
 

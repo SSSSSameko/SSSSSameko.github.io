@@ -2,15 +2,41 @@ import http from 'node:http';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
+import {
+  appendKeepaliveEvent,
+  formatDurationMs,
+  normalizeKeepaliveHistory,
+} from './src/lib/adminStatus.js';
+import {
+  compactCookieEntriesByAccount,
+  cookiePoolCounts,
+} from './src/lib/cookiePool.js';
+import { completedDrawStats } from './src/lib/drawReceipts.js';
+import { safeAvatarUrl } from './src/lib/avatar.js';
+import { selectFilesToPrune } from './src/lib/storageRetention.js';
+import {
+  parseCgroupMemoryStat,
+  resolveCgroupV2Directory,
+  summarizeCgroupMemory,
+} from './src/lib/systemMetrics.js';
+import {
+  closePersistentBrowserContext,
+  ensureBrowserRuntimeDirs,
+  findProfileBrowserPids,
+  preparePersistentProfile,
+  stopProfileBrowsers,
+} from './src/lib/weiboBrowserLifecycle.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname);
 const distDir = path.join(rootDir, 'dist');
 const publicDir = path.join(rootDir, 'public');
 const adminDir = path.join(rootDir, 'server-admin');
-const drawsDir = path.join(rootDir, 'output', 'draws');
-const authDir = path.join(rootDir, 'output', 'auth');
+const outputDir = path.join(rootDir, 'output');
+const drawsDir = path.join(outputDir, 'draws');
+const authDir = path.join(outputDir, 'auth');
 const cookieStoreFile = path.join(authDir, 'weibo-cookie.json');
 const weiboLoginProfileDir = path.join(authDir, 'weibo-login-profile');
 const weiboLoginStateFile = path.join(authDir, 'weibo-login-state.json');
@@ -34,6 +60,7 @@ const rateLimitWindowMs = envNumber('RATE_LIMIT_WINDOW_MS', 60_000, 1000);
 const rateLimitMax = envNumber('RATE_LIMIT_MAX', 240, 1);
 const jobCreateRateLimitMax = envNumber('JOB_CREATE_RATE_LIMIT_MAX', 10, 1);
 const jobPollRateLimitMax = envNumber('JOB_POLL_RATE_LIMIT_MAX', 240, 1);
+const drawSaveRateLimitMax = envNumber('DRAW_SAVE_RATE_LIMIT_MAX', 12, 1);
 const maxCookieBytes = envNumber('MAX_COOKIE_BYTES', 16_384, 1024);
 const maxStoredCookies = envNumber('MAX_STORED_COOKIES', 30, 1);
 const disableCookieStore = /^(1|true|yes)$/i.test(String(process.env.DISABLE_COOKIE_STORE || '').trim());
@@ -44,10 +71,13 @@ const legacyPageDelayMs = envNumber('LEGACY_PAGE_DELAY_MS', 1200, 0);
 const mobilePageDelayMs = envNumber('MOBILE_PAGE_DELAY_MS', 1600, 0);
 const sameStatusRequestGapMs = envNumber('SAME_STATUS_REQUEST_GAP_MS', 3000, 0);
 const weiboLoginSessionTtlMs = envNumber('WEIBO_LOGIN_SESSION_TTL_MS', 8 * 60_000, 60_000);
-const weiboKeepaliveIntervalMs = envNumber('WEIBO_KEEPALIVE_INTERVAL_MS', 2 * 24 * 60 * 60_000, 60_000);
+const weiboKeepaliveIntervalMs = envNumber('WEIBO_KEEPALIVE_INTERVAL_MS', 12 * 60 * 60_000, 60_000);
 const weiboKeepaliveStartupDelayMs = envNumber('WEIBO_KEEPALIVE_STARTUP_DELAY_MS', 90_000, 10_000);
+const weiboBrowserLaunchTimeoutMs = envNumber('WEIBO_BROWSER_LAUNCH_TIMEOUT_MS', 60_000, 10_000);
 const maxDrawAttemptBodyBytes = envNumber('MAX_DRAW_ATTEMPT_BODY_BYTES', 256 * 1024, 16 * 1024);
 const maxDrawSaveBodyBytes = envNumber('MAX_DRAW_SAVE_BODY_BYTES', 2 * 1024 * 1024, 64 * 1024);
+const maxSavedDraws = envNumber('MAX_SAVED_DRAWS', 1000, 20);
+const maxSavedDrawBytes = envNumber('MAX_SAVED_DRAW_BYTES', 100 * 1024 * 1024, 1024 * 1024);
 const enableWeiboKeepalive = !/^(0|false|no)$/i.test(String(process.env.WEIBO_KEEPALIVE_ENABLED ?? '1').trim());
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
@@ -69,8 +99,11 @@ const jobs = new Map();
 const jobQueue = [];
 const rateLimitBuckets = new Map();
 const statusLocks = new Map();
+const serverStartedAt = new Date().toISOString();
 let weiboLoginSession = null;
 let weiboKeepaliveRunning = false;
+let weiboBrowserOperation = null;
+let weiboKeepaliveContext = null;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -86,6 +119,8 @@ const MIME = {
 };
 
 const WEIBO_BASE62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+// Requests and access control
 
 function normalizeConfiguredOrigin(origin) {
   const trimmed = String(origin || '').trim().replace(/\/+$/, '');
@@ -220,6 +255,7 @@ function normalizedRatePath(pathname) {
 function rateLimitMaxForPath(req, pathname) {
   if (req.method === 'POST' && pathname === '/api/weibo/reposts/jobs') return jobCreateRateLimitMax;
   if (req.method === 'GET' && pathname.startsWith('/api/weibo/reposts/jobs/')) return jobPollRateLimitMax;
+  if (req.method === 'POST' && pathname === '/api/draws') return drawSaveRateLimitMax;
   return rateLimitMax;
 }
 
@@ -278,6 +314,8 @@ async function pathExists(filePath) {
 
 const hasBuiltFrontend = await pathExists(path.join(distDir, 'index.html'));
 const staticDir = hasBuiltFrontend ? distDir : publicDir;
+
+// Draw records
 
 function decodeBase62(value) {
   let result = 0n;
@@ -384,7 +422,7 @@ function drawStatusIdFromPayload(payload) {
   ).trim();
 }
 
-async function getDrawCountsByStatus() {
+async function getAttemptCountsByStatus() {
   const counts = new Map();
   const attempts = await listDrawAttempts();
 
@@ -411,10 +449,47 @@ async function getDrawCountsByStatus() {
   return counts;
 }
 
-async function getDrawCountForStatus(statusId) {
+async function getAttemptCountForStatus(statusId) {
   if (!statusId) return { statusId: '', count: null, lastDrawnAt: '' };
-  const counts = await getDrawCountsByStatus();
+  const counts = await getAttemptCountsByStatus();
   return counts.get(statusId) || { statusId, count: 0, lastDrawnAt: '' };
+}
+
+async function listCompletedDrawRecords() {
+  const files = await listDrawFiles();
+  const records = [];
+  for (const file of files) {
+    try {
+      const { record } = await readDrawFile(file.file);
+      if (record?.auditHash) records.push(record);
+    } catch {
+      // A malformed historical file must not hide otherwise valid draw counts.
+    }
+  }
+  return records;
+}
+
+async function getDrawCountForStatus(statusId, auditHash = '') {
+  if (!statusId) {
+    return {
+      statusId: '',
+      statusUrl: '',
+      count: null,
+      drawNumber: null,
+      lastDrawnAt: '',
+    };
+  }
+  const records = await listCompletedDrawRecords();
+  const stats = completedDrawStats(records, statusId, auditHash);
+  const latest = records
+    .filter((record) => drawStatusIdFromPayload(record) === statusId)
+    .sort((left, right) => String(right.drawnAt || '').localeCompare(String(left.drawnAt || '')))
+    .at(0);
+  return {
+    statusId,
+    statusUrl: String(latest?.statusUrl || latest?.sourceMeta?.statusUrl || ''),
+    ...stats,
+  };
 }
 
 async function recordDrawAttempt(body) {
@@ -455,7 +530,7 @@ async function recordDrawAttempt(body) {
   };
 
   await fs.appendFile(drawAttemptsFile, `${JSON.stringify(payload)}\n`, 'utf8');
-  const stats = await getDrawCountForStatus(statusId);
+  const stats = await getAttemptCountForStatus(statusId);
   return {
     ok: true,
     statusId,
@@ -514,7 +589,7 @@ function normalizeCandidate(item, source) {
     id: candidateKey({ uid, screenName, repostId, text, createdAt }),
     uid,
     screenName,
-    avatar: user.profile_image_url || user.avatar_hd || user.avatar_large || '',
+    avatar: safeAvatarUrl(user.profile_image_url || user.avatar_hd || user.avatar_large),
     verified: Boolean(user.verified),
     followers: Number(user.followers_count || 0),
     text,
@@ -562,6 +637,8 @@ function redactSensitiveText(value) {
     .replace(/(cookie\s*[:=]\s*)[^\n；。]+/gi, '$1[redacted]');
 }
 
+// Cookie and browser sessions
+
 function cleanCookieHeader(value) {
   return String(value || '')
     .split(/\r?\n/)
@@ -595,6 +672,15 @@ function cookieFingerprint(cookie) {
   return crypto.createHash('sha256').update(cleanCookieHeader(cookie)).digest('hex').slice(0, 16);
 }
 
+function normalizeCookieUser(user) {
+  const id = String(user?.id || user?.idstr || '').trim();
+  const screenName = String(user?.screenName || user?.screen_name || '').trim();
+  return {
+    ...(id ? { id } : {}),
+    ...(screenName ? { screenName } : {}),
+  };
+}
+
 function normalizeCookieEntries(payload) {
   const rawEntries = Array.isArray(payload?.cookies)
     ? payload.cookies
@@ -608,6 +694,7 @@ function normalizeCookieEntries(payload) {
     if (!cookie) continue;
     if (!isCookieHeaderWithinLimit(cookie)) continue;
     const id = entry.id || cookieFingerprint(cookie);
+    const user = normalizeCookieUser(entry.user);
     entries.set(id, {
       id,
       cookie,
@@ -616,6 +703,7 @@ function normalizeCookieEntries(payload) {
       lastCheckedAt: entry.lastCheckedAt || '',
       lastValidAt: entry.lastValidAt || '',
       lastError: entry.lastError || '',
+      ...(user.id || user.screenName ? { user } : {}),
     });
   }
 
@@ -642,7 +730,8 @@ async function readCookieStore() {
 }
 
 async function writeCookieStore(store) {
-  const cookies = sortCookieEntries(normalizeCookieEntries({ cookies: store.cookies || [] }), store.activeId).slice(0, maxStoredCookies);
+  const normalized = sortCookieEntries(normalizeCookieEntries({ cookies: store.cookies || [] }), store.activeId);
+  const cookies = compactCookieEntriesByAccount(normalized).slice(0, maxStoredCookies);
   const activeId = cookies.some((entry) => entry.id === store.activeId)
     ? store.activeId
     : cookies[0]?.id || '';
@@ -674,15 +763,18 @@ function sortCookieEntries(entries, preferredId = '') {
 function cookieStoreSummary(store, extra = {}) {
   const cookies = store.cookies || [];
   const sorted = sortCookieEntries(cookies, store.activeId);
+  const counts = cookiePoolCounts(cookies);
   const newest = (key) => sorted.map((entry) => entry[key]).filter(Boolean).sort().at(-1) || '';
   return {
     ok: true,
     hasCookie: cookies.length > 0,
-    cookieCount: cookies.length,
+    cookieCount: counts.cookieCount,
+    accountCount: counts.accountCount,
     activeId: store.activeId || sorted[0]?.id || '',
     savedAt: newest('savedAt'),
     lastCheckedAt: newest('lastCheckedAt'),
     lastValidAt: newest('lastValidAt'),
+    lastError: newest('lastError'),
     ...extra,
   };
 }
@@ -734,6 +826,7 @@ async function upsertStoredCookie(cookie, validation = {}) {
   const id = cookieFingerprint(cleaned);
   const store = await readCookieStore();
   const existing = store.cookies.find((entry) => entry.id === id);
+  const user = normalizeCookieUser(validation.user || existing?.user);
   const entry = {
     id,
     cookie: cleaned,
@@ -742,6 +835,7 @@ async function upsertStoredCookie(cookie, validation = {}) {
     lastCheckedAt: validation.checkedAt || existing?.lastCheckedAt || '',
     lastValidAt: validation.lastValidAt || existing?.lastValidAt || '',
     lastError: validation.ok === false ? validation.message || 'Cookie 校验失败' : '',
+    ...(user.id || user.screenName ? { user } : {}),
   };
   if (disableCookieStore) return entry;
   const cookies = [entry, ...store.cookies.filter((item) => item.id !== id)];
@@ -779,11 +873,13 @@ async function validateStoredCookies(reportProgress) {
     });
     const validation = await checkCookieValidity(entry.cookie);
     if (validation.ok) {
+      const user = normalizeCookieUser(validation.user || entry.user);
       kept.push({
         ...entry,
         lastCheckedAt: validation.checkedAt,
         lastValidAt: validation.lastValidAt,
         lastError: '',
+        ...(user.id || user.screenName ? { user } : {}),
       });
     } else if (validation.invalid) {
       removedCount += 1;
@@ -805,17 +901,23 @@ async function validateStoredCookies(reportProgress) {
 }
 
 function emptyWeiboLoginState(extra = {}) {
-  return {
+  const state = {
     version: 1,
     updatedAt: '',
     lastStatus: 'idle',
     lastMessage: '',
     lastLoginAt: '',
     lastRefreshAt: '',
+    lastAttemptAt: '',
+    lastSuccessAt: '',
+    lastFailureAt: '',
     lastError: '',
     lastReason: '',
+    history: [],
     ...extra,
   };
+  state.history = normalizeKeepaliveHistory(state.history, 12);
+  return state;
 }
 
 async function readWeiboLoginState() {
@@ -843,6 +945,15 @@ async function writeWeiboLoginState(patch = {}) {
   return next;
 }
 
+async function appendWeiboLoginEvent(event = {}, patch = {}) {
+  const current = await readWeiboLoginState();
+  const nextState = appendKeepaliveEvent(current, event, 12);
+  return await writeWeiboLoginState({
+    ...patch,
+    history: nextState.history,
+  });
+}
+
 function nextWeiboKeepaliveAt(state) {
   const last = Date.parse(state.lastRefreshAt || state.lastLoginAt || '');
   if (!Number.isFinite(last)) return '';
@@ -855,8 +966,15 @@ async function publicWeiboLoginState(extra = {}) {
   return {
     ok: true,
     enabled: enableWeiboKeepalive,
+    intervalMs: weiboKeepaliveIntervalMs,
+    intervalText: formatDurationMs(weiboKeepaliveIntervalMs),
+    startupDelayMs: weiboKeepaliveStartupDelayMs,
+    startupDelayText: formatDurationMs(weiboKeepaliveStartupDelayMs),
     active: Boolean(weiboLoginSession),
     refreshing: weiboKeepaliveRunning,
+    browserOperation: weiboBrowserOperation
+      ? { label: weiboBrowserOperation.label, startedAt: weiboBrowserOperation.startedAt }
+      : null,
     status: weiboLoginSession?.status || state.lastStatus || 'idle',
     message: weiboLoginSession?.message || state.lastMessage || '',
     sessionId: weiboLoginSession?.id || '',
@@ -864,9 +982,13 @@ async function publicWeiboLoginState(extra = {}) {
     expiresAt: weiboLoginSession?.expiresAt || '',
     lastLoginAt: state.lastLoginAt || '',
     lastRefreshAt: state.lastRefreshAt || '',
+    lastAttemptAt: state.lastAttemptAt || '',
+    lastSuccessAt: state.lastSuccessAt || '',
+    lastFailureAt: state.lastFailureAt || '',
     nextRefreshAt: nextWeiboKeepaliveAt(state),
     lastError: state.lastError || '',
     lastReason: state.lastReason || '',
+    history: normalizeKeepaliveHistory(state.history, 12),
     profileReady,
     ...extra,
   };
@@ -883,18 +1005,56 @@ async function importPlaywrightChromium() {
   }
 }
 
+async function runWeiboBrowserOperation(label, task) {
+  if (weiboBrowserOperation) {
+    const error = new Error(`微博浏览器正在执行${weiboBrowserOperation.label}，请稍后再试。`);
+    error.status = 409;
+    throw error;
+  }
+  const operation = { label, startedAt: new Date().toISOString() };
+  weiboBrowserOperation = operation;
+  try {
+    return await task();
+  } finally {
+    if (weiboBrowserOperation === operation) weiboBrowserOperation = null;
+  }
+}
+
 async function launchWeiboBrowserContext() {
   const chromium = await importPlaywrightChromium();
-  await fs.mkdir(weiboLoginProfileDir, { recursive: true, mode: 0o700 });
-  await fs.chmod(weiboLoginProfileDir, 0o700).catch(() => {});
-  return await chromium.launchPersistentContext(weiboLoginProfileDir, {
-    headless: true,
-    locale: 'zh-CN',
-    timezoneId: 'Asia/Shanghai',
-    userAgent: DESKTOP_UA,
-    viewport: { width: 430, height: 760 },
-    args: ['--no-sandbox', '--disable-dev-shm-usage'],
-  });
+  const runtime = await ensureBrowserRuntimeDirs(outputDir);
+  const cleanup = await preparePersistentProfile(weiboLoginProfileDir);
+  if (cleanup.stoppedPids.length) {
+    console.warn(`Stopped ${cleanup.stoppedPids.length} stale Weibo browser process(es) before launch.`);
+  }
+  const browserEnv = process.platform === 'linux'
+    ? {
+        ...process.env,
+        HOME: runtime.runtimeHome,
+        XDG_CACHE_HOME: runtime.runtimeCache,
+      }
+    : process.env;
+  try {
+    return await chromium.launchPersistentContext(weiboLoginProfileDir, {
+      headless: true,
+      locale: 'zh-CN',
+      timezoneId: 'Asia/Shanghai',
+      userAgent: DESKTOP_UA,
+      viewport: { width: 430, height: 760 },
+      timeout: weiboBrowserLaunchTimeoutMs,
+      env: browserEnv,
+      args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+    });
+  } catch (error) {
+    await preparePersistentProfile(weiboLoginProfileDir).catch(() => {});
+    const normalized = safeError(error);
+    if (/timeout/i.test(normalized.message)) {
+      const wrapped = new Error(`微博保活浏览器启动超时（${formatDurationMs(weiboBrowserLaunchTimeoutMs)}），已清理残留进程与 Profile 锁。`);
+      wrapped.status = 504;
+      throw wrapped;
+    }
+    throw error;
+  }
 }
 
 async function hasVisibleWeiboQrCode(page) {
@@ -1005,7 +1165,7 @@ async function cookieHeaderFromBrowserContext(context) {
   return [...byName.values()].join('; ');
 }
 
-async function saveBrowserCookieToPool(context, reason = 'manual') {
+async function saveBrowserCookieToPool(context, reason = 'manual', meta = {}) {
   const cookie = cleanCookieHeader(await cookieHeaderFromBrowserContext(context));
   if (!/(?:^|;\s*)SUB=/.test(cookie)) {
     const error = new Error('还没有检测到微博登录 Cookie，请扫码并确认登录。');
@@ -1021,11 +1181,21 @@ async function saveBrowserCookieToPool(context, reason = 'manual') {
   }
   const saved = await upsertStoredCookie(cookie, validation);
   const now = new Date().toISOString();
-  await writeWeiboLoginState({
+  const message = reason === 'qr-login'
+    ? '扫码登录成功，Cookie 已保存到服务器。'
+    : '服务器 Cookie 已保活刷新。';
+  await appendWeiboLoginEvent({
+    at: now,
+    status: 'ok',
+    reason,
+    message,
+    durationMs: meta.durationMs,
+  }, {
     lastStatus: 'ok',
-    lastMessage: '微博登录态已保存到服务器 Cookie 池。',
+    lastMessage: message,
     lastLoginAt: reason === 'qr-login' ? now : undefined,
     lastRefreshAt: now,
+    lastSuccessAt: now,
     lastError: '',
     lastReason: reason,
   });
@@ -1041,10 +1211,7 @@ async function closeWeiboLoginSession(message = '扫码窗口已关闭') {
   weiboLoginSession = null;
   if (!session) return;
   clearTimeout(session.timer);
-  try {
-    await session.context?.close();
-  } catch {
-  }
+  await closePersistentBrowserContext(session.context, weiboLoginProfileDir).catch(() => {});
   await writeWeiboLoginState({
     lastStatus: session.status === 'logged_in' ? 'ok' : 'idle',
     lastMessage: message,
@@ -1094,48 +1261,53 @@ async function refreshWeiboLoginSession({ includeScreenshot = true } = {}) {
 
 async function startWeiboLoginSession() {
   if (weiboLoginSession) return await refreshWeiboLoginSession();
-  const id = crypto.randomUUID();
-  const context = await launchWeiboBrowserContext();
-  const page = context.pages()[0] || await context.newPage();
-  const now = new Date();
-  weiboLoginSession = {
-    id,
-    context,
-    page,
-    status: 'starting',
-    message: '正在打开微博登录页。',
-    createdAt: now.toISOString(),
-    updatedAt: now.toISOString(),
-    expiresAt: new Date(now.getTime() + weiboLoginSessionTtlMs).toISOString(),
-    error: '',
-    timer: null,
-  };
-  weiboLoginSession.timer = setTimeout(() => {
-    closeWeiboLoginSession('扫码窗口已超时关闭。').catch(() => {});
-  }, weiboLoginSessionTtlMs);
-  weiboLoginSession.timer.unref?.();
+  return await runWeiboBrowserOperation('扫码登录', async () => {
+    if (weiboLoginSession) return await refreshWeiboLoginSession();
+    const id = crypto.randomUUID();
+    const context = await launchWeiboBrowserContext();
+    const page = context.pages()[0] || await context.newPage();
+    const now = new Date();
+    weiboLoginSession = {
+      id,
+      context,
+      page,
+      status: 'starting',
+      message: '正在打开微博登录页。',
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+      expiresAt: new Date(now.getTime() + weiboLoginSessionTtlMs).toISOString(),
+      error: '',
+      timer: null,
+    };
+    weiboLoginSession.timer = setTimeout(() => {
+      closeWeiboLoginSession('扫码窗口已超时关闭。').catch(() => {});
+    }, weiboLoginSessionTtlMs);
+    weiboLoginSession.timer.unref?.();
 
-  try {
-    await openWeiboQrLoginPage(page);
-    weiboLoginSession.status = 'waiting_scan';
-    weiboLoginSession.message = '请用微博 App 扫码登录。';
-    await writeWeiboLoginState({
-      lastStatus: 'waiting_scan',
-      lastMessage: weiboLoginSession.message,
-      lastError: '',
-      lastReason: 'qr-login',
-    });
-    return await refreshWeiboLoginSession();
-  } catch (error) {
-    weiboLoginSession.status = 'error';
-    weiboLoginSession.error = safeError(error).message;
-    weiboLoginSession.message = weiboLoginSession.error;
-    await closeWeiboLoginSession(weiboLoginSession.message);
-    return await publicWeiboLoginState();
-  }
+    try {
+      await openWeiboQrLoginPage(page);
+      weiboLoginSession.status = 'waiting_scan';
+      weiboLoginSession.message = '请用微博 App 扫码登录。';
+      await writeWeiboLoginState({
+        lastStatus: 'waiting_scan',
+        lastMessage: weiboLoginSession.message,
+        lastError: '',
+        lastReason: 'qr-login',
+      });
+      return await refreshWeiboLoginSession();
+    } catch (error) {
+      weiboLoginSession.status = 'error';
+      weiboLoginSession.error = safeError(error).message;
+      weiboLoginSession.message = weiboLoginSession.error;
+      await closeWeiboLoginSession(weiboLoginSession.message);
+      return await publicWeiboLoginState();
+    }
+  });
 }
 
 async function refreshCookieFromBrowserProfile(reason = 'manual-refresh') {
+  const startedAt = new Date();
+  const startedAtIso = startedAt.toISOString();
   if (weiboKeepaliveRunning) {
     return await publicWeiboLoginState({ message: '微博 Cookie 保活正在运行。' });
   }
@@ -1145,46 +1317,95 @@ async function refreshCookieFromBrowserProfile(reason = 'manual-refresh') {
   if (!await pathExists(weiboLoginProfileDir)) {
     const error = new Error('还没有服务器扫码登录记录，请先在后台扫码登录一次。');
     error.status = 400;
-    throw error;
-  }
-
-  weiboKeepaliveRunning = true;
-  await writeWeiboLoginState({
-    lastStatus: 'refreshing',
-    lastMessage: '正在打开微博页面刷新服务器登录态。',
-    lastError: '',
-    lastReason: reason,
-  });
-  let context;
-  try {
-    context = await launchWeiboBrowserContext();
-    const page = context.pages()[0] || await context.newPage();
-    await page.goto('https://weibo.com/', { waitUntil: 'domcontentloaded', timeout: 30_000 });
-    await page.waitForTimeout(2500);
-    const saved = await saveBrowserCookieToPool(context, reason);
-    await writeWeiboLoginState({
-      lastStatus: 'ok',
-      lastMessage: '服务器 Cookie 已保活刷新。',
-      lastError: '',
-      lastReason: reason,
-    });
-    return await publicWeiboLoginState({ saved });
-  } catch (error) {
-    const normalized = safeError(error);
-    await writeWeiboLoginState({
+    await appendWeiboLoginEvent({
+      at: startedAtIso,
+      status: 'error',
+      reason,
+      message: error.message,
+      durationMs: Date.now() - startedAt.getTime(),
+    }, {
       lastStatus: 'error',
-      lastMessage: normalized.message,
-      lastError: normalized.message,
+      lastMessage: error.message,
+      lastAttemptAt: startedAtIso,
+      lastFailureAt: startedAtIso,
+      lastError: error.message,
       lastReason: reason,
     });
     if (reason === 'scheduled-refresh') return await publicWeiboLoginState();
-    const wrapped = new Error(normalized.message);
-    wrapped.status = normalized.status;
-    throw wrapped;
-  } finally {
-    weiboKeepaliveRunning = false;
-    if (context) await context.close().catch(() => {});
+    throw error;
   }
+
+  if (weiboBrowserOperation) {
+    return await publicWeiboLoginState({ message: `微博浏览器正在执行${weiboBrowserOperation.label}，本次保活已跳过。` });
+  }
+
+  return await runWeiboBrowserOperation('Cookie 保活', async () => {
+    weiboKeepaliveRunning = true;
+    await appendWeiboLoginEvent({
+      at: startedAtIso,
+      status: 'refreshing',
+      reason,
+      message: '正在打开微博页面刷新服务器登录态。',
+    }, {
+      lastStatus: 'refreshing',
+      lastMessage: '正在打开微博页面刷新服务器登录态。',
+      lastAttemptAt: startedAtIso,
+      lastError: '',
+      lastReason: reason,
+    });
+    let context;
+    try {
+      context = await launchWeiboBrowserContext();
+      weiboKeepaliveContext = context;
+      const page = context.pages()[0] || await context.newPage();
+      await page.goto('https://weibo.com/', { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.waitForTimeout(2500);
+      const saved = await saveBrowserCookieToPool(context, reason, { durationMs: Date.now() - startedAt.getTime() });
+      await writeWeiboLoginState({
+        lastStatus: 'ok',
+        lastMessage: '服务器 Cookie 已保活刷新。',
+        lastError: '',
+        lastReason: reason,
+      });
+      return await publicWeiboLoginState({ saved });
+    } catch (error) {
+      const normalized = safeError(error);
+      const failedAt = new Date().toISOString();
+      await appendWeiboLoginEvent({
+        at: failedAt,
+        status: 'error',
+        reason,
+        message: normalized.message,
+        durationMs: Date.now() - startedAt.getTime(),
+      }, {
+        lastStatus: 'error',
+        lastMessage: normalized.message,
+        lastAttemptAt: startedAtIso,
+        lastFailureAt: failedAt,
+        lastError: normalized.message,
+        lastReason: reason,
+      });
+      console.warn(`Weibo keepalive failed (${reason}): ${normalized.message}`);
+      if (reason === 'scheduled-refresh') return await publicWeiboLoginState();
+      const wrapped = new Error(normalized.message);
+      wrapped.status = normalized.status;
+      throw wrapped;
+    } finally {
+      if (context) {
+        const cleanup = await closePersistentBrowserContext(
+          context,
+          weiboLoginProfileDir,
+        ).catch(() => null);
+        if (cleanup?.closeTimedOut || cleanup?.stoppedPids.length) {
+          console.warn(
+            `Cleaned ${cleanup.stoppedPids.length} remaining Weibo browser process(es) after keepalive.`,
+          );
+        }
+      }
+      weiboKeepaliveContext = null;
+      weiboKeepaliveRunning = false;
+    }
+  });
 }
 
 function scheduleWeiboKeepalive() {
@@ -1196,79 +1417,80 @@ function scheduleWeiboKeepalive() {
       if (nextAt && Date.now() >= Date.parse(nextAt)) {
         await refreshCookieFromBrowserProfile('scheduled-refresh');
       }
-    } catch {
+    } catch (error) {
+      console.warn(`Weibo keepalive startup check failed: ${safeError(error).message}`);
     } finally {
       setInterval(() => {
-        refreshCookieFromBrowserProfile('scheduled-refresh').catch(() => {});
+        refreshCookieFromBrowserProfile('scheduled-refresh').catch((error) => {
+          console.warn(`Weibo keepalive interval failed: ${safeError(error).message}`);
+        });
       }, weiboKeepaliveIntervalMs).unref?.();
     }
   }, weiboKeepaliveStartupDelayMs).unref?.();
 }
 
-async function prepareCookieCandidates(body, reportProgress, options = {}) {
+async function prepareCookieCandidates(body, reportProgress) {
   const failures = [];
   const warnings = [];
-  const canSaveCookie = options.canWriteCookie !== false;
-  let preferredId = '';
-  let inlineCandidate = null;
   const supplied = cleanCookieHeader(body.mobileCookie);
 
   if (supplied) {
     assertCookieHeaderInput(supplied);
     reportProgress?.({ phase: 'cookie-check', percent: 1, message: '校验本次输入的微博 Cookie' });
     const validation = await checkCookieValidity(supplied);
-    if (validation.ok) {
-      const now = new Date().toISOString();
-      const transient = {
-        id: cookieFingerprint(supplied),
-        cookie: supplied,
-        savedAt: now,
-        updatedAt: now,
-        lastCheckedAt: validation.checkedAt || now,
-        lastValidAt: validation.lastValidAt || '',
-        lastError: '',
-      };
-      if (!disableCookieStore && canSaveCookie) {
-        const saved = await upsertStoredCookie(supplied, validation);
-        preferredId = saved.id;
-      } else {
-        inlineCandidate = transient;
-        if (!disableCookieStore && !canSaveCookie) {
-          warnings.push('本次 Cookie 只临时用于抓取，未保存到服务器。');
-        }
-      }
-    } else {
-      await removeStoredCookie(supplied);
-      failures.push(`输入的 Cookie 无效：${validation.message}`);
+    if (!validation.ok) {
+      const error = new Error(`输入的 Cookie 无效：${validation.message}`);
+      error.status = validation.invalid ? 401 : 502;
+      throw error;
     }
+    const now = new Date().toISOString();
+    const transient = {
+      id: cookieFingerprint(supplied),
+      cookie: supplied,
+      transient: true,
+      savedAt: now,
+      updatedAt: now,
+      lastCheckedAt: validation.checkedAt || now,
+      lastValidAt: validation.lastValidAt || '',
+      lastError: '',
+    };
+    warnings.push('本次 Cookie 仅用于当前抓取请求，未写入服务器 Cookie 池。');
+    return {
+      candidates: [transient],
+      failures,
+      warnings,
+      summary: {
+        hasCookie: true,
+        cookieCount: 1,
+        accountCount: 1,
+        removedCount: 0,
+      },
+    };
   }
 
   const summary = await validateStoredCookies(reportProgress);
   if (disableCookieStore) {
     return {
-      candidates: inlineCandidate ? [inlineCandidate] : [],
+      candidates: [],
       failures,
       warnings,
       summary: {
         ...summary,
-        hasCookie: Boolean(inlineCandidate),
-        cookieCount: inlineCandidate ? 1 : 0,
+        hasCookie: false,
+        cookieCount: 0,
       },
     };
   }
   const store = await readCookieStore();
-  const storedCandidates = sortCookieEntries(store.cookies, preferredId || store.activeId);
-  const candidates = inlineCandidate
-    ? [inlineCandidate, ...storedCandidates.filter((entry) => entry.id !== inlineCandidate.id)]
-    : storedCandidates;
+  const candidates = sortCookieEntries(store.cookies, store.activeId);
   return { candidates, failures, warnings, summary };
 }
 
-async function fetchCookieRepostsWithPool({ statusId, body, reportProgress, canWriteCookie = true }) {
-  const { candidates, failures, warnings, summary } = await prepareCookieCandidates(body, reportProgress, { canWriteCookie });
+async function fetchCookieRepostsWithPool({ statusId, body, reportProgress }) {
+  const { candidates, failures, warnings, summary } = await prepareCookieCandidates(body, reportProgress);
   if (!candidates.length) {
     const detail = failures.length ? `；${failures.join('；')}` : '';
-    const error = new Error(`服务器端没有可用微博 Cookie，请先粘贴一次有效 Cookie${detail}`);
+    const error = new Error(`未填写用户 Cookie，服务器端也没有可用微博 Cookie${detail}`);
     error.status = 400;
     throw error;
   }
@@ -1278,22 +1500,27 @@ async function fetchCookieRepostsWithPool({ statusId, body, reportProgress, canW
     reportProgress?.({
       phase: 'cookie',
       percent: 8,
-      message: `使用服务器 Cookie 池：${index + 1}/${candidates.length}`,
+      message: entry.transient
+        ? '使用本次输入的 Cookie'
+        : `使用服务器 Cookie 池：${index + 1}/${candidates.length}`,
     });
 
     try {
       const result = await fetchCookieReposts({ statusId, mobileCookie: entry.cookie, reportProgress });
-      await upsertStoredCookie(entry.cookie, {
-        ok: true,
-        checkedAt: new Date().toISOString(),
-        lastValidAt: new Date().toISOString(),
-      });
+      if (!entry.transient) {
+        await upsertStoredCookie(entry.cookie, {
+          ok: true,
+          checkedAt: new Date().toISOString(),
+          lastValidAt: new Date().toISOString(),
+        });
+      }
       result.meta = {
         ...result.meta,
         cookiePool: {
           usedId: entry.id,
           cookieCount: summary.cookieCount,
           removedCount: summary.removedCount || 0,
+          source: entry.transient ? 'user-input' : 'server-pool',
         },
         warnings: [
           ...(failures.length ? failures : []),
@@ -1303,9 +1530,9 @@ async function fetchCookieRepostsWithPool({ statusId, body, reportProgress, canW
       };
       return result;
     } catch (error) {
-      failures.push(`服务器 Cookie ${index + 1} 不可用：${error.message}`);
+      failures.push(`${entry.transient ? '输入的 Cookie' : `服务器 Cookie ${index + 1}`}不可用：${error.message}`);
       if (isCookieAuthError(error)) {
-        await removeStoredCookie(entry.id);
+        if (!entry.transient) await removeStoredCookie(entry.id);
         continue;
       }
       if (index === candidates.length - 1) throw error;
@@ -1321,6 +1548,8 @@ function xsrfTokenFromCookie(cookie) {
   const match = cleanCookieHeader(cookie).match(/(?:^|;\s*)XSRF-TOKEN=([^;]+)/);
   return match ? decodeURIComponent(match[1]) : '';
 }
+
+// Repost collection
 
 function finiteNumber(value, fallback = null) {
   const number = Number(value);
@@ -1886,7 +2115,7 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress }) {
   };
 }
 
-async function buildRepostsPayload(body, reportProgress, options = {}) {
+async function buildRepostsPayload(body, reportProgress) {
   const source = String(body.source || 'official');
   const statusId = extractStatusId(body.statusUrl || body.statusId);
   if (!statusId) {
@@ -1910,7 +2139,6 @@ async function buildRepostsPayload(body, reportProgress, options = {}) {
       statusId,
       body,
       reportProgress,
-      canWriteCookie: options.canWriteCookie !== false,
     });
   } else {
     const error = new Error('未知数据源');
@@ -1936,6 +2164,8 @@ async function buildRepostsPayload(body, reportProgress, options = {}) {
   };
 }
 
+// Jobs and draw API
+
 async function runWithStatusLock(statusId, task) {
   const key = String(statusId || '').trim();
   if (!key) return await task();
@@ -1958,7 +2188,7 @@ async function runWithStatusLock(statusId, task) {
 async function handleReposts(req, res) {
   const body = await readJsonBody(req);
   const statusId = extractStatusId(body.statusUrl || body.statusId);
-  const payload = await runWithStatusLock(statusId, () => buildRepostsPayload(body, null, { canWriteCookie: canWriteCookieStore(req) }));
+  const payload = await runWithStatusLock(statusId, () => buildRepostsPayload(body, null));
   return sendJson(res, 200, payload);
 }
 
@@ -2024,7 +2254,7 @@ function runRepostsJob(job) {
       percent: Math.max(0, Math.min(100, finiteNumber(progress.percent, job.progress.percent))),
     };
     job.updatedAt = new Date().toISOString();
-  }, { canWriteCookie: job.canWriteCookie }))
+  }))
     .then((result) => {
       job.status = 'done';
       job.result = result;
@@ -2054,9 +2284,8 @@ function drainJobQueue() {
   updateQueuedProgress();
 }
 
-function enqueueRepostsJob(job, body, canWriteCookie) {
+function enqueueRepostsJob(job, body) {
   job.body = body;
-  job.canWriteCookie = canWriteCookie;
   jobQueue.push(job);
   updateQueuedProgress();
   drainJobQueue();
@@ -2071,7 +2300,7 @@ async function handleStartRepostsJob(req, res) {
   }
   const body = await readJsonBody(req);
   const job = createJob();
-  enqueueRepostsJob(job, body, canWriteCookieStore(req));
+  enqueueRepostsJob(job, body);
   sendJson(res, 202, {
     ok: true,
     jobId: job.id,
@@ -2221,10 +2450,16 @@ async function handleSaveDraw(req, res) {
     },
     savedAt,
     drawnAt: stableDrawnAt,
+    drawNumber: null,
     auditHash,
   };
   await fs.writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
-  const drawStats = statusId ? await getDrawCountForStatus(statusId) : { count: null, lastDrawnAt: '' };
+  const drawStats = statusId
+    ? await getDrawCountForStatus(statusId, auditHash)
+    : { count: null, drawNumber: null, lastDrawnAt: '' };
+  payload.drawNumber = drawStats.drawNumber;
+  await fs.writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  const retention = await pruneSavedDrawFiles();
 
   return sendJson(res, 200, {
     ok: true,
@@ -2232,11 +2467,15 @@ async function handleSaveDraw(req, res) {
     auditHash,
     statusId,
     statusUrl,
+    drawNumber: drawStats.drawNumber,
     drawCount: drawStats.count,
     lastDrawnAt: drawStats.lastDrawnAt,
     file: path.basename(file),
+    prunedFiles: retention.removedCount,
   });
 }
+
+// Admin
 
 function safeDrawFileName(input) {
   const name = path.basename(String(input || '').trim());
@@ -2265,6 +2504,16 @@ async function listDrawFiles() {
   }
 }
 
+async function pruneSavedDrawFiles() {
+  const files = await listDrawFiles();
+  const { removals, retainedBytes } = selectFilesToPrune(files, {
+    maxFiles: maxSavedDraws,
+    maxBytes: maxSavedDrawBytes,
+  });
+  await Promise.all(removals.map((item) => fs.unlink(item.filePath).catch(() => {})));
+  return { removedCount: removals.length, retainedBytes };
+}
+
 async function readDrawFile(fileName) {
   const safeName = safeDrawFileName(fileName);
   const filePath = path.join(drawsDir, safeName);
@@ -2290,6 +2539,7 @@ function publicWinner(winner = {}) {
   return {
     uid: String(winner.uid || winner.id || '').slice(0, 80),
     screenName: String(winner.screenName || winner.name || '').slice(0, 120),
+    avatar: safeAvatarUrl(winner.avatar || winner.profile_image_url),
     profileUrl: String(winner.profileUrl || winner.url || '').slice(0, 400),
     text: String(winner.text || '').slice(0, 500),
     source: String(winner.source || '').slice(0, 80),
@@ -2330,6 +2580,7 @@ function drawRecordPublic(record, file, detail = false) {
     source: String(record.source || record.sourceMeta?.provider || '').slice(0, 80),
     statusId: String(record.statusId || record.audit?.statusId || record.sourceMeta?.statusId || '').slice(0, 80),
     statusUrl: String(record.statusUrl || record.audit?.statusUrl || record.sourceMeta?.statusUrl || '').slice(0, 500),
+    drawNumber: finiteNumber(record.drawNumber, null),
     auditHash: String(record.auditHash || '').slice(0, 80),
     prizeCount: results.length,
     winnerCount: winners.length,
@@ -2391,13 +2642,137 @@ async function listSavedDraws({ limit = 100, search = '' } = {}) {
   return items;
 }
 
+function bytesToMb(bytes) {
+  const value = Number(bytes);
+  return Number.isFinite(value) ? Math.round((value / 1024 / 1024) * 10) / 10 : 0;
+}
+
+async function cgroupMemoryDiagnostic() {
+  if (process.platform !== 'linux') return null;
+  try {
+    const cgroupText = await fs.readFile('/proc/self/cgroup', 'utf8');
+    const cgroupDir = resolveCgroupV2Directory(cgroupText);
+    if (!cgroupDir) return null;
+    const [currentText, peakText, statText] = await Promise.all([
+      fs.readFile(path.join(cgroupDir, 'memory.current'), 'utf8'),
+      fs.readFile(path.join(cgroupDir, 'memory.peak'), 'utf8').catch(() => '0'),
+      fs.readFile(path.join(cgroupDir, 'memory.stat'), 'utf8'),
+    ]);
+    return summarizeCgroupMemory({
+      current: Number(currentText.trim()),
+      peak: Number(peakText.trim()),
+      stat: parseCgroupMemoryStat(statText),
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function fileDiagnostic(label, filePath) {
+  try {
+    const stat = await fs.stat(filePath);
+    return {
+      label,
+      exists: true,
+      type: stat.isDirectory() ? 'dir' : 'file',
+      size: stat.isDirectory() ? 0 : stat.size,
+      modifiedAt: stat.mtime.toISOString(),
+    };
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      return { label, exists: false, type: '', size: 0, modifiedAt: '' };
+    }
+    return { label, exists: false, type: '', size: 0, modifiedAt: '', error: safeError(error).message };
+  }
+}
+
+async function adminSystemSummary() {
+  const memory = process.memoryUsage();
+  const hostMemoryTotal = os.totalmem();
+  const hostMemoryFree = os.freemem();
+  const [storage, browserPids, cgroupMemory] = await Promise.all([
+    Promise.all([
+      fileDiagnostic('output/auth', authDir),
+      fileDiagnostic('Cookie 池', cookieStoreFile),
+      fileDiagnostic('扫码浏览器 Profile', weiboLoginProfileDir),
+      fileDiagnostic('登录状态文件', weiboLoginStateFile),
+      fileDiagnostic('开奖记录目录', drawsDir),
+    ]),
+    findProfileBrowserPids(weiboLoginProfileDir),
+    cgroupMemoryDiagnostic(),
+  ]);
+  return {
+    now: new Date().toISOString(),
+    startedAt: serverStartedAt,
+    uptimeMs: Math.round(process.uptime() * 1000),
+    uptimeText: formatDurationMs(process.uptime() * 1000),
+    nodeVersion: process.version,
+    platform: `${process.platform}/${process.arch}`,
+    pid: process.pid,
+    hostname: os.hostname(),
+    cpus: os.cpus()?.length || 0,
+    loadAverage: os.loadavg().map((value) => Math.round(value * 100) / 100),
+    memory: {
+      rssMb: bytesToMb(memory.rss),
+      heapUsedMb: bytesToMb(memory.heapUsed),
+      heapTotalMb: bytesToMb(memory.heapTotal),
+      externalMb: bytesToMb(memory.external),
+      hostTotalMb: bytesToMb(hostMemoryTotal),
+      hostFreeMb: bytesToMb(hostMemoryFree),
+      hostUsedMb: bytesToMb(hostMemoryTotal - hostMemoryFree),
+      hostUsedPercent: hostMemoryTotal
+        ? Math.round(((hostMemoryTotal - hostMemoryFree) / hostMemoryTotal) * 1000) / 10
+        : 0,
+      cgroupAvailable: Boolean(cgroupMemory),
+      cgroupCurrentMb: bytesToMb(cgroupMemory?.current),
+      cgroupPeakMb: bytesToMb(cgroupMemory?.peak),
+      cgroupAnonMb: bytesToMb(cgroupMemory?.anon),
+      cgroupFileMb: bytesToMb(cgroupMemory?.file),
+      cgroupKernelMb: bytesToMb(cgroupMemory?.kernel),
+      cgroupReclaimableMb: bytesToMb(cgroupMemory?.reclaimable),
+    },
+    browser: {
+      processCount: browserPids.length,
+      pids: browserPids,
+      operation: weiboBrowserOperation
+        ? { label: weiboBrowserOperation.label, startedAt: weiboBrowserOperation.startedAt }
+        : null,
+    },
+    config: {
+      nodeEnv: process.env.NODE_ENV || '',
+      staticDir: path.basename(staticDir),
+      frontendBuilt: hasBuiltFrontend,
+      maxActiveJobs,
+      maxQueuedJobs,
+      rateLimitMax,
+      jobCreateRateLimitMax,
+      drawSaveRateLimitMax,
+      maxSavedDraws,
+      maxSavedDrawBytes,
+      keepaliveEnabled: enableWeiboKeepalive,
+      keepaliveIntervalMs: weiboKeepaliveIntervalMs,
+      keepaliveIntervalText: formatDurationMs(weiboKeepaliveIntervalMs),
+      keepaliveStartupDelayMs: weiboKeepaliveStartupDelayMs,
+      keepaliveStartupDelayText: formatDurationMs(weiboKeepaliveStartupDelayMs),
+      browserLaunchTimeoutMs: weiboBrowserLaunchTimeoutMs,
+      browserLaunchTimeoutText: formatDurationMs(weiboBrowserLaunchTimeoutMs),
+      playwrightBrowsersPathSet: Boolean(process.env.PLAYWRIGHT_BROWSERS_PATH),
+      cookieStoreDisabled: disableCookieStore,
+      cookieStoreWriteProtected: Boolean(cookieWriteKey),
+    },
+    storage,
+  };
+}
+
 async function handleAdminSummary(req, res) {
-  const [draws, attempts, cookieSummary, weiboLogin] = await Promise.all([
+  const [draws, attempts, cookieStore, weiboLogin, system] = await Promise.all([
     listSavedDraws({ limit: 500 }),
     listDrawAttempts(),
-    cookieStoreSummary(await readCookieStore()),
+    readCookieStore(),
     publicWeiboLoginState(),
+    adminSystemSummary(),
   ]);
+  const cookieSummary = cookieStoreSummary(cookieStore);
   const statusIds = new Set(draws.map((item) => item.statusId).filter(Boolean));
   const winnerCount = draws.reduce((sum, item) => sum + item.winnerCount, 0);
   return sendJson(res, 200, {
@@ -2417,14 +2792,18 @@ async function handleAdminSummary(req, res) {
     cookie: {
       hasCookie: cookieSummary.hasCookie,
       cookieCount: cookieSummary.cookieCount,
+      accountCount: cookieSummary.accountCount,
       activeId: cookieSummary.activeId,
       savedAt: cookieSummary.savedAt,
       lastValidAt: cookieSummary.lastValidAt,
+      lastCheckedAt: cookieSummary.lastCheckedAt,
       lastInvalidAt: cookieSummary.lastInvalidAt,
+      lastError: cookieSummary.lastError,
       cookieStoreDisabled: disableCookieStore,
       cookieStoreWriteProtected: Boolean(cookieWriteKey),
     },
     weiboLogin,
+    system,
     recentDraws: draws.slice(0, 8),
     recentAttempts: attempts.slice(-12).reverse().map((item) => ({
       attemptId: item.attemptId,
@@ -2485,6 +2864,8 @@ async function handleAdminDeleteDraw(req, res, fileName) {
   return sendJson(res, 200, { ok: true, removed: safeName });
 }
 
+// HTTP server
+
 function staticCacheHeaders(filePath) {
   const normalized = filePath.replace(/\\/g, '/');
   const name = path.basename(filePath);
@@ -2501,6 +2882,7 @@ function adminAssetName(pathname) {
   if (pathname === '/admin' || pathname === '/admin/') return 'admin.html';
   if (pathname === '/admin/admin.css') return 'admin.css';
   if (pathname === '/admin/admin.js') return 'admin.js';
+  if (pathname === '/admin/admin-list-state.js') return 'admin-list-state.js';
   return '';
 }
 
@@ -2616,6 +2998,8 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         ok: true,
         service: 'sameko-weibo-lottery',
+        startedAt: serverStartedAt,
+        uptimeMs: Math.round(process.uptime() * 1000),
         staticDir: path.basename(staticDir),
         frontendBuilt: hasBuiltFrontend,
         activeJobs: activeJobCount(),
@@ -2625,6 +3009,9 @@ const server = http.createServer(async (req, res) => {
         apiKeyRequired: Boolean(apiKey),
         cookieStoreDisabled: disableCookieStore,
         cookieStoreWriteProtected: Boolean(cookieWriteKey),
+        weiboKeepaliveEnabled: enableWeiboKeepalive,
+        weiboKeepaliveIntervalMs,
+        weiboKeepaliveIntervalText: formatDurationMs(weiboKeepaliveIntervalMs),
       });
     }
     if (req.method === 'GET' && url.pathname === '/api/admin/summary') {
@@ -2683,6 +3070,33 @@ const server = http.createServer(async (req, res) => {
 server.requestTimeout = 120_000;
 server.headersTimeout = 65_000;
 server.keepAliveTimeout = 5_000;
+
+let shutdownStarted = false;
+
+async function shutdown(signal) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  console.log(`Received ${signal}; closing HTTP and Weibo browser resources.`);
+  const forceExit = setTimeout(() => process.exit(1), 15_000);
+  forceExit.unref?.();
+  server.close();
+  await Promise.all([
+    closeWeiboLoginSession('服务器正在重启，扫码窗口已关闭。').catch(() => {}),
+    closePersistentBrowserContext(
+      weiboKeepaliveContext,
+      weiboLoginProfileDir,
+    ).catch(() => {}),
+  ]);
+  weiboKeepaliveContext = null;
+  clearTimeout(forceExit);
+}
+
+process.once('SIGTERM', () => shutdown('SIGTERM').catch((error) => {
+  console.error(`Shutdown failed: ${safeError(error).message}`);
+}));
+process.once('SIGINT', () => shutdown('SIGINT').catch((error) => {
+  console.error(`Shutdown failed: ${safeError(error).message}`);
+}));
 
 scheduleWeiboKeepalive();
 

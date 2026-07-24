@@ -1,6 +1,6 @@
 {
   "name": "sameko-weibo-lottery",
-  "version": "0.1.0",
+  "version": "2.1.0",
   "private": true,
   "type": "module",
   "description": "微博转发抽奖助手，支持候选抓取、筛选、滚动开奖和开奖记录导出。",
@@ -12,7 +12,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server.mjs",
-    "test": "node --test src/lib/appCore.test.js",
+    "test": "node --test src/lib/appCore.test.js src/lib/adminStatus.test.js src/lib/avatar.test.js src/lib/cookiePool.test.js src/lib/drawDeckMotion.test.js src/lib/drawReceipts.test.js src/lib/resultPoster.test.js src/lib/storageRetention.test.js src/lib/systemMetrics.test.js src/lib/weiboBrowserLifecycle.test.js server-admin/admin-list-state.test.js",
     "web": "npm run build && node server.mjs",
     "start:windows": "powershell -ExecutionPolicy Bypass -File scripts/windows-start.ps1"
   },
@@ -22,12 +22,10 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.2",
     "autoprefixer": "^10.4.20",
-    "canvas-confetti": "^1.9.3",
     "lucide-react": "^0.468.0",
     "postcss": "^8.4.49",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tailwindcss": "^3.4.17",
-    "vite": "^8.0.14"
+    "vite": "^8.1.5"
   }
 }

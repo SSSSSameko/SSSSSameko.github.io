@@ -8,7 +8,7 @@
   <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <link rel="stylesheet" href="/admin/admin.css">
-  <script src="/admin/admin.js" defer></script>
+  <script src="/admin/admin.js" type="module"></script>
 </head>
 <body>
   <div class="aurora aurora-one"></div>
@@ -32,7 +32,7 @@
       <div>
         <p class="eyebrow">后台入口</p>
         <h1>输入后台密钥</h1>
-        <p class="login-copy">后台只展示开奖记录和运行状态，不返回 Cookie 明文。密钥会保存在你当前浏览器本地。</p>
+        <p class="login-copy">后台只展示开奖记录和运行状态，不返回 Cookie 明文。密钥仅保留在当前标签会话中。</p>
       </div>
       <div class="login-form">
         <label for="adminKeyInput">后台密钥</label>
@@ -114,6 +114,27 @@
             </div>
             <div class="subtle" id="weiboLoginText">扫码后 Cookie 会保存到服务器 Cookie 池，普通用户只共享代抓能力。</div>
           </div>
+        </div>
+      </section>
+
+      <section class="diagnostics-grid">
+        <div class="panel">
+          <div class="panel-head slim">
+            <div>
+              <p class="eyebrow">保活诊断</p>
+              <h2>微博登录保活</h2>
+            </div>
+          </div>
+          <div class="diagnostic-box" id="keepalivePanel"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head slim">
+            <div>
+              <p class="eyebrow">服务器状态</p>
+              <h2>运行与存储</h2>
+            </div>
+          </div>
+          <div class="diagnostic-box" id="systemPanel"></div>
         </div>
       </section>
     </main>

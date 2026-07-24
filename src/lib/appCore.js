@@ -10,6 +10,8 @@ export const PROVIDER_LABELS = {
   'desktop-cookie': '桌面 Cookie 接口',
 };
 
+export const DRAW_RANDOM_ALGORITHM = 'SHA-256 · Fisher–Yates';
+
 export function cleanApiBase(value) {
   return String(value || '').trim().replace(/\/+$/, '');
 }
