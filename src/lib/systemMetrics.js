@@ -80,7 +80,27 @@ export function analyzeMemoryTrend(samples, field = 'cgroupAnonMb') {
   }
   const first = points[0];
   const last = points.at(-1);
-  const hours = Math.max((last.at - first.at) / 3_600_000, 1 / 60);
+  const elapsedMs = last.at - first.at;
+  if (elapsedMs < 30 * 60_000) {
+    const recent = points.slice(-4);
+    const values = recent.map((point) => point.value);
+    const spread = Math.max(...values) - Math.min(...values);
+    if (recent.length >= 4 && spread <= 8) {
+      return {
+        status: 'stable',
+        deltaMb: Math.round((recent.at(-1).value - recent[0].value) * 10) / 10,
+        perHourMb: 0,
+        sampleCount: recent.length,
+      };
+    }
+    return {
+      status: 'insufficient',
+      deltaMb: Math.round((last.value - first.value) * 10) / 10,
+      perHourMb: 0,
+      sampleCount: points.length,
+    };
+  }
+  const hours = elapsedMs / 3_600_000;
   const deltaMb = Math.round((last.value - first.value) * 10) / 10;
   const perHourMb = Math.round((deltaMb / hours) * 10) / 10;
   const status = perHourMb > 8

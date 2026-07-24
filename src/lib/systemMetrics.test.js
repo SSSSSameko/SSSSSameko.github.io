@@ -79,3 +79,17 @@ test('memory trend distinguishes a plateau from sustained growth', () => {
   assert.equal(rising.status, 'rising');
   assert.equal(rising.perHourMb, 18);
 });
+
+test('memory trend ignores cold-start growth after repeated keepalive runs plateau', () => {
+  const summary = analyzeMemoryTrend([
+    { at: '2026-07-25T00:00:00.000Z', cgroupAnonMb: 14 },
+    { at: '2026-07-25T00:01:00.000Z', cgroupAnonMb: 56 },
+    { at: '2026-07-25T00:02:00.000Z', cgroupAnonMb: 49.5 },
+    { at: '2026-07-25T00:03:00.000Z', cgroupAnonMb: 53 },
+    { at: '2026-07-25T00:04:00.000Z', cgroupAnonMb: 53.7 },
+  ]);
+
+  assert.equal(summary.status, 'stable');
+  assert.equal(summary.perHourMb, 0);
+  assert.equal(summary.sampleCount, 4);
+});
