@@ -2,9 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {
+  analyzeMemoryTrend,
   parseCgroupMemoryStat,
+  parseProcMeminfo,
   resolveCgroupV2Directory,
   summarizeCgroupMemory,
+  summarizeHostMemory,
 } from './systemMetrics.js';
 
 test('parseCgroupMemoryStat reads numeric counters', () => {
@@ -43,4 +46,36 @@ test('summarizeCgroupMemory separates anonymous and reclaimable memory', () => {
     reclaimable: 16_500,
     slab: 2_000,
   });
+});
+
+test('host memory uses MemAvailable instead of treating cache as occupied', () => {
+  const values = parseProcMeminfo([
+    'MemTotal:        2048000 kB',
+    'MemFree:          300000 kB',
+    'MemAvailable:    1500000 kB',
+    'Buffers:           20000 kB',
+    'Cached:           700000 kB',
+    'SReclaimable:      50000 kB',
+  ].join('\n'));
+  const summary = summarizeHostMemory(values);
+
+  assert.equal(summary.total, 2048000 * 1024);
+  assert.equal(summary.used, 548000 * 1024);
+  assert.equal(summary.usedPercent, 26.8);
+  assert.equal(summary.cached, 750000 * 1024);
+});
+
+test('memory trend distinguishes a plateau from sustained growth', () => {
+  const stable = analyzeMemoryTrend([
+    { at: '2026-07-25T00:00:00.000Z', cgroupAnonMb: 40 },
+    { at: '2026-07-25T01:00:00.000Z', cgroupAnonMb: 44 },
+  ]);
+  const rising = analyzeMemoryTrend([
+    { at: '2026-07-25T00:00:00.000Z', cgroupAnonMb: 40 },
+    { at: '2026-07-25T01:00:00.000Z', cgroupAnonMb: 58 },
+  ]);
+
+  assert.equal(stable.status, 'stable');
+  assert.equal(rising.status, 'rising');
+  assert.equal(rising.perHourMb, 18);
 });

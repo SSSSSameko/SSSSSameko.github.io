@@ -3,7 +3,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
+import {
+  adminSessionCookie,
+  createAdminSession,
+  createLoginLimiter,
+  expiredAdminSessionCookie,
+  parseCookieHeader,
+  verifyAdminPassword,
+  verifyAdminSession,
+} from './src/lib/adminAuth.js';
 import {
   appendKeepaliveEvent,
   formatDurationMs,
@@ -17,9 +27,12 @@ import { completedDrawStats } from './src/lib/drawReceipts.js';
 import { safeAvatarUrl } from './src/lib/avatar.js';
 import { selectFilesToPrune } from './src/lib/storageRetention.js';
 import {
+  analyzeMemoryTrend,
   parseCgroupMemoryStat,
+  parseProcMeminfo,
   resolveCgroupV2Directory,
   summarizeCgroupMemory,
+  summarizeHostMemory,
 } from './src/lib/systemMetrics.js';
 import {
   closePersistentBrowserContext,
@@ -41,6 +54,8 @@ const cookieStoreFile = path.join(authDir, 'weibo-cookie.json');
 const weiboLoginProfileDir = path.join(authDir, 'weibo-login-profile');
 const weiboLoginStateFile = path.join(authDir, 'weibo-login-state.json');
 const drawAttemptsFile = path.join(rootDir, 'output', 'draw-attempts.jsonl');
+const systemMetricsFile = path.join(outputDir, 'system-metrics.json');
+const adminEventsFile = path.join(outputDir, 'admin-events.json');
 
 function envNumber(name, fallback, minimum = 0) {
   const value = Number(process.env[name] ?? fallback);
@@ -51,6 +66,14 @@ const port = envNumber('PORT', 4173, 1);
 const host = String(process.env.HOST || '').trim();
 const apiKey = String(process.env.API_KEY || '').trim();
 const adminKey = String(process.env.ADMIN_KEY || '').trim();
+const adminUsername = String(process.env.ADMIN_USERNAME || '').trim();
+const adminPasswordHash = String(process.env.ADMIN_PASSWORD_HASH || '').trim();
+const adminSessionSecret = String(process.env.ADMIN_SESSION_SECRET || '').trim();
+const adminSessionTtlMs = envNumber('ADMIN_SESSION_TTL_MS', 12 * 60 * 60_000, 60_000);
+const adminSessionSecure = /^(1|true|yes)$/i.test(String(
+  process.env.ADMIN_SESSION_SECURE
+    ?? (process.env.NODE_ENV === 'production' ? '1' : '0'),
+).trim());
 const cookieWriteKey = String(process.env.COOKIE_WRITE_KEY || '').trim();
 const fetchTimeoutMs = envNumber('FETCH_TIMEOUT_MS', 20_000, 1000);
 const jobTtlMs = envNumber('JOB_TTL_MS', 10 * 60_000, 60_000);
@@ -79,6 +102,9 @@ const maxDrawSaveBodyBytes = envNumber('MAX_DRAW_SAVE_BODY_BYTES', 2 * 1024 * 10
 const maxSavedDraws = envNumber('MAX_SAVED_DRAWS', 1000, 20);
 const maxSavedDrawBytes = envNumber('MAX_SAVED_DRAW_BYTES', 100 * 1024 * 1024, 1024 * 1024);
 const enableWeiboKeepalive = !/^(0|false|no)$/i.test(String(process.env.WEIBO_KEEPALIVE_ENABLED ?? '1').trim());
+const serviceRecycleIntervalMs = envNumber('SERVICE_RECYCLE_INTERVAL_MS', 24 * 60 * 60_000, 60_000);
+const serviceMemoryHighMb = envNumber('SERVICE_MEMORY_HIGH_MB', 700, 1);
+const serviceMemoryMaxMb = envNumber('SERVICE_MEMORY_MAX_MB', 850, 1);
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
   .map((origin) => normalizeConfiguredOrigin(origin))
@@ -95,6 +121,7 @@ const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
 const WEIBO_QR_LOGIN_URL = 'https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&url=https%3A%2F%2Fweibo.com%2F';
 const WEIBO_URL_HOSTS = new Set(['weibo.com', 'www.weibo.com', 'm.weibo.cn', 'weibo.cn', 'www.weibo.cn']);
+const ADMIN_SESSION_COOKIE = 'sameko_admin_session';
 const jobs = new Map();
 const jobQueue = [];
 const rateLimitBuckets = new Map();
@@ -104,6 +131,21 @@ let weiboLoginSession = null;
 let weiboKeepaliveRunning = false;
 let weiboBrowserOperation = null;
 let weiboKeepaliveContext = null;
+const adminLoginLimiter = createLoginLimiter({ maxAttempts: 5, windowMs: 15 * 60_000 });
+const revokedAdminSessions = new Map();
+const memorySamples = [];
+const runtimeEvents = [];
+const requestStats = {
+  total: 0,
+  clientErrors: 0,
+  serverErrors: 0,
+  lastRequestAt: '',
+  slowestMs: 0,
+};
+const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
+eventLoopDelay.enable();
+let metricsWrite = Promise.resolve();
+let adminEventWrite = Promise.resolve();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -210,7 +252,7 @@ function applyCors(req, res, pathname) {
   res.setHeader('access-control-allow-origin', origin);
   res.setHeader('vary', 'Origin');
   res.setHeader('access-control-allow-methods', 'GET,POST,DELETE,OPTIONS');
-  res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key');
+  res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key, x-admin-csrf');
   res.setHeader('access-control-max-age', '86400');
   return true;
 }
@@ -230,13 +272,62 @@ function requestApiKey(req) {
   return match ? match[1].trim() : '';
 }
 
-function isAuthorizedApiRequest(req, pathname) {
-  if (req.method === 'OPTIONS' || pathname === '/api/health') return true;
-  if (pathname === '/api/admin' || pathname.startsWith('/api/admin/')) {
-    return Boolean(adminKey) && timingSafeEqualText(requestApiKey(req), adminKey);
+function configuredAdminAccount() {
+  return Boolean(adminUsername && adminPasswordHash && adminSessionSecret);
+}
+
+function requestAdminSession(req) {
+  const token = parseCookieHeader(req.headers.cookie || '')[ADMIN_SESSION_COOKIE] || '';
+  const session = verifyAdminSession(token, {
+    username: adminUsername,
+    secret: adminSessionSecret,
+  });
+  if (!session) return null;
+  const now = Date.now();
+  for (const [sessionId, expiresAt] of revokedAdminSessions) {
+    if (expiresAt <= now) revokedAdminSessions.delete(sessionId);
   }
-  if (!apiKey) return true;
-  return timingSafeEqualText(requestApiKey(req), apiKey);
+  return revokedAdminSessions.has(session.jti) ? null : session;
+}
+
+function authorizeAdminRequest(req) {
+  if (adminKey && timingSafeEqualText(requestApiKey(req), adminKey)) {
+    return { ok: true, mode: 'key', username: 'server-key' };
+  }
+  if (!configuredAdminAccount()) {
+    return { ok: false, status: 503, error: '后台账号尚未配置' };
+  }
+  const session = requestAdminSession(req);
+  if (!session) return { ok: false, status: 401, error: '登录已失效，请重新登录' };
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    const csrf = String(req.headers['x-admin-csrf'] || '');
+    if (!timingSafeEqualText(csrf, session.csrf)) {
+      return { ok: false, status: 403, error: '安全校验失败，请刷新后台后重试' };
+    }
+  }
+  return {
+    ok: true,
+    mode: 'session',
+    username: session.u,
+    session,
+  };
+}
+
+function authorizeApiRequest(req, pathname) {
+  if (
+    req.method === 'OPTIONS'
+    || pathname === '/api/health'
+    || (req.method === 'POST' && pathname === '/api/admin/login')
+  ) {
+    return { ok: true, mode: 'public' };
+  }
+  if (pathname === '/api/admin' || pathname.startsWith('/api/admin/')) {
+    return authorizeAdminRequest(req);
+  }
+  if (!apiKey) return { ok: true, mode: 'public' };
+  return timingSafeEqualText(requestApiKey(req), apiKey)
+    ? { ok: true, mode: 'key' }
+    : { ok: false, status: 401, error: '访问密钥不正确或未提供' };
 }
 
 function canWriteCookieStore(req) {
@@ -1341,6 +1432,7 @@ async function refreshCookieFromBrowserProfile(reason = 'manual-refresh') {
 
   return await runWeiboBrowserOperation('Cookie 保活', async () => {
     weiboKeepaliveRunning = true;
+    await collectSystemSample(`${reason}:before`).catch(() => {});
     await appendWeiboLoginEvent({
       at: startedAtIso,
       status: 'refreshing',
@@ -1404,6 +1496,7 @@ async function refreshCookieFromBrowserProfile(reason = 'manual-refresh') {
       }
       weiboKeepaliveContext = null;
       weiboKeepaliveRunning = false;
+      await collectSystemSample(`${reason}:after`).catch(() => {});
     }
   });
 }
@@ -2668,6 +2761,134 @@ async function cgroupMemoryDiagnostic() {
   }
 }
 
+async function hostMemoryDiagnostic() {
+  if (process.platform === 'linux') {
+    try {
+      return summarizeHostMemory(parseProcMeminfo(
+        await fs.readFile('/proc/meminfo', 'utf8'),
+      ));
+    } catch {
+    }
+  }
+  const total = os.totalmem();
+  const free = os.freemem();
+  return {
+    total,
+    free,
+    available: free,
+    cached: 0,
+    buffers: 0,
+    used: Math.max(0, total - free),
+    usedPercent: total ? Math.round(((total - free) / total) * 1000) / 10 : 0,
+  };
+}
+
+async function diskDiagnostic() {
+  try {
+    const stat = await fs.statfs(outputDir);
+    const total = Number(stat.blocks) * Number(stat.bsize);
+    const available = Number(stat.bavail) * Number(stat.bsize);
+    const used = Math.max(0, total - available);
+    return {
+      available: true,
+      total,
+      used,
+      availableBytes: available,
+      usedPercent: total ? Math.round((used / total) * 1000) / 10 : 0,
+    };
+  } catch (error) {
+    return {
+      available: false,
+      total: 0,
+      used: 0,
+      availableBytes: 0,
+      usedPercent: 0,
+      error: safeError(error).message,
+    };
+  }
+}
+
+async function readJsonArray(filePath) {
+  try {
+    const parsed = JSON.parse(await fs.readFile(filePath, 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.name === 'SyntaxError') return [];
+    throw error;
+  }
+}
+
+async function writeJsonArray(filePath, items) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.tmp`;
+  await fs.writeFile(temporary, JSON.stringify(items, null, 2), 'utf8');
+  await fs.rename(temporary, filePath);
+}
+
+function sourceFingerprint(req) {
+  return crypto
+    .createHash('sha256')
+    .update(clientRateKey(req))
+    .digest('hex')
+    .slice(0, 10);
+}
+
+function recordRuntimeEvent(event) {
+  runtimeEvents.push({
+    at: new Date().toISOString(),
+    status: 'info',
+    ...event,
+  });
+  if (runtimeEvents.length > 50) runtimeEvents.splice(0, runtimeEvents.length - 50);
+}
+
+async function appendAdminEvent(event) {
+  adminEventWrite = adminEventWrite
+    .catch(() => {})
+    .then(async () => {
+      const stored = await readJsonArray(adminEventsFile);
+      stored.push({
+        at: new Date().toISOString(),
+        category: 'admin',
+        status: 'info',
+        ...event,
+      });
+      await writeJsonArray(adminEventsFile, stored.slice(-100));
+    });
+  return await adminEventWrite;
+}
+
+async function collectSystemSample(reason = 'interval') {
+  const [cgroup, browserPids] = await Promise.all([
+    cgroupMemoryDiagnostic(),
+    findProfileBrowserPids(weiboLoginProfileDir).catch(() => []),
+  ]);
+  const memory = process.memoryUsage();
+  const sample = {
+    at: new Date().toISOString(),
+    reason,
+    rssMb: bytesToMb(memory.rss),
+    heapUsedMb: bytesToMb(memory.heapUsed),
+    cgroupCurrentMb: bytesToMb(cgroup?.current),
+    cgroupAnonMb: bytesToMb(cgroup?.anon),
+    cgroupFileMb: bytesToMb(cgroup?.file),
+    reclaimableMb: bytesToMb(cgroup?.reclaimable),
+    browserProcessCount: browserPids.length,
+  };
+  memorySamples.push(sample);
+  if (memorySamples.length > 288) memorySamples.splice(0, memorySamples.length - 288);
+  metricsWrite = metricsWrite
+    .catch(() => {})
+    .then(() => writeJsonArray(systemMetricsFile, memorySamples));
+  await metricsWrite;
+  return sample;
+}
+
+async function loadDiagnosticHistory() {
+  const samples = await readJsonArray(systemMetricsFile);
+  memorySamples.push(...samples.slice(-287));
+}
+
 async function fileDiagnostic(label, filePath) {
   try {
     const stat = await fs.stat(filePath);
@@ -2688,21 +2909,37 @@ async function fileDiagnostic(label, filePath) {
 
 async function adminSystemSummary() {
   const memory = process.memoryUsage();
-  const hostMemoryTotal = os.totalmem();
-  const hostMemoryFree = os.freemem();
-  const [storage, browserPids, cgroupMemory] = await Promise.all([
+  const resources = process.resourceUsage();
+  const [storage, browserPids, cgroupMemory, hostMemory, disk, adminEvents] = await Promise.all([
     Promise.all([
       fileDiagnostic('output/auth', authDir),
       fileDiagnostic('Cookie 池', cookieStoreFile),
       fileDiagnostic('扫码浏览器 Profile', weiboLoginProfileDir),
       fileDiagnostic('登录状态文件', weiboLoginStateFile),
       fileDiagnostic('开奖记录目录', drawsDir),
+      fileDiagnostic('系统采样', systemMetricsFile),
+      fileDiagnostic('后台事件', adminEventsFile),
     ]),
     findProfileBrowserPids(weiboLoginProfileDir),
     cgroupMemoryDiagnostic(),
+    hostMemoryDiagnostic(),
+    diskDiagnostic(),
+    readJsonArray(adminEventsFile),
   ]);
+  const recentSamples = memorySamples.slice(-288);
+  const memoryTrend = analyzeMemoryTrend(recentSamples.slice(-72));
+  const now = Date.now();
+  const nextRecycleAt = new Date(
+    Date.parse(serverStartedAt) + serviceRecycleIntervalMs,
+  ).toISOString();
+  const delayMeanMs = Number.isFinite(eventLoopDelay.mean)
+    ? Math.round((eventLoopDelay.mean / 1e6) * 100) / 100
+    : 0;
+  const delayP99Ms = Number.isFinite(eventLoopDelay.percentile(99))
+    ? Math.round((eventLoopDelay.percentile(99) / 1e6) * 100) / 100
+    : 0;
   return {
-    now: new Date().toISOString(),
+    now: new Date(now).toISOString(),
     startedAt: serverStartedAt,
     uptimeMs: Math.round(process.uptime() * 1000),
     uptimeText: formatDurationMs(process.uptime() * 1000),
@@ -2717,12 +2954,12 @@ async function adminSystemSummary() {
       heapUsedMb: bytesToMb(memory.heapUsed),
       heapTotalMb: bytesToMb(memory.heapTotal),
       externalMb: bytesToMb(memory.external),
-      hostTotalMb: bytesToMb(hostMemoryTotal),
-      hostFreeMb: bytesToMb(hostMemoryFree),
-      hostUsedMb: bytesToMb(hostMemoryTotal - hostMemoryFree),
-      hostUsedPercent: hostMemoryTotal
-        ? Math.round(((hostMemoryTotal - hostMemoryFree) / hostMemoryTotal) * 1000) / 10
-        : 0,
+      hostTotalMb: bytesToMb(hostMemory.total),
+      hostFreeMb: bytesToMb(hostMemory.free),
+      hostAvailableMb: bytesToMb(hostMemory.available),
+      hostCachedMb: bytesToMb(hostMemory.cached),
+      hostUsedMb: bytesToMb(hostMemory.used),
+      hostUsedPercent: hostMemory.usedPercent,
       cgroupAvailable: Boolean(cgroupMemory),
       cgroupCurrentMb: bytesToMb(cgroupMemory?.current),
       cgroupPeakMb: bytesToMb(cgroupMemory?.peak),
@@ -2730,6 +2967,8 @@ async function adminSystemSummary() {
       cgroupFileMb: bytesToMb(cgroupMemory?.file),
       cgroupKernelMb: bytesToMb(cgroupMemory?.kernel),
       cgroupReclaimableMb: bytesToMb(cgroupMemory?.reclaimable),
+      trend: memoryTrend,
+      samples: recentSamples,
     },
     browser: {
       processCount: browserPids.length,
@@ -2737,6 +2976,29 @@ async function adminSystemSummary() {
       operation: weiboBrowserOperation
         ? { label: weiboBrowserOperation.label, startedAt: weiboBrowserOperation.startedAt }
         : null,
+    },
+    runtime: {
+      eventLoopMeanMs: delayMeanMs,
+      eventLoopP99Ms: delayP99Ms,
+      userCpuMs: Math.round(resources.userCPUTime / 1000),
+      systemCpuMs: Math.round(resources.systemCPUTime / 1000),
+      maxRssMb: Math.round((resources.maxRSS / 1024) * 10) / 10,
+      involuntaryContextSwitches: resources.involuntaryContextSwitches,
+      requests: { ...requestStats },
+    },
+    service: {
+      recycleIntervalMs: serviceRecycleIntervalMs,
+      recycleIntervalText: formatDurationMs(serviceRecycleIntervalMs),
+      nextRecycleAt,
+      recycleInMs: Math.max(0, Date.parse(nextRecycleAt) - now),
+      memoryHighMb: serviceMemoryHighMb,
+      memoryMaxMb: serviceMemoryMaxMb,
+    },
+    disk: {
+      ...disk,
+      totalMb: bytesToMb(disk.total),
+      usedMb: bytesToMb(disk.used),
+      availableMb: bytesToMb(disk.availableBytes),
     },
     config: {
       nodeEnv: process.env.NODE_ENV || '',
@@ -2759,9 +3021,117 @@ async function adminSystemSummary() {
       playwrightBrowsersPathSet: Boolean(process.env.PLAYWRIGHT_BROWSERS_PATH),
       cookieStoreDisabled: disableCookieStore,
       cookieStoreWriteProtected: Boolean(cookieWriteKey),
+      adminAccountEnabled: configuredAdminAccount(),
+      adminSessionTtlMs,
+      adminSessionTtlText: formatDurationMs(adminSessionTtlMs),
     },
     storage,
+    events: [...adminEvents.slice(-50), ...runtimeEvents]
+      .sort((a, b) => Date.parse(b.at || 0) - Date.parse(a.at || 0))
+      .slice(0, 50),
   };
+}
+
+async function handleAdminLogin(req, res) {
+  if (!configuredAdminAccount()) {
+    return sendJson(res, 503, { ok: false, error: '后台账号尚未配置' });
+  }
+  const rateKey = clientRateKey(req);
+  const allowance = adminLoginLimiter.check(rateKey);
+  if (!allowance.allowed) {
+    await appendAdminEvent({
+      category: 'auth',
+      action: 'login',
+      status: 'blocked',
+      source: sourceFingerprint(req),
+      message: '登录尝试已被限流',
+    }).catch(() => {});
+    res.setHeader('retry-after', String(Math.max(1, Math.ceil(allowance.retryAfterMs / 1000))));
+    return sendJson(res, 429, { ok: false, error: '登录尝试过多，请稍后再试' });
+  }
+
+  const body = await readJsonBody(req, 4096);
+  const username = String(body.username || '').trim().slice(0, 120);
+  const password = String(body.password || '').slice(0, 512);
+  const [userMatches, passwordMatches] = await Promise.all([
+    Promise.resolve(timingSafeEqualText(username, adminUsername)),
+    verifyAdminPassword(password, adminPasswordHash),
+  ]);
+  if (!userMatches || !passwordMatches) {
+    const failed = adminLoginLimiter.fail(rateKey);
+    if (!failed.allowed) {
+      res.setHeader('retry-after', String(Math.max(1, Math.ceil(failed.retryAfterMs / 1000))));
+    }
+    await appendAdminEvent({
+      category: 'auth',
+      action: 'login',
+      status: 'error',
+      source: sourceFingerprint(req),
+      message: '后台登录失败',
+    }).catch(() => {});
+    return sendJson(res, 401, { ok: false, error: '账号或密码不正确' });
+  }
+
+  adminLoginLimiter.clear(rateKey);
+  const created = createAdminSession({
+    username: adminUsername,
+    secret: adminSessionSecret,
+    ttlMs: adminSessionTtlMs,
+  });
+  res.setHeader('set-cookie', adminSessionCookie(
+    ADMIN_SESSION_COOKIE,
+    created.token,
+    {
+      secure: adminSessionSecure,
+      maxAgeSeconds: Math.floor(adminSessionTtlMs / 1000),
+    },
+  ));
+  res.setHeader('cache-control', 'no-store');
+  await appendAdminEvent({
+    category: 'auth',
+    action: 'login',
+    status: 'ok',
+    source: sourceFingerprint(req),
+    message: '后台登录成功',
+  }).catch(() => {});
+  return sendJson(res, 200, {
+    ok: true,
+    username: adminUsername,
+    csrfToken: created.payload.csrf,
+    expiresAt: new Date(created.payload.exp).toISOString(),
+  });
+}
+
+async function handleAdminSession(req, res) {
+  const session = req.adminAuth?.session;
+  if (!session) {
+    return sendJson(res, 401, { ok: false, error: '登录已失效，请重新登录' });
+  }
+  res.setHeader('cache-control', 'no-store');
+  return sendJson(res, 200, {
+    ok: true,
+    username: session.u,
+    csrfToken: session.csrf,
+    expiresAt: new Date(session.exp).toISOString(),
+  });
+}
+
+async function handleAdminLogout(req, res) {
+  const session = req.adminAuth?.session;
+  if (session) revokedAdminSessions.set(session.jti, session.exp);
+  await appendAdminEvent({
+    category: 'auth',
+    action: 'logout',
+    status: 'ok',
+    source: sourceFingerprint(req),
+    message: '后台已退出',
+  }).catch(() => {});
+  res.setHeader('set-cookie', expiredAdminSessionCookie(
+    ADMIN_SESSION_COOKIE,
+    { secure: adminSessionSecure },
+  ));
+  res.setHeader('cache-control', 'no-store');
+  return sendJson(res, 200, { ok: true });
 }
 
 async function handleAdminSummary(req, res) {
@@ -2777,7 +3147,8 @@ async function handleAdminSummary(req, res) {
   const winnerCount = draws.reduce((sum, item) => sum + item.winnerCount, 0);
   return sendJson(res, 200, {
     ok: true,
-    adminEnabled: Boolean(adminKey),
+    adminEnabled: configuredAdminAccount() || Boolean(adminKey),
+    adminAccount: req.adminAuth?.username || '',
     savedDrawCount: draws.length,
     attemptCount: attempts.length,
     winnerCount,
@@ -2834,7 +3205,21 @@ async function handleAdminWeiboLoginStop(req, res) {
 }
 
 async function handleAdminWeiboLoginRefresh(req, res) {
+  await appendAdminEvent({
+    category: 'keepalive',
+    action: 'manual-refresh',
+    status: 'started',
+    source: sourceFingerprint(req),
+    message: '手动 Cookie 保活已开始',
+  }).catch(() => {});
   const result = await refreshCookieFromBrowserProfile('manual-refresh');
+  await appendAdminEvent({
+    category: 'keepalive',
+    action: 'manual-refresh',
+    status: result.status === 'error' ? 'error' : 'ok',
+    source: sourceFingerprint(req),
+    message: result.status === 'error' ? '手动 Cookie 保活失败' : '手动 Cookie 保活完成',
+  }).catch(() => {});
   return sendJson(res, 200, result);
 }
 
@@ -2861,6 +3246,13 @@ async function handleAdminDeleteDraw(req, res, fileName) {
     }
     throw error;
   }
+  await appendAdminEvent({
+    category: 'records',
+    action: 'delete',
+    status: 'ok',
+    source: sourceFingerprint(req),
+    message: `已删除开奖记录 ${safeName}`,
+  }).catch(() => {});
   return sendJson(res, 200, { ok: true, removed: safeName });
 }
 
@@ -2973,6 +3365,15 @@ async function serveStatic(req, res) {
 }
 
 const server = http.createServer(async (req, res) => {
+  const requestStarted = performance.now();
+  res.once('finish', () => {
+    const elapsed = Math.round((performance.now() - requestStarted) * 10) / 10;
+    requestStats.total += 1;
+    requestStats.lastRequestAt = new Date().toISOString();
+    requestStats.slowestMs = Math.max(requestStats.slowestMs, elapsed);
+    if (res.statusCode >= 500) requestStats.serverErrors += 1;
+    else if (res.statusCode >= 400) requestStats.clientErrors += 1;
+  });
   try {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const corsOk = applyCors(req, res, url.pathname);
@@ -2988,8 +3389,15 @@ const server = http.createServer(async (req, res) => {
       res.setHeader('retry-after', String(rateLimit.retryAfter));
       return sendJson(res, 429, { ok: false, error: '请求过于频繁，请稍后再试' });
     }
-    if (isApiPath(url.pathname) && !isAuthorizedApiRequest(req, url.pathname)) {
-      return sendJson(res, 401, { ok: false, error: '访问密钥不正确或未提供' });
+    if (isApiPath(url.pathname)) {
+      const authorization = authorizeApiRequest(req, url.pathname);
+      if (!authorization.ok) {
+        return sendJson(res, authorization.status || 401, {
+          ok: false,
+          error: authorization.error || '登录已失效，请重新登录',
+        });
+      }
+      req.adminAuth = authorization;
     }
     if (adminAssetName(url.pathname)) {
       return await serveAdminAsset(req, res, url.pathname);
@@ -3013,6 +3421,15 @@ const server = http.createServer(async (req, res) => {
         weiboKeepaliveIntervalMs,
         weiboKeepaliveIntervalText: formatDurationMs(weiboKeepaliveIntervalMs),
       });
+    }
+    if (req.method === 'POST' && url.pathname === '/api/admin/login') {
+      return await handleAdminLogin(req, res);
+    }
+    if (req.method === 'GET' && url.pathname === '/api/admin/session') {
+      return await handleAdminSession(req, res);
+    }
+    if (req.method === 'POST' && url.pathname === '/api/admin/logout') {
+      return await handleAdminLogout(req, res);
     }
     if (req.method === 'GET' && url.pathname === '/api/admin/summary') {
       return await handleAdminSummary(req, res);
@@ -3063,6 +3480,21 @@ const server = http.createServer(async (req, res) => {
     return sendText(res, 405, 'Method Not Allowed');
   } catch (error) {
     const normalized = safeError(error);
+    if (normalized.status >= 500) {
+      const pathname = (() => {
+        try {
+          return new URL(req.url, 'http://localhost').pathname;
+        } catch {
+          return '';
+        }
+      })();
+      recordRuntimeEvent({
+        category: 'server',
+        action: req.method || '',
+        status: 'error',
+        message: `${pathname || '未知接口'}：${normalized.message}`,
+      });
+    }
     return sendJson(res, normalized.status, { ok: false, error: normalized.message });
   }
 });
@@ -3097,6 +3529,18 @@ process.once('SIGTERM', () => shutdown('SIGTERM').catch((error) => {
 process.once('SIGINT', () => shutdown('SIGINT').catch((error) => {
   console.error(`Shutdown failed: ${safeError(error).message}`);
 }));
+
+await loadDiagnosticHistory().catch((error) => {
+  console.warn(`Diagnostic history load failed: ${safeError(error).message}`);
+});
+await collectSystemSample('startup').catch((error) => {
+  console.warn(`Initial system sample failed: ${safeError(error).message}`);
+});
+setInterval(() => {
+  collectSystemSample('interval').catch((error) => {
+    console.warn(`System sample failed: ${safeError(error).message}`);
+  });
+}, 5 * 60_000).unref?.();
 
 scheduleWeiboKeepalive();
 

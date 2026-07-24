@@ -37,6 +37,9 @@ Environment=SAME_STATUS_REQUEST_GAP_MS=4000
 Environment=WEIBO_KEEPALIVE_ENABLED=1
 Environment=WEIBO_KEEPALIVE_INTERVAL_MS=43200000
 Environment=WEIBO_BROWSER_LAUNCH_TIMEOUT_MS=60000
+Environment=SERVICE_RECYCLE_INTERVAL_MS=86400000
+Environment=SERVICE_MEMORY_HIGH_MB=700
+Environment=SERVICE_MEMORY_MAX_MB=850
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/sameko-weibo-lottery/ms-playwright
 Environment=HOME=/opt/sameko-weibo-lottery/output/runtime-home
 Environment=XDG_CACHE_HOME=/opt/sameko-weibo-lottery/output/runtime-cache

@@ -2,8 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex,nofollow">
+  <meta name="theme-color" content="#f4f5f9">
   <title>微博转发抽奖助手后台</title>
   <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -11,131 +12,227 @@
   <script src="/admin/admin.js" type="module"></script>
 </head>
 <body>
-  <div class="aurora aurora-one"></div>
-  <div class="aurora aurora-two"></div>
-  <div class="shell">
+  <div class="page-shell">
     <header class="topbar">
       <a class="brand" href="/admin" aria-label="微博转发抽奖助手后台">
         <span class="brand-avatar"><img src="/avatar.jpg" alt=""></span>
         <span class="brand-copy">
-          <strong>微博转发抽奖助手后台</strong>
-          <span>by.sameko · 管理面板</span>
+          <strong>抽奖助手后台</strong>
+          <span>Sameko Control</span>
         </span>
       </a>
+      <div class="topbar-status hidden" id="topbarStatus">
+        <span class="status-light" id="topStatusLight"></span>
+        <span id="accountLabel">未登录</span>
+        <span class="topbar-divider"></span>
+        <span id="lastUpdated">等待刷新</span>
+      </div>
       <div class="topbar-actions">
-        <button class="ghost-button" id="refreshBtn" type="button">刷新</button>
-        <button class="ghost-button danger-text" id="logoutBtn" type="button">退出</button>
+        <button class="icon-button" id="refreshBtn" type="button" aria-label="刷新数据" title="刷新数据">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-14.9-4M4 5v5h5M4 13a8.1 8.1 0 0 0 14.9 4M20 19v-5h-5"/></svg>
+        </button>
+        <button class="text-button danger-text" id="logoutBtn" type="button">退出</button>
       </div>
     </header>
 
-    <section class="login-panel" id="loginPanel">
-      <div>
-        <p class="eyebrow">后台入口</p>
-        <h1>输入后台密钥</h1>
-        <p class="login-copy">后台只展示开奖记录和运行状态，不返回 Cookie 明文。密钥仅保留在当前标签会话中。</p>
+    <section class="login-stage" id="loginPanel">
+      <div class="login-window">
+        <div class="login-mark"><img src="/avatar.jpg" alt=""></div>
+        <div class="login-heading">
+          <p class="eyebrow">管理后台</p>
+          <h1>欢迎回来</h1>
+          <p>登录后查看开奖、Cookie 与服务器运行状态。</p>
+        </div>
+        <form class="login-form" id="loginForm">
+          <label class="field">
+            <span>账号</span>
+            <input id="usernameInput" type="text" autocomplete="username" spellcheck="false" placeholder="请输入账号">
+          </label>
+          <label class="field">
+            <span>密码</span>
+            <span class="password-field">
+              <input id="passwordInput" type="password" autocomplete="current-password" placeholder="请输入密码">
+              <button class="field-icon" id="passwordToggle" type="button" aria-label="显示密码" title="显示密码">
+                <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+              </button>
+            </span>
+          </label>
+          <button class="primary-button login-submit" id="loginBtn" type="submit">
+            <span>进入后台</span>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
+          </button>
+        </form>
+        <p class="message" id="loginMessage" role="alert"></p>
       </div>
-      <div class="login-form">
-        <label for="adminKeyInput">后台密钥</label>
-        <input id="adminKeyInput" type="password" autocomplete="current-password" spellcheck="false" placeholder="粘贴后台密钥">
-        <button class="primary-button" id="loginBtn" type="button">进入后台</button>
-      </div>
-      <p class="message" id="loginMessage"></p>
     </section>
 
     <main class="dashboard hidden" id="dashboard">
-      <section class="hero-panel">
-        <div>
-          <p class="eyebrow">总览</p>
-          <h1>开奖记录总览</h1>
-          <p id="heroSubtitle">正在读取后台数据。</p>
-        </div>
-        <div class="health-pill" id="healthPill">等待连接</div>
-      </section>
+      <nav class="tabbar" aria-label="后台导航">
+        <button class="tab-button active" type="button" data-tab="overview">总览</button>
+        <button class="tab-button" type="button" data-tab="records">记录</button>
+        <button class="tab-button" type="button" data-tab="cookie">Cookie</button>
+        <button class="tab-button" type="button" data-tab="system">系统</button>
+        <span class="tab-indicator" aria-hidden="true"></span>
+      </nav>
 
-      <section class="metric-grid" id="metricGrid" aria-label="后台数据概览"></section>
-
-      <section class="workbench">
-        <div class="records-panel">
-          <div class="panel-head">
-            <div>
-              <p class="eyebrow">开奖记录</p>
-              <h2>开奖记录</h2>
-            </div>
-            <div class="toolbar">
-              <input id="searchInput" type="search" placeholder="搜索链接、奖项、中奖人">
-              <button class="ghost-button" id="exportAllBtn" type="button">导出 CSV</button>
-            </div>
+      <section class="view active" data-view="overview">
+        <div class="overview-head">
+          <div>
+            <p class="eyebrow">运行总览</p>
+            <h1>今天的服务状态</h1>
+            <p id="heroSubtitle">正在读取后台数据。</p>
           </div>
-          <div class="record-list" id="recordList"></div>
+          <div class="health-pill" id="healthPill"><span></span>等待连接</div>
         </div>
 
-        <aside class="detail-panel" id="detailPanel">
-          <div class="empty-detail">
-            <p class="eyebrow">详情</p>
-            <h2>选择一条开奖记录</h2>
-            <p>点开左侧记录后，可以按奖项查看中奖人、复制名单、导出单条记录或删除误保存的数据。</p>
-          </div>
-        </aside>
-      </section>
+        <section class="metric-grid" id="metricGrid" aria-label="核心运行指标"></section>
 
-      <section class="bottom-grid">
-        <div class="panel">
-          <div class="panel-head slim">
-            <div>
-              <p class="eyebrow">最近动作</p>
-              <h2>最近开奖动作</h2>
-            </div>
-          </div>
-          <div class="attempt-list" id="attemptList"></div>
-        </div>
-        <div class="panel">
-          <div class="panel-head slim">
-            <div>
-              <p class="eyebrow">Cookie 状态</p>
-              <h2>Cookie 状态</h2>
-            </div>
-          </div>
-          <div class="cookie-box" id="cookieBox"></div>
-          <div class="login-ops">
-            <div class="login-ops-head">
+        <section class="overview-grid">
+          <article class="panel chart-panel">
+            <div class="panel-head">
               <div>
-                <p class="eyebrow">服务器登录</p>
-                <h3>服务器扫码登录</h3>
+                <p class="eyebrow">近 24 小时</p>
+                <h2>服务内存</h2>
               </div>
-              <span class="badge" id="weiboLoginBadge">未连接</span>
+              <span class="trend-pill" id="memoryInsight">等待采样</span>
             </div>
+            <div class="chart-wrap" id="memoryChart"></div>
+            <div class="chart-legend">
+              <span><i class="legend-current"></i>服务总占用</span>
+              <span><i class="legend-anon"></i>匿名内存</span>
+            </div>
+          </article>
+
+          <article class="panel quick-panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">实时</p>
+                <h2>运行检查</h2>
+              </div>
+            </div>
+            <div class="quick-status" id="requestPanel"></div>
+          </article>
+        </section>
+
+        <section class="overview-grid lower-grid">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">最近</p>
+                <h2>开奖动作</h2>
+              </div>
+              <button class="link-button" type="button" data-go-tab="records">查看记录</button>
+            </div>
+            <div class="attempt-list" id="attemptList"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">审计</p>
+                <h2>运行事件</h2>
+              </div>
+              <button class="link-button" type="button" data-go-tab="system">完整状态</button>
+            </div>
+            <div class="event-list" id="eventPanel"></div>
+          </article>
+        </section>
+      </section>
+
+      <section class="view" data-view="records">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">开奖数据</p>
+            <h1>开奖记录</h1>
+          </div>
+          <div class="toolbar">
+            <label class="search-field">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+              <input id="searchInput" type="search" placeholder="搜索链接、奖项、中奖人">
+            </label>
+            <button class="secondary-button" id="exportAllBtn" type="button">导出 CSV</button>
+          </div>
+        </div>
+        <section class="workbench">
+          <div class="records-panel">
+            <div class="record-list" id="recordList"></div>
+          </div>
+          <aside class="detail-panel" id="detailPanel">
+            <div class="empty-detail">
+              <span class="empty-symbol">⌁</span>
+              <h2>选择一条开奖记录</h2>
+              <p>查看中奖人、奖项、候选哈希和导出选项。</p>
+            </div>
+          </aside>
+        </section>
+      </section>
+
+      <section class="view" data-view="cookie">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">微博连接</p>
+            <h1>Cookie 与保活</h1>
+          </div>
+          <span class="badge" id="weiboLoginBadge">未连接</span>
+        </div>
+        <section class="cookie-layout">
+          <article class="panel cookie-control">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">当前状态</p>
+                <h2>服务器 Cookie</h2>
+              </div>
+            </div>
+            <div class="cookie-box" id="cookieBox"></div>
             <div class="login-ops-actions">
               <button class="primary-button" id="startWeiboLoginBtn" type="button">扫码登录微博</button>
-              <button class="ghost-button" id="refreshWeiboCookieBtn" type="button">立即保活</button>
-              <button class="ghost-button danger-text" id="stopWeiboLoginBtn" type="button">关闭扫码</button>
+              <button class="secondary-button" id="refreshWeiboCookieBtn" type="button">立即保活</button>
+              <button class="text-button danger-text" id="stopWeiboLoginBtn" type="button">关闭扫码</button>
             </div>
             <div class="qr-frame hidden" id="qrFrame">
               <img id="qrImage" alt="微博扫码登录二维码">
             </div>
-            <div class="subtle" id="weiboLoginText">扫码后 Cookie 会保存到服务器 Cookie 池，普通用户只共享代抓能力。</div>
-          </div>
-        </div>
+            <p class="status-copy" id="weiboLoginText">等待读取微博登录状态。</p>
+          </article>
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">诊断</p>
+                <h2>保活记录</h2>
+              </div>
+            </div>
+            <div class="diagnostic-box" id="keepalivePanel"></div>
+          </article>
+        </section>
       </section>
 
-      <section class="diagnostics-grid">
-        <div class="panel">
-          <div class="panel-head slim">
-            <div>
-              <p class="eyebrow">保活诊断</p>
-              <h2>微博登录保活</h2>
-            </div>
+      <section class="view" data-view="system">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">服务器诊断</p>
+            <h1>系统状态</h1>
           </div>
-          <div class="diagnostic-box" id="keepalivePanel"></div>
+          <span class="badge neutral">每 5 分钟采样</span>
         </div>
-        <div class="panel">
-          <div class="panel-head slim">
-            <div>
-              <p class="eyebrow">服务器状态</p>
-              <h2>运行与存储</h2>
+        <section class="system-layout">
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">运行环境</p>
+                <h2>服务与资源</h2>
+              </div>
             </div>
-          </div>
-          <div class="diagnostic-box" id="systemPanel"></div>
-        </div>
+            <div class="diagnostic-box" id="systemPanel"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <p class="eyebrow">事件</p>
+                <h2>最近操作与异常</h2>
+              </div>
+            </div>
+            <div class="event-list expanded" id="systemEventPanel"></div>
+          </article>
+        </section>
       </section>
     </main>
   </div>

@@ -1,11 +1,12 @@
 import { listDisplayState } from './admin-list-state.js';
 
 (() => {
-  const STORAGE_KEY = 'sameko-admin-key';
   const DRAW_VISIBLE_LIMIT = 4;
   const ATTEMPT_VISIBLE_LIMIT = 5;
   const state = {
-    token: sessionStorage.getItem(STORAGE_KEY) || '',
+    username: '',
+    csrfToken: '',
+    sessionExpiresAt: '',
     summary: null,
     draws: [],
     selected: null,
@@ -20,14 +21,26 @@ import { listDisplayState } from './admin-list-state.js';
   const els = {
     loginPanel: $('loginPanel'),
     dashboard: $('dashboard'),
-    adminKeyInput: $('adminKeyInput'),
+    loginForm: $('loginForm'),
+    usernameInput: $('usernameInput'),
+    passwordInput: $('passwordInput'),
+    passwordToggle: $('passwordToggle'),
     loginBtn: $('loginBtn'),
     loginMessage: $('loginMessage'),
     refreshBtn: $('refreshBtn'),
     logoutBtn: $('logoutBtn'),
+    topbarStatus: $('topbarStatus'),
+    topStatusLight: $('topStatusLight'),
+    accountLabel: $('accountLabel'),
+    lastUpdated: $('lastUpdated'),
     heroSubtitle: $('heroSubtitle'),
     healthPill: $('healthPill'),
     metricGrid: $('metricGrid'),
+    memoryChart: $('memoryChart'),
+    memoryInsight: $('memoryInsight'),
+    requestPanel: $('requestPanel'),
+    eventPanel: $('eventPanel'),
+    systemEventPanel: $('systemEventPanel'),
     searchInput: $('searchInput'),
     exportAllBtn: $('exportAllBtn'),
     recordList: $('recordList'),
@@ -98,6 +111,13 @@ import { listDisplayState } from './admin-list-state.js';
     return `${Math.round(size / 1024 / 102.4) / 10} MB`;
   }
 
+  function formatMemoryMb(value) {
+    const mb = Number(value);
+    if (!Number.isFinite(mb)) return '-';
+    if (mb >= 1024) return `${Math.round((mb / 1024) * 10) / 10} GB`;
+    return `${Math.round(mb * 10) / 10} MB`;
+  }
+
   function reasonLabel(value) {
     return {
       'qr-login': '扫码登录',
@@ -148,34 +168,48 @@ import { listDisplayState } from './admin-list-state.js';
   function setAuthed(authed) {
     els.loginPanel.classList.toggle('hidden', authed);
     els.dashboard.classList.toggle('hidden', !authed);
+    els.topbarStatus.classList.toggle('hidden', !authed);
     els.refreshBtn.disabled = !authed;
     els.exportAllBtn.disabled = !authed;
-    els.logoutBtn.disabled = !state.token;
-    if (!authed) setTimeout(() => els.adminKeyInput.focus(), 50);
+    els.logoutBtn.disabled = !authed;
+    if (authed) {
+      els.accountLabel.textContent = state.username;
+    } else {
+      setTimeout(() => els.usernameInput.focus(), 50);
+    }
   }
 
   async function api(path, options = {}) {
-    if (!state.token) throw new Error('请先填写后台密钥');
     const headers = new Headers(options.headers || {});
-    headers.set('x-api-key', state.token);
+    const method = String(options.method || 'GET').toUpperCase();
     if (options.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
-    const response = await fetch(path, { ...options, headers });
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && state.csrfToken) {
+      headers.set('x-admin-csrf', state.csrfToken);
+    }
+    const response = await fetch(path, {
+      ...options,
+      method,
+      headers,
+      credentials: 'same-origin',
+    });
     const data = await response.json().catch(() => ({}));
     if (response.status === 401) {
-      sessionStorage.removeItem(STORAGE_KEY);
-      state.token = '';
+      state.username = '';
+      state.csrfToken = '';
       setAuthed(false);
-      throw new Error('后台密钥不正确，或服务器还没有配置 ADMIN_KEY');
+      throw new Error(data.error || '登录已失效，请重新登录');
     }
     if (!response.ok || data.ok === false) throw new Error(data.error || `请求失败：${response.status}`);
     return data;
   }
 
-  function metricCard(value, label) {
+  function metricCard(value, label, note = '') {
+    const displayed = typeof value === 'number' ? formatNumber(value) : plain(value);
     return `
       <div class="metric-card">
-        <div class="metric-value">${escapeHtml(formatNumber(value))}</div>
+        <div class="metric-value">${escapeHtml(displayed)}</div>
         <div class="metric-label">${escapeHtml(label)}</div>
+        ${note ? `<div class="metric-note">${escapeHtml(note)}</div>` : ''}
       </div>
     `;
   }
@@ -195,23 +229,126 @@ import { listDisplayState } from './admin-list-state.js';
 
   function renderSummary() {
     const summary = state.summary || {};
+    const system = summary.system || {};
+    const memory = system.memory || {};
+    const browser = system.browser || {};
+    const queue = summary.queue || {};
     els.metricGrid.innerHTML = [
-      metricCard(summary.savedDrawCount, '开奖记录'),
-      metricCard(summary.winnerCount, '中奖人次'),
-      metricCard(summary.statusCount, '微博链接'),
-      metricCard(summary.attemptCount, '开奖动作'),
+      metricCard(formatMemoryMb(memory.cgroupAnonMb), '匿名内存', '判断真实内存增长'),
+      metricCard(formatMemoryMb(memory.cgroupCurrentMb), '服务占用', `峰值 ${formatMemoryMb(memory.cgroupPeakMb)}`),
+      metricCard(formatMemoryMb(memory.hostAvailableMb), '主机可用', `已用 ${plain(memory.hostUsedPercent, 0)}%`),
+      metricCard(browser.processCount || 0, 'Chromium', browser.operation?.label || '当前进程'),
+      metricCard(summary.cookie?.accountCount || 0, '可用账号', `Cookie ${summary.cookie?.cookieCount || 0} 条`),
+      metricCard(`${queue.active || 0} / ${queue.queued || 0}`, '抓取队列', `并发上限 ${queue.maxActive || 0}`),
     ].join('');
 
-    els.heroSubtitle.textContent = summary.savedDrawCount
-      ? `已记录 ${summary.savedDrawCount} 次开奖记录，最近更新时间 ${formatDate(summary.recentDraws?.[0]?.savedAt || summary.recentDraws?.[0]?.drawnAt)}。`
-      : '暂无开奖记录，完成一次开奖后会自动出现在这里。';
-    els.healthPill.textContent = summary.adminEnabled ? '后台已连接' : '后台未启用';
+    els.heroSubtitle.textContent = `已运行 ${plain(system.uptimeText)}，记录 ${formatNumber(summary.savedDrawCount)} 次开奖、${formatNumber(summary.winnerCount)} 人次中奖。`;
+    els.healthPill.innerHTML = `<span></span>${summary.adminEnabled ? '服务正常' : '后台未启用'}`;
+    els.lastUpdated.textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
+    els.topStatusLight.classList.toggle('error', !summary.adminEnabled);
 
     renderAttempts(summary.recentAttempts || []);
     renderCookie(summary.cookie || {});
     renderWeiboLogin(summary.weiboLogin || {});
     renderKeepaliveDiagnostics(summary.weiboLogin || {}, summary.cookie || {});
-    renderSystem(summary.system || {}, summary.queue || {});
+    renderMemoryChart(memory);
+    renderRequestSummary(system, queue);
+    renderEvents(system.events || []);
+    renderSystem(system, queue);
+  }
+
+  function chartPoints(samples, field, width, height, min, max) {
+    const range = Math.max(1, max - min);
+    return samples.map((sample, index) => {
+      const x = samples.length === 1 ? width / 2 : (index / (samples.length - 1)) * width;
+      const value = Number(sample[field] || 0);
+      const y = height - ((value - min) / range) * height;
+      return `${Math.round(x * 10) / 10},${Math.round(y * 10) / 10}`;
+    }).join(' ');
+  }
+
+  function renderMemoryChart(memory) {
+    const samples = Array.isArray(memory.samples) ? memory.samples : [];
+    const trend = memory.trend || {};
+    const trendText = {
+      rising: `持续上升 ${plain(trend.perHourMb, 0)} MB/小时`,
+      falling: `正在回落 ${Math.abs(Number(trend.perHourMb || 0))} MB/小时`,
+      stable: '内存趋势稳定',
+      insufficient: '等待更多采样',
+    }[trend.status] || '等待更多采样';
+    els.memoryInsight.textContent = trendText;
+    els.memoryInsight.classList.toggle('rising', trend.status === 'rising');
+    if (samples.length < 2) {
+      els.memoryChart.innerHTML = '<div class="chart-empty">采样满 5 分钟后显示趋势</div>';
+      return;
+    }
+    const width = 720;
+    const height = 190;
+    const pad = 20;
+    const values = samples.flatMap((sample) => [
+      Number(sample.cgroupCurrentMb || 0),
+      Number(sample.cgroupAnonMb || 0),
+    ]);
+    const min = Math.max(0, Math.min(...values) - 8);
+    const max = Math.max(...values) + 8;
+    const current = chartPoints(samples, 'cgroupCurrentMb', width, height, min, max);
+    const anon = chartPoints(samples, 'cgroupAnonMb', width, height, min, max);
+    const area = `0,${height} ${current} ${width},${height}`;
+    const grid = [0, 1, 2, 3].map((index) => {
+      const y = pad + index * ((height - pad * 2) / 3);
+      return `<line class="chart-grid" x1="0" x2="${width}" y1="${y}" y2="${y}"/>`;
+    }).join('');
+    els.memoryChart.innerHTML = `
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="服务内存趋势">
+        ${grid}
+        <polygon class="chart-area" points="${area}"></polygon>
+        <polyline class="chart-line-current" points="${current}"></polyline>
+        <polyline class="chart-line-anon" points="${anon}"></polyline>
+      </svg>
+    `;
+  }
+
+  function quickRow(label, value, note = '') {
+    return `
+      <div class="quick-row">
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(value)}</strong>
+        ${note ? `<small>${escapeHtml(note)}</small>` : ''}
+      </div>
+    `;
+  }
+
+  function renderRequestSummary(system, queue) {
+    const runtime = system.runtime || {};
+    const requests = runtime.requests || {};
+    const service = system.service || {};
+    const disk = system.disk || {};
+    els.requestPanel.innerHTML = [
+      quickRow('事件循环 P99', `${plain(runtime.eventLoopP99Ms, 0)} ms`, Number(runtime.eventLoopP99Ms || 0) < 100 ? '响应正常' : '存在阻塞'),
+      quickRow('HTTP 请求', formatNumber(requests.total), `4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)}`),
+      quickRow('自动重启', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 回收进程`),
+      quickRow('磁盘', `${plain(disk.usedPercent, 0)}%`, `可用 ${plain(disk.availableMb, 0)} MB`),
+      quickRow('任务队列', `${formatNumber(queue.active)} 运行`, `${formatNumber(queue.queued)} 排队 · 锁 ${formatNumber(queue.sameStatusLocks)}`),
+    ].join('');
+  }
+
+  function eventHtml(item) {
+    return `
+      <div class="event-row ${escapeHtml(item.status || '')}">
+        <span class="status-dot"></span>
+        <div>
+          <strong>${escapeHtml(plain(item.message, plain(item.action, '系统事件')))}</strong>
+          <small>${escapeHtml(formatDate(item.at))} · ${escapeHtml(plain(item.category, 'system'))}${item.source ? ` · 来源 ${escapeHtml(item.source)}` : ''}</small>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderEvents(events) {
+    const items = Array.isArray(events) ? events : [];
+    const empty = '<div class="empty-list compact">暂无运行事件。</div>';
+    els.eventPanel.innerHTML = items.length ? items.slice(0, 5).map(eventHtml).join('') : empty;
+    els.systemEventPanel.innerHTML = items.length ? items.map(eventHtml).join('') : empty;
   }
 
   function renderAttempts(attempts) {
@@ -333,6 +470,10 @@ import { listDisplayState } from './admin-list-state.js';
     const config = system.config || {};
     const memory = system.memory || {};
     const browser = system.browser || {};
+    const runtime = system.runtime || {};
+    const requests = runtime.requests || {};
+    const service = system.service || {};
+    const disk = system.disk || {};
     const storage = Array.isArray(system.storage) ? system.storage : [];
     const cgroupMemoryText = memory.cgroupAvailable
       ? `${plain(memory.cgroupCurrentMb, '0')} MB`
@@ -363,13 +504,20 @@ import { listDisplayState } from './admin-list-state.js';
         ${diagnosticRow('进程', system.pid ? `PID ${system.pid}` : '-', system.hostname ? `主机 ${system.hostname}` : '')}
         ${diagnosticRow('Node 内存', memory.rssMb ? `${memory.rssMb} MB RSS` : '-', memory.heapUsedMb ? `Heap ${memory.heapUsedMb}/${memory.heapTotalMb} MB` : '')}
         ${diagnosticRow('服务内存', cgroupMemoryText, cgroupMemoryNote)}
-        ${diagnosticRow('整机内存', memory.hostTotalMb ? `${memory.hostUsedMb}/${memory.hostTotalMb} MB` : '-', memory.hostUsedPercent ? `已用 ${memory.hostUsedPercent}%` : '')}
+        ${diagnosticRow('匿名内存', memory.cgroupAvailable ? `${plain(memory.cgroupAnonMb, 0)} MB` : '-', `趋势 ${plain(memory.trend?.status)} · ${plain(memory.trend?.perHourMb, 0)} MB/小时`)}
+        ${diagnosticRow('主机可用内存', memory.hostTotalMb ? `${memory.hostAvailableMb}/${memory.hostTotalMb} MB` : '-', `实际使用 ${plain(memory.hostUsedPercent, 0)}% · 缓存 ${plain(memory.hostCachedMb, 0)} MB`)}
         ${diagnosticRow('系统负载', Array.isArray(system.loadAverage) ? system.loadAverage.join(' / ') : '-', system.cpus ? `${system.cpus} 核 CPU` : '')}
+        ${diagnosticRow('事件循环', `P99 ${plain(runtime.eventLoopP99Ms, 0)} ms`, `平均 ${plain(runtime.eventLoopMeanMs, 0)} ms`)}
+        ${diagnosticRow('请求统计', `${formatNumber(requests.total)} 次`, `4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)} · 最慢 ${plain(requests.slowestMs, 0)} ms`)}
         ${diagnosticRow('Chromium', `${formatNumber(browser.processCount)} 个进程`, browser.operation?.label ? `正在执行 ${browser.operation.label}` : '当前无浏览器任务')}
         ${diagnosticRow('抓取队列', `运行 ${formatNumber(queue.active)} / 排队 ${formatNumber(queue.queued)}`, `上限 ${formatNumber(queue.maxActive)} / ${formatNumber(queue.maxQueued)}`)}
+        ${diagnosticRow('内存限制', `${plain(service.memoryHighMb, 0)} / ${plain(service.memoryMaxMb, 0)} MB`, '高水位 / 强制上限')}
+        ${diagnosticRow('周期回收', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 重启服务进程`)}
+        ${diagnosticRow('磁盘空间', disk.available ? `${plain(disk.usedPercent, 0)}%` : '-', disk.available ? `已用 ${plain(disk.usedMb, 0)} MB · 可用 ${plain(disk.availableMb, 0)} MB` : plain(disk.error))}
         ${diagnosticRow('静态前端', config.frontendBuilt ? 'dist 构建版' : 'public 兜底版', config.staticDir || '')}
         ${diagnosticRow('Playwright', config.playwrightBrowsersPathSet ? '已配置浏览器路径' : '使用默认路径')}
         ${diagnosticRow('浏览器启动上限', config.browserLaunchTimeoutText || '-', '超时后自动清理残留进程与 Profile 锁')}
+        ${diagnosticRow('后台会话', config.adminAccountEnabled ? '账密登录已启用' : '未配置', config.adminSessionTtlText ? `有效期 ${config.adminSessionTtlText}` : '')}
       </div>
       ${cacheNotice}
       <div class="storage-list">${storageHtml}</div>
@@ -576,7 +724,7 @@ import { listDisplayState } from './admin-list-state.js';
       showToast(error.message);
     } finally {
       state.loading = false;
-      els.refreshBtn.disabled = !state.token;
+      els.refreshBtn.disabled = !state.username;
     }
   }
 
@@ -693,34 +841,94 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   async function login() {
-    const token = els.adminKeyInput.value.trim();
-    if (!token) {
-      els.loginMessage.textContent = '请填写后台密钥。';
+    const username = els.usernameInput.value.trim();
+    const password = els.passwordInput.value;
+    if (!username || !password) {
+      els.loginMessage.textContent = '请填写账号和密码。';
       return;
     }
-    state.token = token;
-    sessionStorage.setItem(STORAGE_KEY, token);
-    setAuthed(true);
-    await loadAll();
+    els.loginBtn.disabled = true;
+    els.loginBtn.querySelector('span').textContent = '正在登录';
+    els.loginMessage.textContent = '';
+    try {
+      const response = await fetch('/api/admin/login', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || '登录失败');
+      state.username = data.username;
+      state.csrfToken = data.csrfToken;
+      state.sessionExpiresAt = data.expiresAt;
+      els.passwordInput.value = '';
+      setAuthed(true);
+      await loadAll();
+    } catch (error) {
+      els.loginMessage.textContent = error.message;
+    } finally {
+      els.loginBtn.disabled = false;
+      els.loginBtn.querySelector('span').textContent = '进入后台';
+    }
   }
 
-  function logout() {
-    state.token = '';
+  async function logout() {
+    await api('/api/admin/logout', { method: 'POST' }).catch(() => {});
+    state.username = '';
+    state.csrfToken = '';
+    state.sessionExpiresAt = '';
     state.summary = null;
     state.draws = [];
     state.selected = null;
     state.recordsExpanded = false;
     state.attemptsExpanded = false;
-    sessionStorage.removeItem(STORAGE_KEY);
-    els.adminKeyInput.value = '';
     stopLoginPolling();
     setAuthed(false);
     showToast('已退出后台');
   }
 
-  els.loginBtn.addEventListener('click', login);
-  els.adminKeyInput.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter') login();
+  async function restoreSession() {
+    try {
+      const response = await fetch('/api/admin/session', {
+        credentials: 'same-origin',
+        headers: { accept: 'application/json' },
+      });
+      if (!response.ok) {
+        setAuthed(false);
+        return;
+      }
+      const data = await response.json();
+      state.username = data.username;
+      state.csrfToken = data.csrfToken;
+      state.sessionExpiresAt = data.expiresAt;
+      setAuthed(true);
+      await loadAll();
+    } catch {
+      setAuthed(false);
+      els.loginMessage.textContent = '暂时无法连接服务器，请稍后重试。';
+    }
+  }
+
+  function setTab(name) {
+    const buttons = [...document.querySelectorAll('[data-tab]')];
+    const index = Math.max(0, buttons.findIndex((button) => button.dataset.tab === name));
+    buttons.forEach((button) => button.classList.toggle('active', button.dataset.tab === name));
+    document.querySelectorAll('[data-view]').forEach((view) => {
+      view.classList.toggle('active', view.dataset.view === name);
+    });
+    document.querySelector('.tab-indicator').style.transform = `translateX(${index * 100}%)`;
+  }
+
+  els.loginForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    login();
+  });
+  els.passwordToggle.addEventListener('click', () => {
+    const showing = els.passwordInput.type === 'text';
+    els.passwordInput.type = showing ? 'password' : 'text';
+    els.passwordToggle.setAttribute('aria-label', showing ? '显示密码' : '隐藏密码');
+    els.passwordToggle.setAttribute('title', showing ? '显示密码' : '隐藏密码');
   });
   els.refreshBtn.addEventListener('click', loadAll);
   els.logoutBtn.addEventListener('click', logout);
@@ -765,7 +973,13 @@ import { listDisplayState } from './admin-list-state.js';
     if (action === 'delete') removeRecord(state.selected.file);
   });
 
-  els.adminKeyInput.value = state.token;
-  setAuthed(Boolean(state.token));
-  if (state.token) loadAll();
+  document.addEventListener('click', (event) => {
+    const tab = event.target.closest('[data-tab]');
+    const goTab = event.target.closest('[data-go-tab]');
+    if (tab) setTab(tab.dataset.tab);
+    if (goTab) setTab(goTab.dataset.goTab);
+  });
+
+  setAuthed(false);
+  restoreSession();
 })();

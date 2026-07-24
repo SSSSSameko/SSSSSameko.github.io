@@ -12,7 +12,7 @@
     "build": "vite build",
     "preview": "vite preview --host 0.0.0.0",
     "start": "node server.mjs",
-    "test": "node --test src/lib/appCore.test.js src/lib/adminStatus.test.js src/lib/avatar.test.js src/lib/cookiePool.test.js src/lib/drawDeckMotion.test.js src/lib/drawReceipts.test.js src/lib/resultPoster.test.js src/lib/storageRetention.test.js src/lib/systemMetrics.test.js src/lib/weiboBrowserLifecycle.test.js server-admin/admin-list-state.test.js",
+    "test": "node --test src/lib/adminAuth.test.js src/lib/appCore.test.js src/lib/adminStatus.test.js src/lib/avatar.test.js src/lib/cookiePool.test.js src/lib/drawDeckMotion.test.js src/lib/drawReceipts.test.js src/lib/resultPoster.test.js src/lib/storageRetention.test.js src/lib/systemMetrics.test.js src/lib/weiboBrowserLifecycle.test.js server-admin/admin-list-state.test.js",
     "web": "npm run build && node server.mjs",
     "start:windows": "powershell -ExecutionPolicy Bypass -File scripts/windows-start.ps1"
   },
