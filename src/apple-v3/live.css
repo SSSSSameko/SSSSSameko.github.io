@@ -1017,25 +1017,44 @@ button {
   margin-top: 12px;
 }
 
-.search-field svg {
+.search-field > svg {
   position: absolute;
   z-index: 1;
-  top: 13px;
+  top: 50%;
   left: 12px;
   width: 18px;
   height: 18px;
   color: var(--live-tertiary);
+  pointer-events: none;
+  transform: translateY(-50%);
 }
 
 .search-field input {
   width: 100%;
   min-height: 44px;
-  padding: 0 12px 0 38px;
+  padding: 0 52px 0 38px;
   border: 0;
   border-radius: 13px;
   outline: 0;
   color: var(--live-ink);
   background: rgba(118, 118, 128, 0.1);
+}
+
+.search-field > button {
+  position: absolute;
+  z-index: 2;
+  top: 4px;
+  right: 4px;
+  width: 40px;
+  height: 40px;
+}
+
+.search-field > button svg {
+  position: static;
+  width: 18px;
+  height: 18px;
+  color: currentColor;
+  transform: none;
 }
 
 .search-field input:focus {
