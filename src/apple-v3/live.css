@@ -378,6 +378,10 @@ button {
   -webkit-line-clamp: 2;
 }
 
+.candidate-deck .winner-core > footer {
+  transform: translateY(-5px);
+}
+
 .v3-intake-scene {
   min-height: 282px;
 }
