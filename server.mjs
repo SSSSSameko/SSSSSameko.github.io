@@ -84,10 +84,12 @@ const rateLimitMax = envNumber('RATE_LIMIT_MAX', 240, 1);
 const jobCreateRateLimitMax = envNumber('JOB_CREATE_RATE_LIMIT_MAX', 10, 1);
 const jobPollRateLimitMax = envNumber('JOB_POLL_RATE_LIMIT_MAX', 240, 1);
 const drawSaveRateLimitMax = envNumber('DRAW_SAVE_RATE_LIMIT_MAX', 12, 1);
+const avatarRateLimitMax = envNumber('AVATAR_RATE_LIMIT_MAX', 240, 1);
 const maxCookieBytes = envNumber('MAX_COOKIE_BYTES', 16_384, 1024);
 const maxStoredCookies = envNumber('MAX_STORED_COOKIES', 30, 1);
 const avatarProxyMaxBytes = envNumber('AVATAR_PROXY_MAX_BYTES', 512 * 1024, 16 * 1024);
 const avatarCacheMaxBytes = envNumber('AVATAR_CACHE_MAX_BYTES', 12 * 1024 * 1024, 1024 * 1024);
+const avatarCacheMaxEntries = envNumber('AVATAR_CACHE_MAX_ENTRIES', 512, 32);
 const avatarCacheTtlMs = envNumber('AVATAR_CACHE_TTL_MS', 24 * 60 * 60_000, 60_000);
 const disableCookieStore = /^(1|true|yes)$/i.test(String(process.env.DISABLE_COOKIE_STORE || '').trim());
 const pageDelayJitterMs = envNumber('PAGE_DELAY_JITTER_MS', 450, 0);
@@ -352,6 +354,7 @@ function normalizedRatePath(pathname) {
 function rateLimitMaxForPath(req, pathname) {
   if (req.method === 'POST' && pathname === '/api/weibo/reposts/jobs') return jobCreateRateLimitMax;
   if (req.method === 'GET' && pathname.startsWith('/api/weibo/reposts/jobs/')) return jobPollRateLimitMax;
+  if (req.method === 'GET' && pathname === '/api/weibo/avatar') return avatarRateLimitMax;
   if (req.method === 'POST' && pathname === '/api/draws') return drawSaveRateLimitMax;
   return rateLimitMax;
 }
@@ -433,7 +436,10 @@ function storeAvatar(url, entry) {
   const previous = avatarCache.get(url);
   if (previous) avatarCacheBytes -= previous.body.length;
   avatarCache.delete(url);
-  while (avatarCache.size && avatarCacheBytes + entry.body.length > avatarCacheMaxBytes) {
+  while (
+    avatarCache.size
+    && (avatarCache.size >= avatarCacheMaxEntries || avatarCacheBytes + entry.body.length > avatarCacheMaxBytes)
+  ) {
     const oldestKey = avatarCache.keys().next().value;
     const oldest = avatarCache.get(oldestKey);
     avatarCache.delete(oldestKey);
