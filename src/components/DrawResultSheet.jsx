@@ -61,6 +61,7 @@ function winnerIdentity(winner) {
 
 export default function DrawResultSheet({
   receipt: receiptInput,
+  apiBase = '',
   isCapturing = false,
   onClose,
   onSaveImage,
@@ -158,6 +159,7 @@ export default function DrawResultSheet({
                   key={winner.id || winner.uid || winner.screenName || index}
                   candidate={winner}
                   className="receipt-stack-avatar"
+                  apiBase={apiBase}
                 />
               ))}
               {winnerCount > displayedWinners.length && (
@@ -195,7 +197,7 @@ export default function DrawResultSheet({
                       key={winner.id || winner.uid || winner.screenName || winnerIndex}
                       style={{ '--receipt-index': winnerIndex }}
                     >
-                      <CandidateAvatar candidate={winner} className="receipt-winner-avatar" />
+                      <CandidateAvatar candidate={winner} className="receipt-winner-avatar" apiBase={apiBase} />
                       <span>
                         <strong>{winner.screenName || winner.uid || `中奖用户 ${winnerIndex + 1}`}</strong>
                         <small>{winnerIdentity(winner)}</small>

@@ -1,4 +1,5 @@
 import { DRAW_RANDOM_ALGORITHM, friendlyProviderText } from './appCore.js';
+import { avatarProxyUrl, safeAvatarUrl } from './avatar.js';
 
 const POSTER_WIDTH = 1080;
 const POSTER_MIN_HEIGHT = 1280;
@@ -216,14 +217,15 @@ function drawInitialAvatar(ctx, winner, x, y, size, borderWidth = 4) {
   });
 }
 
-function loadImage(src) {
+function loadImage(src, { crossOrigin = false } = {}) {
   return new Promise((resolve) => {
     if (!src || typeof window === 'undefined') {
       resolve(null);
       return;
     }
     const image = new window.Image();
-    const timer = window.setTimeout(() => resolve(null), 3000);
+    const timer = window.setTimeout(() => resolve(null), 5000);
+    if (crossOrigin) image.crossOrigin = 'anonymous';
     image.decoding = 'async';
     image.onload = () => {
       window.clearTimeout(timer);
@@ -258,6 +260,41 @@ function drawCoverImage(ctx, image, x, y, width, height, radius) {
     height,
   );
   ctx.restore();
+}
+
+function drawAvatar(ctx, winner, imageMap, x, y, size, borderWidth = 4) {
+  const avatar = safeAvatarUrl(winner.avatar);
+  const image = avatar ? imageMap.get(avatar) : null;
+  if (!image) {
+    drawInitialAvatar(ctx, winner, x, y, size, borderWidth);
+    return;
+  }
+  ctx.save();
+  ctx.shadowColor = 'rgba(44, 55, 83, 0.16)';
+  ctx.shadowBlur = 18;
+  ctx.shadowOffsetY = 8;
+  drawCoverImage(ctx, image, x, y, size, size, size * 0.34);
+  ctx.restore();
+  roundedRect(ctx, x + borderWidth / 2, y + borderWidth / 2, size - borderWidth, size - borderWidth, size * 0.3, '', 'rgba(255,255,255,0.9)');
+}
+
+async function loadWinnerAvatars(model, apiBase) {
+  const urls = [...new Set(model.groups
+    .flatMap((group) => group.winners)
+    .map((winner) => safeAvatarUrl(winner.avatar))
+    .filter(Boolean))];
+  const imageMap = new Map();
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(4, urls.length) }, async () => {
+    while (cursor < urls.length) {
+      const avatar = urls[cursor];
+      cursor += 1;
+      const image = await loadImage(avatarProxyUrl(avatar, apiBase), { crossOrigin: true });
+      if (image) imageMap.set(avatar, image);
+    }
+  });
+  await Promise.all(workers);
+  return imageMap;
 }
 
 function drawBackground(ctx, width, height) {
@@ -315,7 +352,7 @@ function drawBrandHeader(ctx, model, y, brandImage) {
   });
 }
 
-function drawHero(ctx, model, y) {
+function drawHero(ctx, model, y, avatarImages) {
   glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 232, 38, 'rgba(255,255,255,0.82)');
   roundedRect(ctx, POSTER_PADDING + 28, y + 28, 126, 42, 21, '#eafaf6');
   fillText(ctx, '开奖完成', POSTER_PADDING + 91, y + 38, {
@@ -341,7 +378,7 @@ function drawHero(ctx, model, y) {
     : 0;
   const stackX = POSTER_WIDTH - POSTER_PADDING - 30 - stackWidth;
   visibleWinners.forEach((winner, index) => {
-    drawInitialAvatar(ctx, winner, stackX + index * (avatarSize - overlap), y + 92, avatarSize);
+    drawAvatar(ctx, winner, avatarImages, stackX + index * (avatarSize - overlap), y + 92, avatarSize);
   });
 }
 
@@ -407,7 +444,7 @@ function drawSectionTitle(ctx, model, y) {
   });
 }
 
-function drawWinnerGroup(ctx, group, groupIndex, y) {
+function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
   const height = GROUP_HEADER_HEIGHT + group.winners.length * WINNER_ROW_HEIGHT + GROUP_BOTTOM_PADDING;
   glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, height, 34, 'rgba(255,255,255,0.86)');
   roundedRect(ctx, POSTER_PADDING + 24, y + 22, 54, 54, 18, group.tone.fill, '#ffffff');
@@ -431,7 +468,7 @@ function drawWinnerGroup(ctx, group, groupIndex, y) {
       ctx.fillStyle = 'rgba(31,31,38,0.075)';
       ctx.fillRect(POSTER_PADDING + 104, rowY, POSTER_INNER_WIDTH - 132, 1.5);
     }
-    drawInitialAvatar(ctx, winner, POSTER_PADDING + 24, rowY + 13, 66);
+    drawAvatar(ctx, winner, avatarImages, POSTER_PADDING + 24, rowY + 13, 66);
     fillText(ctx, winner.name, POSTER_PADDING + 112, rowY + 16, {
       font: `650 24px ${FONT_STACK}`,
     });
@@ -518,7 +555,10 @@ function drawFooter(ctx, model, y) {
   });
 }
 
-export async function createResultPoster(payload, { brandAssetUrl = '' } = {}) {
+export async function createResultPoster(payload, {
+  brandAssetUrl = '',
+  avatarProxyBase = '',
+} = {}) {
   if (typeof document === 'undefined') throw new Error('结果图只能在浏览器中生成');
   const model = buildResultPosterModel(payload);
   const layout = measureResultPoster(model);
@@ -529,11 +569,14 @@ export async function createResultPoster(payload, { brandAssetUrl = '' } = {}) {
   if (!ctx) throw new Error('当前浏览器无法生成结果图');
 
   drawBackground(ctx, layout.width, layout.height);
-  const brandImage = await loadImage(brandAssetUrl);
+  const [brandImage, avatarImages] = await Promise.all([
+    loadImage(brandAssetUrl),
+    loadWinnerAvatars(model, avatarProxyBase),
+  ]);
   let y = 64;
   drawBrandHeader(ctx, model, y, brandImage);
   y += 160;
-  drawHero(ctx, model, y);
+  drawHero(ctx, model, y, avatarImages);
   y += 252;
   drawSource(ctx, model, y);
   y += 128;
@@ -542,7 +585,7 @@ export async function createResultPoster(payload, { brandAssetUrl = '' } = {}) {
   drawSectionTitle(ctx, model, y);
   y += 58;
   model.groups.forEach((group, index) => {
-    y += drawWinnerGroup(ctx, group, index, y) + GROUP_GAP;
+    y += drawWinnerGroup(ctx, group, index, y, avatarImages) + GROUP_GAP;
   });
   drawFairness(ctx, model, y);
   y += 364;

@@ -86,6 +86,9 @@ const jobPollRateLimitMax = envNumber('JOB_POLL_RATE_LIMIT_MAX', 240, 1);
 const drawSaveRateLimitMax = envNumber('DRAW_SAVE_RATE_LIMIT_MAX', 12, 1);
 const maxCookieBytes = envNumber('MAX_COOKIE_BYTES', 16_384, 1024);
 const maxStoredCookies = envNumber('MAX_STORED_COOKIES', 30, 1);
+const avatarProxyMaxBytes = envNumber('AVATAR_PROXY_MAX_BYTES', 512 * 1024, 16 * 1024);
+const avatarCacheMaxBytes = envNumber('AVATAR_CACHE_MAX_BYTES', 12 * 1024 * 1024, 1024 * 1024);
+const avatarCacheTtlMs = envNumber('AVATAR_CACHE_TTL_MS', 24 * 60 * 60_000, 60_000);
 const disableCookieStore = /^(1|true|yes)$/i.test(String(process.env.DISABLE_COOKIE_STORE || '').trim());
 const pageDelayJitterMs = envNumber('PAGE_DELAY_JITTER_MS', 450, 0);
 const officialPageDelayMs = envNumber('OFFICIAL_PAGE_DELAY_MS', 900, 0);
@@ -126,7 +129,9 @@ const jobs = new Map();
 const jobQueue = [];
 const rateLimitBuckets = new Map();
 const statusLocks = new Map();
+const avatarCache = new Map();
 const serverStartedAt = new Date().toISOString();
+let avatarCacheBytes = 0;
 let weiboLoginSession = null;
 let weiboKeepaliveRunning = false;
 let weiboBrowserOperation = null;
@@ -317,6 +322,7 @@ function authorizeApiRequest(req, pathname) {
   if (
     req.method === 'OPTIONS'
     || pathname === '/api/health'
+    || (req.method === 'GET' && pathname === '/api/weibo/avatar')
     || (req.method === 'POST' && pathname === '/api/admin/login')
   ) {
     return { ok: true, mode: 'public' };
@@ -392,6 +398,110 @@ async function readJsonBody(req, maxBytes = 1024 * 1024) {
     error.status = 400;
     throw error;
   }
+}
+
+async function readResponseBuffer(response, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of response.body || []) {
+    total += chunk.byteLength;
+    if (total > maxBytes) {
+      const error = new Error('头像文件过大');
+      error.status = 413;
+      throw error;
+    }
+    chunks.push(Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks, total);
+}
+
+function cachedAvatar(url) {
+  const cached = avatarCache.get(url);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    avatarCache.delete(url);
+    avatarCacheBytes -= cached.body.length;
+    return null;
+  }
+  avatarCache.delete(url);
+  avatarCache.set(url, cached);
+  return cached;
+}
+
+function storeAvatar(url, entry) {
+  if (!entry.body.length || entry.body.length > avatarCacheMaxBytes) return;
+  const previous = avatarCache.get(url);
+  if (previous) avatarCacheBytes -= previous.body.length;
+  avatarCache.delete(url);
+  while (avatarCache.size && avatarCacheBytes + entry.body.length > avatarCacheMaxBytes) {
+    const oldestKey = avatarCache.keys().next().value;
+    const oldest = avatarCache.get(oldestKey);
+    avatarCache.delete(oldestKey);
+    avatarCacheBytes -= oldest.body.length;
+  }
+  avatarCache.set(url, entry);
+  avatarCacheBytes += entry.body.length;
+}
+
+function sendAvatar(res, entry) {
+  res.writeHead(200, {
+    ...securityHeaders(),
+    'content-type': entry.contentType,
+    'content-length': entry.body.length,
+    'cache-control': 'public, max-age=86400, stale-while-revalidate=604800',
+    etag: entry.etag,
+  });
+  res.end(entry.body);
+}
+
+async function handleAvatarProxy(req, res, url) {
+  const avatar = safeAvatarUrl(url.searchParams.get('url'));
+  if (!avatar || avatar.length > 2048) {
+    return sendJson(res, 400, { ok: false, error: '头像地址无效' });
+  }
+  const cached = cachedAvatar(avatar);
+  if (cached) return sendAvatar(res, cached);
+
+  const response = await fetch(avatar, {
+    redirect: 'error',
+    signal: AbortSignal.timeout(Math.min(fetchTimeoutMs, 10_000)),
+    headers: {
+      accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif',
+      referer: 'https://weibo.com/',
+      'user-agent': DESKTOP_UA,
+    },
+  });
+  if (!response.ok) {
+    const error = new Error(`头像服务返回 ${response.status}`);
+    error.status = response.status === 404 ? 404 : 502;
+    throw error;
+  }
+  const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+  if (!/^image\/(avif|gif|jpeg|png|webp)$/.test(contentType)) {
+    const error = new Error('头像服务返回了非图片内容');
+    error.status = 502;
+    throw error;
+  }
+  const declaredLength = Number(response.headers.get('content-length') || 0);
+  if (declaredLength > avatarProxyMaxBytes) {
+    const error = new Error('头像文件过大');
+    error.status = 413;
+    throw error;
+  }
+  const body = await readResponseBuffer(response, avatarProxyMaxBytes);
+  if (!body.length) {
+    const error = new Error('头像服务返回了空图片');
+    error.status = 502;
+    throw error;
+  }
+  const entry = {
+    body,
+    contentType,
+    etag: `"${crypto.createHash('sha256').update(body).digest('hex').slice(0, 24)}"`,
+    expiresAt: Date.now() + avatarCacheTtlMs,
+  };
+  storeAvatar(avatar, entry);
+  return sendAvatar(res, entry);
 }
 
 async function pathExists(filePath) {
@@ -3456,6 +3566,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'GET' && url.pathname === '/api/weibo/draw-count') {
       return await handleDrawCount(req, res, url);
+    }
+    if (req.method === 'GET' && url.pathname === '/api/weibo/avatar') {
+      return await handleAvatarProxy(req, res, url);
     }
     if (req.method === 'GET' && url.pathname === '/api/weibo/cookie-status') {
       return await handleCookieStatus(req, res, url);

@@ -21,7 +21,7 @@ const sample = {
   results: [{
     prize: { name: '幸运奖', count: 3, color: '#ee8fa1' },
     winners: [
-      { uid: '1001', screenName: 'sameko' },
+      { uid: '1001', screenName: 'sameko', avatar: 'https://tvax3.sinaimg.cn/avatar.jpg?Expires=1' },
       { uid: '1002', screenName: 'Alice' },
       { uid: '1003', screenName: '小蓝' },
     ],
@@ -35,6 +35,7 @@ test('buildResultPosterModel keeps complete prize and fairness information', () 
   assert.equal(model.winnerCount, 3);
   assert.equal(model.groups.length, 1);
   assert.deepEqual(model.groups[0].winners.map((winner) => winner.name), ['sameko', 'Alice', '小蓝']);
+  assert.equal(model.groups[0].winners[0].avatar, 'https://tvax3.sinaimg.cn/avatar.jpg?Expires=1');
   assert.equal(model.fairness.candidateCount, 20);
   assert.equal(model.fairness.eligibleCount, 18);
   assert.equal(model.fairness.algorithm, 'SHA-256 · Fisher–Yates');

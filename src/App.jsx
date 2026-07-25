@@ -147,32 +147,42 @@ const GUIDE_STEPS = [
 ];
 
 const LEGAL_DOCUMENTS = {
+  about: {
+    title: '关于此应用',
+    subtitle: '版本 2.1 · by.sameko',
+    sections: [
+      ['用途', '用于整理微博转发候选、设置筛选与奖项、随机抽取并保存开奖记录。'],
+      ['数据范围', '微博候选以抓取时接口可见的转发数据为准。手动名单由使用者自行核对。'],
+      ['服务关系', '本应用由独立开发者维护，与微博官方无隶属、赞助或背书关系。'],
+    ],
+  },
   disclaimer: {
     title: '免责声明',
     subtitle: '服务边界与使用责任',
     sections: [
-      ['数据完整性', '候选名单取决于微博当时可见的数据、接口返回及筛选条件。转发不可见、接口限制、网络异常或账号权限可能导致名单不完整。'],
-      ['抽奖责任', '本工具提供随机抽取与记录能力，不替代活动主办方对规则、公示、奖品履行、税务及其他义务的审查。正式开奖前请核对候选、奖项和筛选规则。'],
-      ['账号安全', '请只使用本人有权使用的微博登录凭据，不要在公共设备上留下 Cookie 或访问密钥。'],
+      ['候选范围', '候选名单取决于抓取时微博接口可见的数据和当前筛选规则。不可见转发、接口限制、网络异常及账号权限都可能影响完整性。'],
+      ['主办方责任', '本应用负责候选整理、随机抽取和记录，不代替活动主办方审查活动规则、结果公示、奖品履行、税务及其他法定义务。开奖前请核对候选、奖项和筛选规则。'],
+      ['账号凭据', '请仅使用本人有权使用的微博 Cookie。不要在公共设备或他人可访问的页面中填写账号凭据。'],
     ],
   },
   privacy: {
     title: '隐私政策',
     subtitle: '候选、Cookie 与记录如何处理',
     sections: [
-      ['处理的数据', '抽奖过程会处理微博链接、公开转发用户信息、筛选条件、奖项设置和开奖结果。候选信息可能包含昵称、UID、头像地址及转发文本。'],
-      ['Cookie', '用户主动填写的 Cookie 仅用于当前抓取请求，不写入服务器 Cookie 池；未填写时才使用服务器可用登录态。'],
-      ['本机与服务器记录', '浏览器可暂存候选、设置和最近记录。服务器可能保存开奖时间、微博标识、候选摘要、随机种子和获奖结果，但不会在页面中公开完整 Cookie。'],
-      ['删除与控制', '可以在“更多”中清理当前页面的候选、结果和手动 Cookie。服务器后台记录由服务管理者按实际运营需要维护。'],
+      ['处理的数据', '抽奖时会处理微博链接、接口返回的可见转发信息、筛选条件、奖项和结果。候选信息可能包含昵称、UID、头像地址、转发文本与时间。'],
+      ['Cookie', '页面中填写的 Cookie 只随当前抓取请求发送，不加入服务器 Cookie 池，也不写入浏览器长期存储。未填写时才使用服务器可用登录态。'],
+      ['浏览器存储', '浏览器长期保存最近开奖记录和后端地址。当前候选、奖项、筛选条件、访问密钥与 Cookie 在刷新页面后清除。'],
+      ['服务器记录', '完成开奖后，服务器会保存微博标识、候选统计与摘要、筛选规则、随机记录和获奖结果，用于查询开奖次数及后台审计。服务器 Cookie 由站长单独管理。'],
+      ['删除与控制', '“更多”中的“数据与连接”可清空当前抽奖、本次 Cookie 和本机开奖记录。服务器开奖记录由站长在后台维护。'],
     ],
   },
   terms: {
     title: '用户协议',
     subtitle: '使用规则与禁止事项',
     sections: [
-      ['允许使用', '本工具用于在合法活动中整理公开候选、配置奖项、随机抽取并保存可复查记录。使用者应确保活动规则和奖品安排真实且可履行。'],
-      ['禁止事项', '不得利用本工具绕过平台限制、批量骚扰、非法收集个人信息、盗用账号、操纵结果，或从事违反法律法规及平台规则的行为。'],
-      ['结果确认', '点击开奖前应确认候选名单、排除条件、奖项顺序与名额。随机摘要和记录用于复查，不构成第三方认证。'],
+      ['使用条件', '请在法律法规、微博平台规则和活动规则允许的范围内使用本应用，并确保活动与奖品安排真实、可履行。'],
+      ['禁止事项', '不得盗用账号、非法收集或披露个人信息、批量骚扰、操纵开奖结果，或将本应用用于其他违法违规行为。'],
+      ['开奖确认', '开始开奖即表示已确认候选范围、筛选条件、奖项顺序与名额。随机种子、名单摘要和审计哈希用于复查，不代表第三方认证。'],
     ],
   },
   copyright: {
@@ -188,9 +198,9 @@ const LEGAL_DOCUMENTS = {
     title: '开源许可',
     subtitle: '第三方软件与许可证',
     sections: [
-      ['MIT License', 'React、React DOM、Vite 与 Tailwind CSS。'],
-      ['ISC License', 'Lucide。'],
-      ['Apache License 2.0', 'Playwright。各组件仍以其随附许可证和版权声明为准。'],
+      ['MIT License', 'React、React DOM、Vite、Vite React 插件、PostCSS 与 Autoprefixer。'],
+      ['ISC License', 'Lucide React。'],
+      ['Apache License 2.0', 'Playwright。第三方软件仍以其随附的许可证和版权声明为准。'],
     ],
   },
 };
@@ -294,7 +304,7 @@ function LegalSheet({ document, onClose }) {
   if (!document) return null;
   return (
     <SheetFrame title={document.title} subtitle={document.subtitle} icon={I.file} onClose={onClose} className="flow-legal-sheet">
-      <p className="flow-legal-date">更新日期：2026 年 7 月 24 日</p>
+      <p className="flow-legal-date">更新日期：2026 年 7 月 26 日</p>
       <div className="flow-legal-sections">
         {document.sections.map(([title, detail]) => (
           <section key={title}>
@@ -569,7 +579,7 @@ function AppleNavigationV3({ controller: c }) {
                           {I.shield}
                         </header>
                         <div className="pass-identity">
-                          <CandidateAvatar candidate={stageCandidate} className="pass-avatar" />
+                          <CandidateAvatar candidate={stageCandidate} className="pass-avatar" apiBase={c.apiBase} />
                           <span>
                             <small>{c.isDrawing ? c.phase || '正在随机匹配候选' : '候选已载入'}</small>
                             <strong>{c.isDrawing ? stageName : c.eligible.length.toLocaleString()}</strong>
@@ -588,7 +598,7 @@ function AppleNavigationV3({ controller: c }) {
                           {I.badgeCheck}
                         </header>
                         <div className="pass-identity">
-                          <CandidateAvatar candidate={primaryWinner} className="pass-avatar" />
+                          <CandidateAvatar candidate={primaryWinner} className="pass-avatar" apiBase={c.apiBase} />
                           <span>
                             <small>{primaryResult?.prize?.name || '幸运奖'}</small>
                             <strong>{primaryWinner?.screenName || primaryWinner?.uid || '幸运用户'}</strong>
@@ -623,7 +633,7 @@ function AppleNavigationV3({ controller: c }) {
                               title: candidate.screenName || candidate.uid || '获奖用户',
                             })}
                           >
-                            <CandidateAvatar candidate={candidate} className={`avatar ${['pink', 'blue', 'lilac', 'mint'][index % 4]}`} />
+                            <CandidateAvatar candidate={candidate} className={`avatar ${['pink', 'blue', 'lilac', 'mint'][index % 4]}`} apiBase={c.apiBase} />
                             <strong>{candidate.screenName || candidate.uid || `获奖用户 ${index + 1}`}</strong>
                             <small>{prizeName}</small>
                           </button>
@@ -909,7 +919,7 @@ function AppleNavigationV3({ controller: c }) {
                         title: candidate.screenName || candidate.uid || `候选用户 ${index + 1}`,
                       })}
                     >
-                      <CandidateAvatar candidate={candidate} className="candidate-avatar-list" />
+                      <CandidateAvatar candidate={candidate} className="candidate-avatar-list" apiBase={c.apiBase} />
                       <span>
                         <strong>{candidate.screenName || candidate.uid || `候选用户 ${index + 1}`}</strong>
                         <small>{candidate.uid ? `UID ${candidate.uid}` : friendlyProviderText(candidate.source) || '候选名单'}</small>
@@ -989,31 +999,31 @@ function AppleNavigationV3({ controller: c }) {
             <header className="large-title more-title">
               <span className="title-status neutral"><i /> 应用与支持</span>
               <h1>更多</h1>
-              <p>数据、服务、设置与法律信息</p>
+              <p>本机记录、连接设置与使用说明</p>
             </header>
 
-            <button className="app-summary" type="button" onClick={() => c.setShowSettings(true)}>
+            <button className="app-summary" type="button" onClick={() => c.openLegalDocument('about')}>
               <img src={publicAsset('avatar.jpg')} alt="" />
               <span><strong>微博转发抽奖</strong><small>版本 2.1 · by.sameko</small></span>
-              <em>设置</em>
+              <em>关于</em>
               {I.chevron}
             </button>
 
             <section className="content-section">
-              <SectionTitle eyebrow="当前设备" title="数据与服务" />
+              <SectionTitle eyebrow="当前状态" title="本机与连接" />
               <div className="grouped-list">
-                <AppListRow icon={I.users} tone="coral" title="本机数据" detail="候选缓存与开奖记录" value={`${c.drawHistory.length} 条记录`} onClick={() => c.setShowSettings(true)} />
-                <AppListRow icon={I.shield} title="Cookie 使用" detail="用户输入优先，未填再用服务器" value={c.accountStatusText.replace('服务器 Cookie ', '')} onClick={() => c.loadCookieStatus(true)} />
-                <AppListRow icon={I.refresh} tone="mint" title="服务状态" detail="候选抓取接口与任务队列" value={c.progress ? '运行中' : '已连接'} onClick={c.testApiConnection} />
+                <AppListRow icon={I.clock} tone="coral" title="本机记录" detail="保存在当前浏览器的开奖记录" value={`${c.drawHistory.length} 条`} onClick={() => c.setShowSettings(true)} />
+                <AppListRow icon={I.shield} title="抓取凭据" detail="本次输入优先，未填时使用服务器" value={c.accountStatusText} onClick={() => c.setShowSettings(true)} />
+                <AppListRow icon={I.refresh} tone="mint" title="后端连接" detail="候选抓取、次数记录与头像服务" value={c.serviceStatusText} onClick={c.testApiConnection} />
               </div>
             </section>
 
             <section className="content-section">
               <SectionTitle eyebrow="应用" title="偏好与帮助" />
               <div className="grouped-list">
-                <AppListRow icon={I.settings} tone="gray" title="设置" detail="数据与连接设置" onClick={() => c.setShowSettings(true)} />
-                <AppListRow icon={I.book} tone="coral" title="使用教程" detail="完整抽奖流程" onClick={() => c.setShowGuide(true)} />
-                <AppListRow icon={I.info} tone="lilac" title="关于" detail="版本、作者与服务说明" onClick={() => c.showStatus('微博转发抽奖 · 版本 2.1 · by.sameko', 'neutral', { popup: true, title: '关于' })} />
+                <AppListRow icon={I.settings} tone="gray" title="数据与连接" detail="清理当前数据或更改后端" onClick={() => c.setShowSettings(true)} />
+                <AppListRow icon={I.book} tone="coral" title="使用教程" detail="从候选载入到保存结果" onClick={() => c.setShowGuide(true)} />
+                <AppListRow icon={I.info} tone="lilac" title="关于此应用" detail="用途、版本与服务关系" onClick={() => c.openLegalDocument('about')} />
               </div>
             </section>
 
@@ -1284,32 +1294,32 @@ function AppleNavigationV3({ controller: c }) {
       )}
 
       {c.showSettings && (
-        <SheetFrame title="设置" subtitle="数据与连接" icon={I.settings} onClose={() => c.setShowSettings(false)} className="v3-editor-sheet">
+        <SheetFrame title="数据与连接" subtitle="当前设备与后端服务" icon={I.settings} onClose={() => c.setShowSettings(false)} className="v3-editor-sheet">
           <div className="flow-app-summary">
             <img src={publicAsset('avatar.jpg')} alt="" />
             <div><strong>微博转发抽奖</strong><p>版本 2.1 · by.sameko</p></div>
-            <span>{c.accountStatusText.replace(/^服务器\s*/, '')}</span>
+            <span>{c.accountStatusText}</span>
           </div>
-          <h3 className="flow-settings-caption">本机数据</h3>
+          <h3 className="flow-settings-caption">当前设备</h3>
           <div className="flow-settings-list">
             <button type="button" onClick={() => { c.setCandidates([]); c.setResults([]); c.setLastPool(null); c.setShowSettings(false); c.showStatus('已清空候选和结果。', 'success', { popup: true, title: '已清空' }); }}>
-              <span>{I.trash}</span><div><strong>清空候选和结果</strong><small>服务器 Cookie 和后台记录不受影响</small></div>{I.chevron}
+              <span>{I.trash}</span><div><strong>清空当前抽奖</strong><small>移除当前候选与结果，不影响服务器记录</small></div>{I.chevron}
             </button>
             <button type="button" onClick={() => { c.setMobileCookie(''); c.showStatus('已清空当前输入的 Cookie。', 'success', { popup: true, title: '已清空' }); }}>
-              <span>{I.shield}</span><div><strong>清空手动 Cookie</strong><small>仅清空当前页面输入</small></div>{I.chevron}
+              <span>{I.shield}</span><div><strong>清除本次 Cookie</strong><small>不会修改服务器 Cookie</small></div>{I.chevron}
             </button>
             <button type="button" onClick={() => { c.setDrawHistory([]); c.showStatus('已清空本机开奖记录。', 'success', { popup: true, title: '已清空' }); }}>
-              <span>{I.clock}</span><div><strong>清空本机开奖记录</strong><small>服务器后台记录不受影响</small></div>{I.chevron}
+              <span>{I.clock}</span><div><strong>清空本机记录</strong><small>仅移除当前浏览器中的开奖记录</small></div>{I.chevron}
             </button>
           </div>
           <details className="flow-connection-details">
-            <summary>高级连接设置</summary>
+            <summary>后端连接</summary>
             <div className="flow-settings-form">
               <label className="flow-field-block"><span>后端接口地址</span><input value={c.apiBase} onChange={(event) => c.setApiBase(cleanApiBase(event.target.value))} placeholder="https://111.228.11.206" /></label>
               <label className="flow-field-block"><span>访问密钥（可选）</span><input value={c.apiKey} onChange={(event) => c.setApiKey(event.target.value)} type="password" placeholder="公开模式不用填写" /></label>
               <div className="flow-settings-actions">
                 <button type="button" onClick={c.testApiConnection}>测试连接</button>
-                <button type="button" onClick={() => { c.setApiBase(''); c.setApiKey(''); c.showStatus('已切换为同域后端。', 'success', { popup: true, title: '已切换' }); }}>同域模式</button>
+                <button type="button" onClick={() => { c.setApiBase(''); c.setApiKey(''); c.showStatus('已改用当前站点的后端。', 'success', { popup: true, title: '已切换' }); }}>使用当前站点</button>
               </div>
             </div>
           </details>
@@ -1319,6 +1329,7 @@ function AppleNavigationV3({ controller: c }) {
 
       <DrawResultSheet
         receipt={c.selectedReceipt}
+        apiBase={c.apiBase}
         isCapturing={c.isCapturing}
         onClose={() => c.setSelectedReceipt(null)}
         onSaveImage={() => c.createShareImage(c.selectedReceipt)}
@@ -1377,6 +1388,7 @@ function App() {
   const [isCapturing, setIsCapturing] = useState(false);
   const [apiBase, setApiBase] = useState(initialApiBase);
   const [apiKey, setApiKey] = useState('');
+  const [apiHealth, setApiHealth] = useState('checking');
   const firstPrizeNameRef = useRef(null);
   const statusInputRef = useRef(null);
 
@@ -1559,6 +1571,7 @@ function App() {
       const json = await response.json();
       if (!json.ok) throw new Error(json.error || '服务器 Cookie 状态读取失败');
       setCookieInfo(json);
+      setApiHealth('ok');
       if (check) {
         const accountCount = Number(json.accountCount ?? json.cookieCount ?? 0);
         if (json.checkSkipped) {
@@ -1570,6 +1583,7 @@ function App() {
         }
       }
     } catch (error) {
+      setApiHealth('error');
       if (check && !/Unexpected token|not valid JSON/i.test(error.message || '')) showStatus(error.message, 'error');
     }
   }
@@ -1579,8 +1593,10 @@ function App() {
       const response = await apiFetch('/api/health');
       const json = await response.json();
       if (!json.ok) throw new Error(json.error || '后端没有返回 ok');
+      setApiHealth('ok');
       showStatus(`后端连接成功：${apiBase || location.origin}`, 'success');
     } catch (error) {
+      setApiHealth('error');
       showStatus(`后端连接失败：${error.message}`, 'error');
     }
   }
@@ -1602,7 +1618,10 @@ function App() {
     }
   }
 
-  useEffect(() => { loadCookieStatus(true); }, []);
+  useEffect(() => {
+    setApiHealth('checking');
+    loadCookieStatus(false);
+  }, [apiBase]);
   useEffect(() => {
     const cleaned = cleanApiBase(apiBase);
     writeStoredValue('weibo-draw-api-base', cleaned && isTrustedApiBase(cleaned) ? cleaned : '');
@@ -2054,6 +2073,7 @@ function App() {
           .join(' / '),
       }, {
         brandAssetUrl: publicAsset('avatar.jpg'),
+        avatarProxyBase: apiBase,
       });
       const imageUrl = canvas.toDataURL('image/png');
       const imageName = `weibo-draw-record-${Date.now()}.png`;
@@ -2124,7 +2144,18 @@ function App() {
   const hasCandidates = candidates.length > 0;
   const hasResults = results.length > 0;
   const serverAccountCount = Number(cookieInfo.accountCount ?? cookieInfo.cookieCount ?? 0);
-  const accountStatusText = serverAccountCount > 0 ? '服务器 Cookie 可用' : '服务器 Cookie 待校验';
+  const accountStatusText = mobileCookie.trim()
+    ? '使用本次输入'
+    : serverAccountCount > 0
+      ? `${serverAccountCount} 项可用`
+      : '无可用项';
+  const serviceStatusText = progress
+    ? '任务运行中'
+    : apiHealth === 'ok'
+      ? '连接正常'
+      : apiHealth === 'error'
+        ? '连接异常'
+        : '正在检查';
   const loadedCandidateCount = displayPool.length || candidates.length;
   const resultTotal = winners.length;
   const filterEnabledText = keyword.trim() || Number(mentionMin || 0) > 0 || blocklist.trim() || excludePrevious ? '已开启' : '默认';
@@ -2184,6 +2215,7 @@ function App() {
         resultTotal,
         filterEnabledText,
         accountStatusText,
+        serviceStatusText,
         drawCountText,
         filterSummary,
         manualCookieOpen,

@@ -12,10 +12,19 @@ export function safeAvatarUrl(value) {
     url.protocol = 'https:';
     url.username = '';
     url.password = '';
+    url.search = '';
+    url.hash = '';
     return url.href;
   } catch {
     return '';
   }
+}
+
+export function avatarProxyUrl(value, apiBase = '') {
+  const avatar = safeAvatarUrl(value);
+  if (!avatar) return '';
+  const base = String(apiBase || '').trim().replace(/\/+$/, '');
+  return `${base}/api/weibo/avatar?url=${encodeURIComponent(avatar)}`;
 }
 
 export function avatarFallback(value) {

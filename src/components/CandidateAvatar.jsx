@@ -1,24 +1,34 @@
 import React, { useEffect, useState } from 'react';
 
-import { avatarFallback, safeAvatarUrl } from '../lib/avatar.js';
+import { avatarFallback, avatarProxyUrl, safeAvatarUrl } from '../lib/avatar.js';
 
-export default function CandidateAvatar({ candidate, className = '' }) {
+export default function CandidateAvatar({ candidate, className = '', apiBase = '' }) {
   const name = candidate?.screenName || candidate?.uid || '候选用户';
   const avatar = safeAvatarUrl(candidate?.avatar);
-  const [failed, setFailed] = useState(false);
+  const proxyAvatar = avatarProxyUrl(avatar, apiBase);
+  const primarySource = proxyAvatar || avatar;
+  const [source, setSource] = useState(primarySource);
 
-  useEffect(() => setFailed(false), [avatar]);
+  useEffect(() => setSource(primarySource), [primarySource]);
+
+  function handleError() {
+    if (source === proxyAvatar && avatar && avatar !== proxyAvatar) {
+      setSource(avatar);
+      return;
+    }
+    setSource('');
+  }
 
   return (
     <span className={`candidate-avatar ${className}`}>
-      {avatar && !failed ? (
+      {source ? (
         <img
-          src={avatar}
+          src={source}
           alt={`${name}的头像`}
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"
-          onError={() => setFailed(true)}
+          onError={handleError}
         />
       ) : (
         <span aria-hidden="true">{avatarFallback(name)}</span>
