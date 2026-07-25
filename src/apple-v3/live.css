@@ -359,6 +359,25 @@ button {
   font-weight: 730;
 }
 
+.candidate-deck .winner-core .pass-identity > span:last-child {
+  position: relative;
+  z-index: 3;
+  flex: 1 1 auto;
+  margin-right: -14px;
+}
+
+.candidate-deck .winner-core .pass-identity strong {
+  display: -webkit-box;
+  overflow: hidden;
+  font-size: 19px;
+  line-height: 1.16;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .v3-intake-scene {
   min-height: 282px;
 }
