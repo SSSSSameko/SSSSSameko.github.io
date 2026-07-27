@@ -2894,6 +2894,10 @@ async function hostMemoryDiagnostic() {
     available: free,
     cached: 0,
     buffers: 0,
+    slab: 0,
+    slabReclaimable: 0,
+    slabUnreclaimable: 0,
+    anon: 0,
     used: Math.max(0, total - free),
     usedPercent: total ? Math.round(((total - free) / total) * 1000) / 10 : 0,
   };
@@ -2975,9 +2979,10 @@ async function appendAdminEvent(event) {
 }
 
 async function collectSystemSample(reason = 'interval') {
-  const [cgroup, browserPids] = await Promise.all([
+  const [cgroup, browserPids, hostMemory] = await Promise.all([
     cgroupMemoryDiagnostic(),
     findProfileBrowserPids(weiboLoginProfileDir).catch(() => []),
+    hostMemoryDiagnostic(),
   ]);
   const memory = process.memoryUsage();
   const sample = {
@@ -2989,6 +2994,9 @@ async function collectSystemSample(reason = 'interval') {
     cgroupAnonMb: bytesToMb(cgroup?.anon),
     cgroupFileMb: bytesToMb(cgroup?.file),
     reclaimableMb: bytesToMb(cgroup?.reclaimable),
+    hostAvailableMb: bytesToMb(hostMemory.available),
+    hostSlabMb: bytesToMb(hostMemory.slab),
+    hostSlabUnreclaimableMb: bytesToMb(hostMemory.slabUnreclaimable),
     browserProcessCount: browserPids.length,
   };
   memorySamples.push(sample);
@@ -3074,6 +3082,10 @@ async function adminSystemSummary() {
       hostFreeMb: bytesToMb(hostMemory.free),
       hostAvailableMb: bytesToMb(hostMemory.available),
       hostCachedMb: bytesToMb(hostMemory.cached),
+      hostAnonMb: bytesToMb(hostMemory.anon),
+      hostSlabMb: bytesToMb(hostMemory.slab),
+      hostSlabReclaimableMb: bytesToMb(hostMemory.slabReclaimable),
+      hostSlabUnreclaimableMb: bytesToMb(hostMemory.slabUnreclaimable),
       hostUsedMb: bytesToMb(hostMemory.used),
       hostUsedPercent: hostMemory.usedPercent,
       cgroupAvailable: Boolean(cgroupMemory),

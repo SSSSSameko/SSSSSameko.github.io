@@ -236,7 +236,7 @@ import { listDisplayState } from './admin-list-state.js';
     els.metricGrid.innerHTML = [
       metricCard(formatMemoryMb(memory.cgroupAnonMb), '匿名内存', '判断真实内存增长'),
       metricCard(formatMemoryMb(memory.cgroupCurrentMb), '服务占用', `峰值 ${formatMemoryMb(memory.cgroupPeakMb)}`),
-      metricCard(formatMemoryMb(memory.hostAvailableMb), '主机可用', `已用 ${plain(memory.hostUsedPercent, 0)}%`),
+      metricCard(formatMemoryMb(memory.hostAvailableMb), '主机可用', `Slab ${formatMemoryMb(memory.hostSlabMb)}`),
       metricCard(browser.processCount || 0, 'Chromium', browser.operation?.label || '当前进程'),
       metricCard(summary.cookie?.accountCount || 0, '可用账号', `Cookie ${summary.cookie?.cookieCount || 0} 条`),
       metricCard(`${queue.active || 0} / ${queue.queued || 0}`, '抓取队列', `并发上限 ${queue.maxActive || 0}`),
@@ -484,6 +484,9 @@ import { listDisplayState } from './admin-list-state.js';
     const cacheNotice = memory.cgroupAvailable && Number(memory.cgroupReclaimableMb || 0) > 0
       ? `<div class="status-note">服务总占用包含约 ${escapeHtml(memory.cgroupReclaimableMb)} MB Linux 文件缓存；该部分可由内核回收，不等同于 Node 堆泄漏。</div>`
       : '';
+    const slabNotice = Number(memory.hostSlabUnreclaimableMb || 0) >= 256
+      ? `<div class="status-note danger">内核不可回收 Slab 已达到 ${escapeHtml(memory.hostSlabUnreclaimableMb)} MB，需检查网络、驱动或系统代理。</div>`
+      : '';
     const storageHtml = storage.length
       ? storage.map((item) => `
           <div class="storage-row ${item.exists ? 'ok' : 'missing'}">
@@ -506,6 +509,7 @@ import { listDisplayState } from './admin-list-state.js';
         ${diagnosticRow('服务内存', cgroupMemoryText, cgroupMemoryNote)}
         ${diagnosticRow('匿名内存', memory.cgroupAvailable ? `${plain(memory.cgroupAnonMb, 0)} MB` : '-', `趋势 ${plain(memory.trend?.status)} · ${plain(memory.trend?.perHourMb, 0)} MB/小时`)}
         ${diagnosticRow('主机可用内存', memory.hostTotalMb ? `${memory.hostAvailableMb}/${memory.hostTotalMb} MB` : '-', `实际使用 ${plain(memory.hostUsedPercent, 0)}% · 缓存 ${plain(memory.hostCachedMb, 0)} MB`)}
+        ${diagnosticRow('内核 Slab', `${plain(memory.hostSlabMb, 0)} MB`, `不可回收 ${plain(memory.hostSlabUnreclaimableMb, 0)} MB · 可回收 ${plain(memory.hostSlabReclaimableMb, 0)} MB`)}
         ${diagnosticRow('系统负载', Array.isArray(system.loadAverage) ? system.loadAverage.join(' / ') : '-', system.cpus ? `${system.cpus} 核 CPU` : '')}
         ${diagnosticRow('事件循环', `P99 ${plain(runtime.eventLoopP99Ms, 0)} ms`, `平均 ${plain(runtime.eventLoopMeanMs, 0)} ms`)}
         ${diagnosticRow('请求统计', `${formatNumber(requests.total)} 次`, `4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)} · 最慢 ${plain(requests.slowestMs, 0)} ms`)}
@@ -520,6 +524,7 @@ import { listDisplayState } from './admin-list-state.js';
         ${diagnosticRow('后台会话', config.adminAccountEnabled ? '账密登录已启用' : '未配置', config.adminSessionTtlText ? `有效期 ${config.adminSessionTtlText}` : '')}
       </div>
       ${cacheNotice}
+      ${slabNotice}
       <div class="storage-list">${storageHtml}</div>
     `;
   }

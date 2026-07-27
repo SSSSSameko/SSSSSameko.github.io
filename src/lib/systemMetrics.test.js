@@ -55,7 +55,10 @@ test('host memory uses MemAvailable instead of treating cache as occupied', () =
     'MemAvailable:    1500000 kB',
     'Buffers:           20000 kB',
     'Cached:           700000 kB',
+    'Slab:              90000 kB',
     'SReclaimable:      50000 kB',
+    'SUnreclaim:        40000 kB',
+    'AnonPages:        120000 kB',
   ].join('\n'));
   const summary = summarizeHostMemory(values);
 
@@ -63,6 +66,10 @@ test('host memory uses MemAvailable instead of treating cache as occupied', () =
   assert.equal(summary.used, 548000 * 1024);
   assert.equal(summary.usedPercent, 26.8);
   assert.equal(summary.cached, 750000 * 1024);
+  assert.equal(summary.slab, 90000 * 1024);
+  assert.equal(summary.slabReclaimable, 50000 * 1024);
+  assert.equal(summary.slabUnreclaimable, 40000 * 1024);
+  assert.equal(summary.anon, 120000 * 1024);
 });
 
 test('memory trend distinguishes a plateau from sustained growth', () => {

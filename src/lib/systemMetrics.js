@@ -54,7 +54,10 @@ export function summarizeHostMemory(values = {}) {
   const total = Number(values.MemTotal || 0);
   const free = Number(values.MemFree || 0);
   const available = Number(values.MemAvailable || free);
-  const cached = Number(values.Cached || 0) + Number(values.SReclaimable || 0);
+  const slab = Number(values.Slab || 0);
+  const slabReclaimable = Number(values.SReclaimable || 0);
+  const slabUnreclaimable = Number(values.SUnreclaim || Math.max(0, slab - slabReclaimable));
+  const cached = Number(values.Cached || 0) + slabReclaimable;
   const buffers = Number(values.Buffers || 0);
   const used = Math.max(0, total - available);
   return {
@@ -63,6 +66,10 @@ export function summarizeHostMemory(values = {}) {
     available,
     cached,
     buffers,
+    slab,
+    slabReclaimable,
+    slabUnreclaimable,
+    anon: Number(values.AnonPages || 0),
     used,
     usedPercent: total ? Math.round((used / total) * 1000) / 10 : 0,
   };
