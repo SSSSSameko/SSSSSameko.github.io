@@ -68,6 +68,8 @@ import {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const publicAsset = (name) => `${import.meta.env.BASE_URL}${name}`;
 const APP_VERSION = '3.0.0';
+const REPOST_JOB_TIMEOUT_MS = 90 * 60 * 1000;
+const REPOST_JOB_POLL_MS = 1200;
 function configuredApiBases() {
   const configured = [
     window.WEIBO_DRAW_API_BASE,
@@ -1995,11 +1997,11 @@ function App() {
     const started = await startResponse.json();
     if (!started.ok) throw new Error(started.error || '抓取任务创建失败');
     let lastProgress = started.progress || { percent: 3, message: '任务已创建' };
-    const deadline = Date.now() + 8 * 60 * 1000;
+    const deadline = Date.now() + REPOST_JOB_TIMEOUT_MS;
     setProgress(lastProgress);
     while (true) {
       if (Date.now() > deadline) throw new Error('抓取任务等待时间过长，请稍后重试。');
-      await sleep(650);
+      await sleep(REPOST_JOB_POLL_MS);
       const response = await apiFetch(`/api/weibo/reposts/jobs/${encodeURIComponent(started.jobId)}`);
       const json = await response.json();
       if (!json.ok) throw new Error(json.error || '抓取进度读取失败');
