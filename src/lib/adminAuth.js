@@ -116,12 +116,24 @@ export function expiredAdminSessionCookie(name, options = {}) {
 export function createLoginLimiter(options = {}) {
   const maxAttempts = Math.max(1, Number(options.maxAttempts || 5));
   const windowMs = Math.max(1000, Number(options.windowMs || 15 * 60_000));
+  const maxEntries = Math.max(1, Number(options.maxEntries || 5000));
   const entries = new Map();
+
+  function prune(now) {
+    for (const [key, entry] of entries) {
+      if (entry.resetAt <= now) entries.delete(key);
+    }
+  }
 
   function entryFor(key, now) {
     const id = String(key || 'unknown');
     const current = entries.get(id);
     if (current && current.resetAt > now) return [id, current];
+    if (current) entries.delete(id);
+    if (entries.size >= maxEntries) prune(now);
+    while (entries.size >= maxEntries) {
+      entries.delete(entries.keys().next().value);
+    }
     const next = { failures: 0, resetAt: now + windowMs };
     entries.set(id, next);
     return [id, next];
@@ -147,10 +159,9 @@ export function createLoginLimiter(options = {}) {
     clear(key) {
       entries.delete(String(key || 'unknown'));
     },
-    prune(now = Date.now()) {
-      for (const [key, entry] of entries) {
-        if (entry.resetAt <= now) entries.delete(key);
-      }
+    prune,
+    size() {
+      return entries.size;
     },
   };
 }

@@ -1,7 +1,6 @@
 import { listDisplayState } from './admin-list-state.js';
 
 (() => {
-  const DRAW_VISIBLE_LIMIT = 4;
   const ATTEMPT_VISIBLE_LIMIT = 5;
   const state = {
     username: '',
@@ -9,12 +8,15 @@ import { listDisplayState } from './admin-list-state.js';
     sessionExpiresAt: '',
     summary: null,
     draws: [],
+    feedback: [],
+    feedbackFilter: 'all',
     selected: null,
     search: '',
-    recordsExpanded: false,
+    detailOpen: false,
     attemptsExpanded: false,
     loading: false,
     loginPoller: null,
+    summaryPoller: null,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -30,6 +32,7 @@ import { listDisplayState } from './admin-list-state.js';
     refreshBtn: $('refreshBtn'),
     logoutBtn: $('logoutBtn'),
     topbarStatus: $('topbarStatus'),
+    topbarActions: $('topbarActions'),
     topStatusLight: $('topStatusLight'),
     accountLabel: $('accountLabel'),
     lastUpdated: $('lastUpdated'),
@@ -43,8 +46,14 @@ import { listDisplayState } from './admin-list-state.js';
     systemEventPanel: $('systemEventPanel'),
     searchInput: $('searchInput'),
     exportAllBtn: $('exportAllBtn'),
+    recordCount: $('recordCount'),
     recordList: $('recordList'),
     detailPanel: $('detailPanel'),
+    detailContent: $('detailContent'),
+    detailClose: $('detailClose'),
+    feedbackCount: $('feedbackCount'),
+    feedbackFilters: $('feedbackFilters'),
+    feedbackList: $('feedbackList'),
     attemptList: $('attemptList'),
     cookieBox: $('cookieBox'),
     startWeiboLoginBtn: $('startWeiboLoginBtn'),
@@ -118,6 +127,20 @@ import { listDisplayState } from './admin-list-state.js';
     return `${Math.round(mb * 10) / 10} MB`;
   }
 
+  function percentOf(value, total) {
+    const part = Number(value);
+    const whole = Number(total);
+    if (!Number.isFinite(part) || !Number.isFinite(whole) || whole <= 0) return null;
+    return Math.round((part / whole) * 1000) / 10;
+  }
+
+  function formatPercent(value) {
+    if (value === null || value === undefined || value === '') return '-';
+    const percent = Number(value);
+    if (!Number.isFinite(percent)) return '-';
+    return `${percent.toLocaleString('zh-CN', { maximumFractionDigits: 1 })}%`;
+  }
+
   function reasonLabel(value) {
     return {
       'qr-login': '扫码登录',
@@ -169,12 +192,15 @@ import { listDisplayState } from './admin-list-state.js';
     els.loginPanel.classList.toggle('hidden', authed);
     els.dashboard.classList.toggle('hidden', !authed);
     els.topbarStatus.classList.toggle('hidden', !authed);
+    els.topbarActions.classList.toggle('hidden', !authed);
     els.refreshBtn.disabled = !authed;
     els.exportAllBtn.disabled = !authed;
     els.logoutBtn.disabled = !authed;
     if (authed) {
       els.accountLabel.textContent = state.username;
+      startSummaryPolling();
     } else {
+      stopSummaryPolling();
       setTimeout(() => els.usernameInput.focus(), 50);
     }
   }
@@ -203,13 +229,19 @@ import { listDisplayState } from './admin-list-state.js';
     return data;
   }
 
-  function metricCard(value, label, note = '') {
+  function metricCard(value, label, note = '', progress = null) {
     const displayed = typeof value === 'number' ? formatNumber(value) : plain(value);
+    const progressValue = progress === null ? Number.NaN : Number(progress);
+    const tone = progressValue >= 90 ? ' is-critical' : progressValue >= 75 ? ' is-warning' : '';
+    const meter = Number.isFinite(progressValue)
+      ? `<span class="metric-meter" aria-hidden="true"><i style="width:${Math.max(0, Math.min(100, progressValue))}%"></i></span>`
+      : '';
     return `
-      <div class="metric-card">
+      <div class="metric-card${tone}">
         <div class="metric-value">${escapeHtml(displayed)}</div>
         <div class="metric-label">${escapeHtml(label)}</div>
         ${note ? `<div class="metric-note">${escapeHtml(note)}</div>` : ''}
+        ${meter}
       </div>
     `;
   }
@@ -233,13 +265,19 @@ import { listDisplayState } from './admin-list-state.js';
     const memory = system.memory || {};
     const browser = system.browser || {};
     const queue = summary.queue || {};
+    const service = system.service || {};
+    const memoryLimit = Number(service.memoryMaxMb || 0);
+    const serviceMemoryPercent = percentOf(memory.cgroupCurrentMb, memoryLimit);
+    const anonymousMemoryPercent = percentOf(memory.cgroupAnonMb, memoryLimit);
+    const hostMemoryPercent = Number(memory.hostUsedPercent);
+    const queuePercent = percentOf(queue.active, queue.maxActive);
     els.metricGrid.innerHTML = [
-      metricCard(formatMemoryMb(memory.cgroupAnonMb), '匿名内存', '判断真实内存增长'),
-      metricCard(formatMemoryMb(memory.cgroupCurrentMb), '服务占用', `峰值 ${formatMemoryMb(memory.cgroupPeakMb)}`),
-      metricCard(formatMemoryMb(memory.hostAvailableMb), '主机可用', `Slab ${formatMemoryMb(memory.hostSlabMb)}`),
+      metricCard(formatPercent(serviceMemoryPercent), '服务内存', `${formatMemoryMb(memory.cgroupCurrentMb)} / ${formatMemoryMb(memoryLimit)}`, serviceMemoryPercent),
+      metricCard(formatPercent(anonymousMemoryPercent), '匿名内存', `${formatMemoryMb(memory.cgroupAnonMb)} · 排查持续增长`, anonymousMemoryPercent),
+      metricCard(formatPercent(hostMemoryPercent), '主机内存', `可用 ${formatMemoryMb(memory.hostAvailableMb)}`, hostMemoryPercent),
       metricCard(browser.processCount || 0, 'Chromium', browser.operation?.label || '当前进程'),
       metricCard(summary.cookie?.accountCount || 0, '可用账号', `Cookie ${summary.cookie?.cookieCount || 0} 条`),
-      metricCard(`${queue.active || 0} / ${queue.queued || 0}`, '抓取队列', `并发上限 ${queue.maxActive || 0}`),
+      metricCard(formatPercent(queuePercent), '并发占用', `${queue.active || 0} 运行 · ${queue.queued || 0} 排队`, queuePercent),
     ].join('');
 
     els.heroSubtitle.textContent = `已运行 ${plain(system.uptimeText)}，记录 ${formatNumber(summary.savedDrawCount)} 次开奖、${formatNumber(summary.winnerCount)} 人次中奖。`;
@@ -251,55 +289,61 @@ import { listDisplayState } from './admin-list-state.js';
     renderCookie(summary.cookie || {});
     renderWeiboLogin(summary.weiboLogin || {});
     renderKeepaliveDiagnostics(summary.weiboLogin || {}, summary.cookie || {});
-    renderMemoryChart(memory);
+    renderMemoryChart(memory, service);
     renderRequestSummary(system, queue);
     renderEvents(system.events || []);
     renderSystem(system, queue);
   }
 
-  function chartPoints(samples, field, width, height, min, max) {
+  function chartPoints(samples, field, plot, min, max) {
     const range = Math.max(1, max - min);
     return samples.map((sample, index) => {
-      const x = samples.length === 1 ? width / 2 : (index / (samples.length - 1)) * width;
-      const value = Number(sample[field] || 0);
-      const y = height - ((value - min) / range) * height;
+      const ratio = samples.length === 1 ? 0.5 : index / (samples.length - 1);
+      const x = plot.left + ratio * (plot.right - plot.left);
+      const rawValue = Number(sample[field] || 0);
+      const value = Math.max(min, Math.min(max, rawValue));
+      const y = plot.bottom - ((value - min) / range) * (plot.bottom - plot.top);
       return `${Math.round(x * 10) / 10},${Math.round(y * 10) / 10}`;
     }).join(' ');
   }
 
-  function renderMemoryChart(memory) {
+  function renderMemoryChart(memory, service) {
     const samples = Array.isArray(memory.samples) ? memory.samples : [];
     const trend = memory.trend || {};
+    const memoryLimit = Number(service.memoryMaxMb || 0);
+    const hourlyPercent = percentOf(Math.abs(Number(trend.perHourMb || 0)), memoryLimit);
     const trendText = {
-      rising: `持续上升 ${plain(trend.perHourMb, 0)} MB/小时`,
-      falling: `正在回落 ${Math.abs(Number(trend.perHourMb || 0))} MB/小时`,
+      rising: `持续上升 ${formatPercent(hourlyPercent)}/小时`,
+      falling: `正在回落 ${formatPercent(hourlyPercent)}/小时`,
       stable: '内存趋势稳定',
       insufficient: '等待更多采样',
     }[trend.status] || '等待更多采样';
     els.memoryInsight.textContent = trendText;
+    els.memoryInsight.title = Number.isFinite(Number(trend.perHourMb))
+      ? `${Math.abs(Number(trend.perHourMb))} MB/小时`
+      : '';
     els.memoryInsight.classList.toggle('rising', trend.status === 'rising');
-    if (samples.length < 2) {
+    if (samples.length < 2 || !memoryLimit) {
       els.memoryChart.innerHTML = '<div class="chart-empty">采样满 5 分钟后显示趋势</div>';
       return;
     }
     const width = 720;
     const height = 190;
-    const pad = 20;
-    const values = samples.flatMap((sample) => [
-      Number(sample.cgroupCurrentMb || 0),
-      Number(sample.cgroupAnonMb || 0),
-    ]);
-    const min = Math.max(0, Math.min(...values) - 8);
-    const max = Math.max(...values) + 8;
-    const current = chartPoints(samples, 'cgroupCurrentMb', width, height, min, max);
-    const anon = chartPoints(samples, 'cgroupAnonMb', width, height, min, max);
-    const area = `0,${height} ${current} ${width},${height}`;
-    const grid = [0, 1, 2, 3].map((index) => {
-      const y = pad + index * ((height - pad * 2) / 3);
-      return `<line class="chart-grid" x1="0" x2="${width}" y1="${y}" y2="${y}"/>`;
+    const plot = { left: 72, right: width - 12, top: 14, bottom: height - 24 };
+    const percentageSamples = samples.map((sample) => ({
+      servicePercent: percentOf(sample.cgroupCurrentMb, memoryLimit) || 0,
+      anonymousPercent: percentOf(sample.cgroupAnonMb, memoryLimit) || 0,
+    }));
+    const current = chartPoints(percentageSamples, 'servicePercent', plot, 0, 100);
+    const anon = chartPoints(percentageSamples, 'anonymousPercent', plot, 0, 100);
+    const area = `${plot.left},${plot.bottom} ${current} ${plot.right},${plot.bottom}`;
+    const grid = [100, 75, 50, 25, 0].map((value) => {
+      const y = plot.bottom - (value / 100) * (plot.bottom - plot.top);
+      return `<line class="chart-grid" x1="${plot.left}" x2="${plot.right}" y1="${y}" y2="${y}"/>`;
     }).join('');
     els.memoryChart.innerHTML = `
-      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="服务内存趋势">
+      <div class="chart-scale" aria-hidden="true"><span>100%</span><span>75%</span><span>50%</span><span>25%</span><span>0%</span></div>
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="近 24 小时服务内存占上限比例">
         ${grid}
         <polygon class="chart-area" points="${area}"></polygon>
         <polyline class="chart-line-current" points="${current}"></polyline>
@@ -323,12 +367,15 @@ import { listDisplayState } from './admin-list-state.js';
     const requests = runtime.requests || {};
     const service = system.service || {};
     const disk = system.disk || {};
+    const requestErrors = Number(requests.clientErrors || 0) + Number(requests.serverErrors || 0);
+    const requestErrorPercent = percentOf(requestErrors, requests.total) ?? 0;
+    const queuePercent = percentOf(queue.active, queue.maxActive);
     els.requestPanel.innerHTML = [
       quickRow('事件循环 P99', `${plain(runtime.eventLoopP99Ms, 0)} ms`, Number(runtime.eventLoopP99Ms || 0) < 100 ? '响应正常' : '存在阻塞'),
-      quickRow('HTTP 请求', formatNumber(requests.total), `4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)}`),
+      quickRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)}`),
       quickRow('自动重启', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 回收进程`),
       quickRow('磁盘', `${plain(disk.usedPercent, 0)}%`, `可用 ${plain(disk.availableMb, 0)} MB`),
-      quickRow('任务队列', `${formatNumber(queue.active)} 运行`, `${formatNumber(queue.queued)} 排队 · 锁 ${formatNumber(queue.sameStatusLocks)}`),
+      quickRow('并发占用', formatPercent(queuePercent), `${formatNumber(queue.active)} 运行 · ${formatNumber(queue.queued)} 排队 · 锁 ${formatNumber(queue.sameStatusLocks)}`),
     ].join('');
   }
 
@@ -387,7 +434,7 @@ import { listDisplayState } from './admin-list-state.js';
       <div class="cookie-line">最近校验：${escapeHtml(formatDate(cookie.lastCheckedAt))}</div>
       <div class="cookie-line">最近保存：${escapeHtml(formatDate(cookie.savedAt))}</div>
       <div class="cookie-line">当前指纹：${escapeHtml(cookie.activeId ? cookie.activeId.slice(0, 12) : '-')}</div>
-      <div class="cookie-line">写入保护：${escapeHtml(cookie.cookieStoreWriteProtected ? '已开启' : '未开启')}</div>
+      <div class="cookie-line">外部写入：${escapeHtml(cookie.cookieStoreWriteProtected ? '独立密钥保护' : '已禁用')}</div>
       <div class="cookie-line">抓取队列：运行 ${escapeHtml(formatNumber(queue.active))} / 排队 ${escapeHtml(formatNumber(queue.queued))}</div>
       ${cookie.lastError ? `<div class="status-note danger">最近 Cookie 错误：${escapeHtml(cookie.lastError)}</div>` : ''}
       <div class="subtle">后台不会返回 Cookie 明文，只显示保存状态和时间。</div>
@@ -475,11 +522,22 @@ import { listDisplayState } from './admin-list-state.js';
     const service = system.service || {};
     const disk = system.disk || {};
     const storage = Array.isArray(system.storage) ? system.storage : [];
+    const memoryLimit = Number(service.memoryMaxMb || 0);
+    const serviceMemoryPercent = percentOf(memory.cgroupCurrentMb, memoryLimit);
+    const peakMemoryPercent = percentOf(memory.cgroupPeakMb, memoryLimit);
+    const anonymousMemoryPercent = percentOf(memory.cgroupAnonMb, memoryLimit);
+    const nodeHeapPercent = percentOf(memory.heapUsedMb, memory.heapTotalMb);
+    const slabPercent = percentOf(memory.hostSlabMb, memory.hostTotalMb);
+    const highWaterPercent = percentOf(service.memoryHighMb, memoryLimit);
+    const queuePercent = percentOf(queue.active, queue.maxActive);
+    const requestErrors = Number(requests.clientErrors || 0) + Number(requests.serverErrors || 0);
+    const requestErrorPercent = percentOf(requestErrors, requests.total) ?? 0;
+    const trendPercent = percentOf(Math.abs(Number(memory.trend?.perHourMb || 0)), memoryLimit);
     const cgroupMemoryText = memory.cgroupAvailable
-      ? `${plain(memory.cgroupCurrentMb, '0')} MB`
+      ? formatPercent(serviceMemoryPercent)
       : '-';
     const cgroupMemoryNote = memory.cgroupAvailable
-      ? `峰值 ${plain(memory.cgroupPeakMb, '0')} MB · 匿名内存 ${plain(memory.cgroupAnonMb, '0')} MB · 可回收缓存 ${plain(memory.cgroupReclaimableMb, '0')} MB`
+      ? `${formatMemoryMb(memory.cgroupCurrentMb)} / ${formatMemoryMb(memoryLimit)} · 峰值 ${formatPercent(peakMemoryPercent)} · 可回收 ${formatMemoryMb(memory.cgroupReclaimableMb)}`
       : '当前系统未提供 cgroup v2 内存明细';
     const cacheNotice = memory.cgroupAvailable && Number(memory.cgroupReclaimableMb || 0) > 0
       ? `<div class="status-note">服务总占用包含约 ${escapeHtml(memory.cgroupReclaimableMb)} MB Linux 文件缓存；该部分可由内核回收，不等同于 Node 堆泄漏。</div>`
@@ -505,17 +563,18 @@ import { listDisplayState } from './admin-list-state.js';
         ${diagnosticRow('启动时间', formatDate(system.startedAt))}
         ${diagnosticRow('Node 版本', plain(system.nodeVersion), plain(system.platform))}
         ${diagnosticRow('进程', system.pid ? `PID ${system.pid}` : '-', system.hostname ? `主机 ${system.hostname}` : '')}
-        ${diagnosticRow('Node 内存', memory.rssMb ? `${memory.rssMb} MB RSS` : '-', memory.heapUsedMb ? `Heap ${memory.heapUsedMb}/${memory.heapTotalMb} MB` : '')}
+        ${diagnosticRow('Node 堆内存', formatPercent(nodeHeapPercent), memory.heapUsedMb ? `${formatMemoryMb(memory.heapUsedMb)} / ${formatMemoryMb(memory.heapTotalMb)} · RSS ${formatMemoryMb(memory.rssMb)}` : '')}
         ${diagnosticRow('服务内存', cgroupMemoryText, cgroupMemoryNote)}
-        ${diagnosticRow('匿名内存', memory.cgroupAvailable ? `${plain(memory.cgroupAnonMb, 0)} MB` : '-', `趋势 ${plain(memory.trend?.status)} · ${plain(memory.trend?.perHourMb, 0)} MB/小时`)}
-        ${diagnosticRow('主机可用内存', memory.hostTotalMb ? `${memory.hostAvailableMb}/${memory.hostTotalMb} MB` : '-', `实际使用 ${plain(memory.hostUsedPercent, 0)}% · 缓存 ${plain(memory.hostCachedMb, 0)} MB`)}
-        ${diagnosticRow('内核 Slab', `${plain(memory.hostSlabMb, 0)} MB`, `不可回收 ${plain(memory.hostSlabUnreclaimableMb, 0)} MB · 可回收 ${plain(memory.hostSlabReclaimableMb, 0)} MB`)}
+        ${diagnosticRow('匿名内存', memory.cgroupAvailable ? formatPercent(anonymousMemoryPercent) : '-', `${formatMemoryMb(memory.cgroupAnonMb)} · 趋势 ${plain(memory.trend?.status)} · ${formatPercent(trendPercent)}/小时`)}
+        ${diagnosticRow('主机内存', memory.hostTotalMb ? formatPercent(memory.hostUsedPercent) : '-', `已用 ${formatMemoryMb(memory.hostUsedMb)} / ${formatMemoryMb(memory.hostTotalMb)} · 可用 ${formatMemoryMb(memory.hostAvailableMb)}`)}
+        ${diagnosticRow('内核 Slab', formatPercent(slabPercent), `${formatMemoryMb(memory.hostSlabMb)} · 不可回收 ${formatMemoryMb(memory.hostSlabUnreclaimableMb)} · 可回收 ${formatMemoryMb(memory.hostSlabReclaimableMb)}`)}
         ${diagnosticRow('系统负载', Array.isArray(system.loadAverage) ? system.loadAverage.join(' / ') : '-', system.cpus ? `${system.cpus} 核 CPU` : '')}
         ${diagnosticRow('事件循环', `P99 ${plain(runtime.eventLoopP99Ms, 0)} ms`, `平均 ${plain(runtime.eventLoopMeanMs, 0)} ms`)}
-        ${diagnosticRow('请求统计', `${formatNumber(requests.total)} 次`, `4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)} · 最慢 ${plain(requests.slowestMs, 0)} ms`)}
+        ${diagnosticRow('限流缓存', `${formatNumber(Number(runtime.rateLimitBuckets || 0) + Number(runtime.adminLoginBuckets || 0))} 项`, `API ${formatNumber(runtime.rateLimitBuckets)} · 后台登录 ${formatNumber(runtime.adminLoginBuckets)} · 每分钟清理`)}
+        ${diagnosticRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)} · 最慢 ${plain(requests.slowestMs, 0)} ms`)}
         ${diagnosticRow('Chromium', `${formatNumber(browser.processCount)} 个进程`, browser.operation?.label ? `正在执行 ${browser.operation.label}` : '当前无浏览器任务')}
-        ${diagnosticRow('抓取队列', `运行 ${formatNumber(queue.active)} / 排队 ${formatNumber(queue.queued)}`, `上限 ${formatNumber(queue.maxActive)} / ${formatNumber(queue.maxQueued)}`)}
-        ${diagnosticRow('内存限制', `${plain(service.memoryHighMb, 0)} / ${plain(service.memoryMaxMb, 0)} MB`, '高水位 / 强制上限')}
+        ${diagnosticRow('并发占用', formatPercent(queuePercent), `运行 ${formatNumber(queue.active)} / 上限 ${formatNumber(queue.maxActive)} · 排队 ${formatNumber(queue.queued)}`)}
+        ${diagnosticRow('内存高水位', formatPercent(highWaterPercent), `${formatMemoryMb(service.memoryHighMb)} / ${formatMemoryMb(memoryLimit)} · 达到后准备回收进程`)}
         ${diagnosticRow('周期回收', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 重启服务进程`)}
         ${diagnosticRow('磁盘空间', disk.available ? `${plain(disk.usedPercent, 0)}%` : '-', disk.available ? `已用 ${plain(disk.usedMb, 0)} MB · 可用 ${plain(disk.availableMb, 0)} MB` : plain(disk.error))}
         ${diagnosticRow('静态前端', config.frontendBuilt ? 'dist 构建版' : 'public 兜底版', config.staticDir || '')}
@@ -548,20 +607,22 @@ import { listDisplayState } from './admin-list-state.js';
     return names.length ? names.join('、') : '暂无中奖人';
   }
 
+  function compactHash(value) {
+    const hash = plain(value);
+    return hash.length > 24 ? `${hash.slice(0, 12)}…${hash.slice(-8)}` : hash;
+  }
+
   function renderDraws() {
+    els.recordCount.textContent = `${formatNumber(state.draws.length)} 条`;
     if (!state.draws.length) {
       els.recordList.innerHTML = '<div class="empty-list">暂无开奖记录。完成开奖后，后台会自动保存一条记录。</div>';
       return;
     }
 
-    const display = listDisplayState(state.draws, {
-      limit: DRAW_VISIBLE_LIMIT,
-      expanded: state.recordsExpanded,
-    });
-    els.recordList.innerHTML = display.items.map((item) => {
+    els.recordList.innerHTML = state.draws.map((item, index) => {
       const active = state.selected?.file === item.file ? ' active' : '';
       return `
-        <button class="record-row${active}" type="button" data-file="${escapeHtml(item.file)}">
+        <button class="record-row${active}" type="button" data-file="${escapeHtml(item.file)}" data-index="${index}"${active ? ' aria-current="true"' : ''}>
           <span>
             <span class="record-title">
               <strong>${escapeHtml(recordTitle(item))}</strong>
@@ -573,13 +634,17 @@ import { listDisplayState } from './admin-list-state.js';
           <span class="record-count">${escapeHtml(formatNumber(item.winnerCount))}<br><small>人</small></span>
         </button>
       `;
-    }).join('') + listToggleHtml('records', display, '记录');
+    }).join('');
   }
 
   function renderDetail() {
     const item = state.selected;
+    const detailVisible = Boolean(item && state.detailOpen);
+    els.detailPanel.classList.toggle('has-selection', detailVisible);
+    els.detailClose.hidden = !item;
+    document.body.classList.toggle('record-detail-open', detailVisible);
     if (!item) {
-      els.detailPanel.innerHTML = `
+      els.detailContent.innerHTML = `
         <div class="empty-detail">
           <p class="eyebrow">详情</p>
           <h2>选择一条开奖记录</h2>
@@ -590,6 +655,7 @@ import { listDisplayState } from './admin-list-state.js';
     }
 
     const href = safeUrl(item.statusUrl);
+    const auditHash = plain(item.auditHash);
     const linkHtml = href
       ? `<a class="ghost-button" href="${escapeHtml(href)}" target="_blank" rel="noreferrer">打开微博</a>`
       : '';
@@ -611,7 +677,7 @@ import { listDisplayState } from './admin-list-state.js';
       </div>
     `).join('');
 
-    els.detailPanel.innerHTML = `
+    els.detailContent.innerHTML = `
       <div class="detail-title">
         <p class="eyebrow">详情</p>
         <h2>${escapeHtml(prizeSummary(item))}</h2>
@@ -624,9 +690,61 @@ import { listDisplayState } from './admin-list-state.js';
         <button class="ghost-button" type="button" data-action="json">下载 JSON</button>
         <button class="ghost-button danger-text" type="button" data-action="delete">删除</button>
       </div>
-      <div class="subtle">候选 ${escapeHtml(formatNumber(item.totalCount))} · 可抽 ${escapeHtml(formatNumber(item.eligibleCount))} · Hash ${escapeHtml(plain(item.auditHash))}</div>
-      <div class="winner-grid" style="margin-top: 14px;">${resultHtml || '<div class="empty-list">暂无中奖明细。</div>'}</div>
+      <div class="detail-audit">
+        <span>候选 ${escapeHtml(formatNumber(item.totalCount))}</span>
+        <span>可抽 ${escapeHtml(formatNumber(item.eligibleCount))}</span>
+        <span title="${escapeHtml(auditHash)}">Hash ${escapeHtml(compactHash(auditHash))}</span>
+      </div>
+      <div class="winner-grid detail-results">${resultHtml || '<div class="empty-list">暂无中奖明细。</div>'}</div>
     `;
+  }
+
+  const feedbackCategories = {
+    suggestion: { label: '功能建议', tone: 'suggestion' },
+    problem: { label: '遇到问题', tone: 'problem' },
+    experience: { label: '使用体验', tone: 'experience' },
+    other: { label: '其他', tone: 'other' },
+  };
+
+  function renderFeedback() {
+    const selected = state.feedbackFilter;
+    const items = selected === 'all'
+      ? state.feedback
+      : state.feedback.filter((item) => item.category === selected);
+
+    els.feedbackCount.textContent = selected === 'all'
+      ? `${formatNumber(state.feedback.length)} 条`
+      : `${formatNumber(items.length)} / ${formatNumber(state.feedback.length)} 条`;
+    els.feedbackFilters.querySelectorAll('[data-feedback-filter]').forEach((button) => {
+      const active = button.dataset.feedbackFilter === selected;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+
+    if (!items.length) {
+      els.feedbackList.innerHTML = `
+        <div class="empty-list feedback-empty">
+          <span class="empty-symbol">✦</span>
+          <strong>${state.feedback.length ? '这个分类还没有内容' : '暂时没有用户反馈'}</strong>
+          <p>${state.feedback.length ? '可以切换到其他分类继续查看。' : '前台提交后会按时间显示在这里。'}</p>
+        </div>
+      `;
+      return;
+    }
+
+    els.feedbackList.innerHTML = items.map((item) => {
+      const category = feedbackCategories[item.category] || feedbackCategories.other;
+      return `
+        <article class="feedback-row">
+          <header>
+            <span class="feedback-kind ${escapeHtml(category.tone)}">${escapeHtml(category.label)}</span>
+            <time datetime="${escapeHtml(item.createdAt)}">${escapeHtml(formatDate(item.createdAt))}</time>
+          </header>
+          <p>${escapeHtml(item.content)}</p>
+          <small>匿名来源 ${escapeHtml(plain(item.source))}</small>
+        </article>
+      `;
+    }).join('');
   }
 
   async function loadSummary() {
@@ -645,6 +763,20 @@ import { listDisplayState } from './admin-list-state.js';
   function stopLoginPolling() {
     clearInterval(state.loginPoller);
     state.loginPoller = null;
+  }
+
+  function startSummaryPolling() {
+    if (state.summaryPoller) return;
+    state.summaryPoller = setInterval(() => {
+      if (!document.hidden && state.username && !state.loading) {
+        loadSummary().catch(() => {});
+      }
+    }, 60_000);
+  }
+
+  function stopSummaryPolling() {
+    clearInterval(state.summaryPoller);
+    state.summaryPoller = null;
   }
 
   async function loadWeiboLoginStatus(showMessage = true) {
@@ -711,19 +843,28 @@ import { listDisplayState } from './admin-list-state.js';
     renderDraws();
   }
 
-  async function loadAll() {
+  async function loadFeedback() {
+    const data = await api('/api/admin/feedback?limit=500');
+    state.feedback = Array.isArray(data.items) ? data.items : [];
+    renderFeedback();
+  }
+
+  async function loadAll(showMessage = false) {
     if (state.loading) return;
     state.loading = true;
     els.refreshBtn.disabled = true;
     els.loginMessage.textContent = '';
     try {
-      await Promise.all([loadSummary(), loadDraws()]);
+      await Promise.all([loadSummary(), loadDraws(), loadFeedback()]);
       if (state.selected) {
         const found = state.draws.find((item) => item.file === state.selected.file);
-        if (!found) state.selected = null;
+        if (!found) {
+          state.selected = null;
+          state.detailOpen = false;
+        }
       }
       renderDetail();
-      showToast('后台数据已刷新');
+      if (showMessage) showToast('后台数据已刷新');
     } catch (error) {
       els.loginMessage.textContent = error.message;
       showToast(error.message);
@@ -737,8 +878,12 @@ import { listDisplayState } from './admin-list-state.js';
     try {
       const data = await api(`/api/admin/draws/${encodeURIComponent(file)}`);
       state.selected = data.item;
+      state.detailOpen = true;
       renderDraws();
       renderDetail();
+      if (window.matchMedia('(max-width: 760px)').matches) {
+        setTimeout(() => els.detailClose.focus({ preventScroll: true }), 260);
+      }
     } catch (error) {
       showToast(error.message);
     }
@@ -750,7 +895,10 @@ import { listDisplayState } from './admin-list-state.js';
     if (!ok) return;
     try {
       await api(`/api/admin/draws/${encodeURIComponent(file)}`, { method: 'DELETE' });
-      if (state.selected?.file === file) state.selected = null;
+      if (state.selected?.file === file) {
+        state.selected = null;
+        state.detailOpen = false;
+      }
       showToast('开奖记录已删除');
       await loadAll();
     } catch (error) {
@@ -885,9 +1033,12 @@ import { listDisplayState } from './admin-list-state.js';
     state.sessionExpiresAt = '';
     state.summary = null;
     state.draws = [];
+    state.feedback = [];
+    state.feedbackFilter = 'all';
     state.selected = null;
-    state.recordsExpanded = false;
+    state.detailOpen = false;
     state.attemptsExpanded = false;
+    document.body.classList.remove('record-detail-open');
     stopLoginPolling();
     setAuthed(false);
     showToast('已退出后台');
@@ -923,6 +1074,18 @@ import { listDisplayState } from './admin-list-state.js';
       view.classList.toggle('active', view.dataset.view === name);
     });
     document.querySelector('.tab-indicator').style.transform = `translateX(${index * 100}%)`;
+    if (name !== 'records' && state.detailOpen) {
+      state.detailOpen = false;
+      renderDetail();
+    }
+  }
+
+  function closeRecordDetail() {
+    state.detailOpen = false;
+    renderDetail();
+    const selectedButton = [...els.recordList.querySelectorAll('[data-file]')]
+      .find((button) => button.dataset.file === state.selected?.file);
+    selectedButton?.focus({ preventScroll: true });
   }
 
   els.loginForm.addEventListener('submit', (event) => {
@@ -935,7 +1098,7 @@ import { listDisplayState } from './admin-list-state.js';
     els.passwordToggle.setAttribute('aria-label', showing ? '显示密码' : '隐藏密码');
     els.passwordToggle.setAttribute('title', showing ? '显示密码' : '隐藏密码');
   });
-  els.refreshBtn.addEventListener('click', loadAll);
+  els.refreshBtn.addEventListener('click', () => loadAll(true));
   els.logoutBtn.addEventListener('click', logout);
   els.exportAllBtn.addEventListener('click', exportAll);
   els.startWeiboLoginBtn.addEventListener('click', startWeiboLogin);
@@ -945,20 +1108,22 @@ import { listDisplayState } from './admin-list-state.js';
   let searchTimer = null;
   els.searchInput.addEventListener('input', () => {
     state.search = els.searchInput.value.trim();
-    state.recordsExpanded = false;
     clearTimeout(searchTimer);
     searchTimer = setTimeout(loadDraws, 220);
   });
 
   els.recordList.addEventListener('click', (event) => {
-    const toggle = event.target.closest('[data-list-toggle="records"]');
-    if (toggle) {
-      state.recordsExpanded = !state.recordsExpanded;
-      renderDraws();
-      return;
-    }
     const button = event.target.closest('[data-file]');
     if (button) openRecord(button.dataset.file);
+  });
+
+  els.detailClose.addEventListener('click', closeRecordDetail);
+
+  els.feedbackFilters.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-feedback-filter]');
+    if (!button) return;
+    state.feedbackFilter = button.dataset.feedbackFilter;
+    renderFeedback();
   });
 
   els.attemptList.addEventListener('click', (event) => {
@@ -983,6 +1148,12 @@ import { listDisplayState } from './admin-list-state.js';
     const goTab = event.target.closest('[data-go-tab]');
     if (tab) setTab(tab.dataset.tab);
     if (goTab) setTab(goTab.dataset.goTab);
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && state.detailOpen && window.matchMedia('(max-width: 760px)').matches) {
+      closeRecordDetail();
+    }
   });
 
   setAuthed(false);

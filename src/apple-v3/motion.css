@@ -1,8 +1,17 @@
+:root {
+  --motion-press: 140ms;
+  --motion-control: 220ms;
+  --motion-page: 300ms;
+  --motion-sheet: 420ms;
+}
+
+/* Controls */
+
 .brand-button,
 .navbar-actions button,
-.stack-navbar button,
 .root-tabbar button,
 .primary-button,
+.v3-primary-action,
 .page-primary,
 .page-secondary,
 .list-row,
@@ -10,49 +19,205 @@
 .people-list button,
 .history-list button,
 .app-summary,
-.editable-list button,
 .settings-navigation,
-.detail-group button,
-.winner-section button,
-.guide-list button,
-.page-action-row button,
-.inline-status,
 .show-more-button,
 .result-buttons button,
-.switch,
-.stepper button {
+.flow-sheet button,
+.receipt-sheet button,
+.v3-alert-dialog button,
+.flow-notice button,
+.segmented-control button,
+.v3-filter-presets button,
+.v3-disclosure {
   transition:
-    transform 140ms var(--ease-out),
-    opacity 140ms var(--ease-out),
-    background-color 180ms var(--ease-out),
-    color 180ms var(--ease-out),
+    transform var(--motion-press) var(--ease-out),
+    opacity var(--motion-press) var(--ease-out),
+    color var(--motion-control) var(--ease-out),
+    background-color var(--motion-control) var(--ease-out),
+    border-color var(--motion-control) var(--ease-out),
+    box-shadow var(--motion-control) var(--ease-out),
+    filter var(--motion-control) var(--ease-out);
+}
+
+.brand-button svg,
+.navbar-actions button svg,
+.root-tabbar button svg,
+.list-row > svg:last-child,
+.app-summary > svg:last-child,
+.v3-text-action svg,
+.v3-disclosure svg,
+.receipt-audit summary svg {
+  transition:
+    transform var(--motion-control) var(--ease-drawer),
+    opacity var(--motion-control) var(--ease-out),
+    color var(--motion-control) var(--ease-out);
+}
+
+.brand-button:active,
+.navbar-actions button:active,
+.primary-button:active,
+.v3-primary-action:active,
+.page-primary:active,
+.page-secondary:active,
+.list-row:active,
+.compact-records button:active,
+.people-list button:active,
+.history-list button:active,
+.app-summary:active,
+.show-more-button:active,
+.result-buttons button:active,
+.flow-sheet button:active,
+.receipt-sheet button:active,
+.v3-alert-dialog button:active {
+  opacity: 0.88;
+  transform: scale(0.975);
+}
+
+.root-tabbar button:active {
+  transform: scale(0.96);
+}
+
+.flow-sheet-close:active,
+.receipt-close:active,
+.flow-notice > button:active {
+  transform: scale(0.9);
+}
+
+.v3-primary-action:disabled,
+button:disabled {
+  transform: none;
+}
+
+.v3-disclosure[aria-expanded="true"] svg {
+  transform: rotate(90deg);
+}
+
+.segmented-control button.is-active,
+.page-segment button.is-active,
+.v3-filter-presets button.is-active {
+  animation: selection-settle 220ms var(--ease-drawer) both;
+}
+
+.v3-toggle-list > label input {
+  transition:
+    background-color 200ms var(--ease-out),
+    box-shadow 200ms var(--ease-out);
+}
+
+.v3-toggle-list > label input::after {
+  transition:
+    transform 280ms var(--ease-drawer),
     box-shadow 180ms var(--ease-out);
 }
 
-.root-tabbar .tab-highlight {
-  transition: transform 380ms var(--ease-drawer);
+.v3-toggle-list > label:active input::after {
+  box-shadow: 0 2px 8px rgba(29, 31, 38, 0.28);
 }
 
-.switch::after {
-  transition: transform 260ms var(--ease-drawer);
+.v3-link-field input,
+.v3-textarea,
+.v3-form-group input,
+.v3-form-group textarea,
+.flow-field-block input,
+.search-field {
+  transition:
+    border-color 180ms var(--ease-out),
+    background-color 180ms var(--ease-out),
+    box-shadow 220ms var(--ease-out),
+    transform 180ms var(--ease-out);
 }
+
+.v3-textarea,
+.v3-source-form,
+.v3-section-empty {
+  animation: disclosure-content-in 240ms var(--ease-out) both;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .navbar-actions button:hover,
+  .result-buttons button:hover,
+  .flow-sheet-close:hover,
+  .receipt-close:hover {
+    background-color: rgba(255, 255, 255, 0.72);
+    transform: translateY(-1px);
+  }
+
+  .list-row:hover,
+  .compact-records > button:hover,
+  .people-list > button:hover,
+  .history-list button:hover,
+  .app-summary:hover {
+    background-color: rgba(118, 118, 128, 0.055);
+  }
+
+  .list-row:hover > svg:last-child,
+  .app-summary:hover > svg:last-child,
+  .v3-text-action:hover svg {
+    transform: translateX(2px);
+  }
+
+  .v3-primary-action:hover:not(:disabled) {
+    filter: brightness(1.015) saturate(1.04);
+    transform: translateY(-1px);
+  }
+}
+
+/* Navigation */
 
 .root-navbar,
 .root-tabbar {
+  animation: chrome-enter 420ms var(--ease-out) both;
   transition:
     transform 420ms var(--ease-drawer),
-    opacity 240ms var(--ease-out);
+    opacity 240ms var(--ease-out),
+    box-shadow 260ms var(--ease-out);
 }
 
-.root-pages {
+.root-tabbar {
+  animation-delay: 50ms;
+}
+
+.root-tabbar .tab-highlight {
   transition:
-    transform 420ms var(--ease-drawer),
-    opacity 260ms var(--ease-out);
+    transform 400ms var(--ease-drawer),
+    box-shadow 220ms var(--ease-out),
+    background-color 220ms var(--ease-out);
+  will-change: transform;
+}
+
+.root-tabbar button svg,
+.root-tabbar button span {
+  transition:
+    transform 280ms var(--ease-drawer),
+    opacity 180ms var(--ease-out),
+    color 180ms var(--ease-out);
+}
+
+.root-tabbar button.is-active svg {
+  transform: translateY(-1px) scale(1.07);
+}
+
+.root-tabbar button.is-active span {
+  transform: translateY(1px);
+}
+
+.root-view.is-active .root-scroll {
+  --page-enter-x: 14px;
+  animation: root-page-enter var(--motion-page) var(--ease-out) both;
+}
+
+.app-shell[data-tab-direction="backward"] .root-view.is-active .root-scroll {
+  --page-enter-x: -14px;
+}
+
+.title-status.is-busy i,
+.app-shell[data-draw-state="running"] .scene-caption i {
+  animation: status-pulse 760ms var(--ease-in-out) infinite alternate;
 }
 
 .app-shell.stack-open .root-navbar {
   opacity: 0.72;
-  transform: translateX(-12%);
+  transform: translateX(-12%) scale(0.985);
 }
 
 .app-shell.stack-open .root-tabbar {
@@ -63,63 +228,114 @@
 
 .app-shell.stack-open .root-pages {
   opacity: 0.84;
-  transform: translateX(-16%);
+  transform: translateX(-16%) scale(0.985);
 }
 
-.stack-page {
+.root-pages {
   transition:
-    transform 460ms var(--ease-drawer),
-    box-shadow 460ms var(--ease-out);
+    transform 420ms var(--ease-drawer),
+    opacity 260ms var(--ease-out);
 }
 
-.stack-page.is-entered {
-  transform: translateX(0);
+.people-list > button:nth-child(-n + 8),
+.history-list > button:nth-child(-n + 8),
+.compact-records > button:nth-child(-n + 4),
+.flow-guide-row,
+.flow-legal-sections section,
+.v3-prize-item {
+  animation: list-item-enter 260ms var(--ease-out) both;
 }
 
-.stack-page.is-under {
-  pointer-events: none;
-  transform: translateX(-16%);
+.people-list > button:nth-child(2),
+.history-list > button:nth-child(2),
+.compact-records > button:nth-child(2),
+.flow-guide-row:nth-child(2),
+.flow-legal-sections section:nth-child(2),
+.v3-prize-item:nth-child(2) {
+  animation-delay: 35ms;
 }
 
-.stack-page.is-popping {
-  transform: translateX(100%);
+.people-list > button:nth-child(3),
+.history-list > button:nth-child(3),
+.compact-records > button:nth-child(3),
+.flow-guide-row:nth-child(3),
+.flow-legal-sections section:nth-child(3),
+.v3-prize-item:nth-child(3) {
+  animation-delay: 70ms;
 }
 
-.alert-layer {
-  transition:
-    opacity 220ms var(--ease-out),
-    visibility 220ms step-end;
+.people-list > button:nth-child(4),
+.history-list > button:nth-child(4),
+.compact-records > button:nth-child(4),
+.flow-guide-row:nth-child(4),
+.flow-legal-sections section:nth-child(4),
+.v3-prize-item:nth-child(4) {
+  animation-delay: 105ms;
 }
 
-.alert-layer.is-visible {
-  transition:
-    opacity 220ms var(--ease-out),
-    visibility 0ms step-start;
+/* Sheets and notices */
+
+.flow-sheet-backdrop,
+.receipt-backdrop,
+.v3-alert-backdrop {
+  animation: material-backdrop-in 240ms var(--ease-out) both;
 }
 
-.alert-dialog {
-  transition:
-    transform 360ms var(--ease-drawer),
-    opacity 220ms var(--ease-out);
+.flow-sheet,
+.receipt-sheet {
+  animation: sheet-materialize var(--motion-sheet) var(--ease-drawer) both;
+  transform-origin: center bottom;
 }
 
-.alert-layer.is-visible .alert-dialog {
-  transform: translateY(0) scale(1);
+.flow-sheet > :nth-child(n + 3) {
+  animation: sheet-content-enter 300ms var(--ease-out) both;
+  animation-delay: 80ms;
 }
 
-.toast {
-  transition:
-    transform 340ms var(--ease-drawer),
-    opacity 220ms var(--ease-out),
-    visibility 340ms step-end;
+.flow-sheet > :nth-child(n + 4) {
+  animation-delay: 115ms;
 }
 
-.toast.is-visible {
-  transition:
-    transform 340ms var(--ease-drawer),
-    opacity 220ms var(--ease-out),
-    visibility 0ms step-start;
+.flow-sheet > :nth-child(n + 5) {
+  animation-delay: 150ms;
 }
+
+.v3-alert-dialog {
+  animation: alert-materialize 300ms var(--ease-drawer) both;
+}
+
+.flow-notice {
+  animation: notice-materialize 300ms var(--ease-out) both;
+}
+
+.flow-sheet-title > span,
+.receipt-title-icon {
+  animation: icon-settle 360ms var(--ease-drawer) 90ms both;
+}
+
+.receipt-summary {
+  animation: receipt-summary-enter 420ms var(--ease-drawer) 90ms both;
+}
+
+.receipt-stack-avatar,
+.receipt-stack-more {
+  animation-duration: 320ms;
+}
+
+.receipt-prize {
+  animation-duration: 340ms;
+}
+
+.receipt-winner {
+  animation-duration: 280ms;
+}
+
+.receipt-audit details[open] dl,
+.receipt-audit details[open] a {
+  animation: disclosure-content-in 240ms var(--ease-out) both;
+}
+
+/* Draw */
 
 .app-shell[data-draw-state="running"] .draw-ready,
 .app-shell[data-draw-state="finished"] .draw-ready,
@@ -133,110 +349,92 @@
 .app-shell[data-draw-state="running"] .draw-running,
 .app-shell[data-draw-state="finished"] .draw-finished {
   display: flex;
+  animation: control-state-enter 280ms var(--ease-out) both;
 }
 
 .candidate-pass {
   transition:
     transform 460ms var(--ease-drawer),
-    opacity 240ms var(--ease-out),
-    box-shadow 260ms var(--ease-out);
-}
-
-.app-shell[data-draw-state="running"] .lens-center {
-  opacity: 0.88;
-  transform: scale(0.94);
-}
-
-.app-shell[data-draw-state="finished"] .lens-center {
-  opacity: 0;
-  transform: translateY(-12px) scale(0.92);
-}
-
-.lens-center {
-  transition:
-    transform 420ms var(--ease-drawer),
-    opacity 240ms var(--ease-out);
-}
-
-.winner-core {
-  transition:
-    transform 460ms var(--ease-drawer),
-    opacity 260ms var(--ease-out);
-}
-
-.app-shell[data-draw-state="finished"] .winner-core {
-  opacity: 1;
-  transform: translateY(-68px) scale(1);
-}
-
-.app-shell[data-draw-state="running"] .candidate-deck .pass-main {
-  opacity: 0.94;
-  box-shadow:
-    0 28px 48px rgba(46, 50, 69, 0.19),
-    inset 0 1px 0 #fff;
+    opacity 260ms var(--ease-out),
+    box-shadow 260ms var(--ease-out),
+    filter 260ms var(--ease-out);
 }
 
 .app-shell[data-draw-state="running"] [data-deck-card] {
   will-change: transform, opacity;
 }
 
+.app-shell[data-draw-state="running"] .candidate-deck .pass-main {
+  box-shadow:
+    0 30px 54px rgba(46, 50, 69, 0.2),
+    0 5px 16px rgba(58, 67, 88, 0.06),
+    inset 0 1px 0 #fff;
+}
+
+.app-shell[data-draw-state="running"] .pass-identity > span:last-child {
+  animation: candidate-readout-enter 120ms var(--ease-out) both;
+}
+
 .app-shell[data-draw-state="running"] .scene-glint {
-  animation: draw-glint-orbit 1.35s linear infinite;
+  animation: draw-glint-drift 1.55s var(--ease-in-out) infinite;
 }
 
 .app-shell[data-draw-state="running"] .scene-geometry {
-  animation: draw-scene-breathe 1.8s var(--ease-in-out) infinite alternate;
+  animation: draw-scene-breathe 1.6s var(--ease-in-out) infinite alternate;
 }
 
-@keyframes draw-glint-orbit {
-  0% {
-    opacity: 0.48;
-    transform: translate3d(-4px, 4px, 0) rotate(0deg) scale(0.82);
-  }
-  48% {
-    opacity: 1;
-    transform: translate3d(230px, 128px, 0) rotate(170deg) scale(1.08);
-  }
-  100% {
-    opacity: 0.52;
-    transform: translate3d(6px, 228px, 0) rotate(360deg) scale(0.88);
-  }
+.app-shell[data-draw-state="running"] .draw-scene::after {
+  animation: stage-shadow-breathe 1.4s var(--ease-in-out) infinite alternate;
 }
 
-@keyframes draw-scene-breathe {
-  from {
-    opacity: 0.72;
-    transform: scale(0.985);
-  }
-  to {
-    opacity: 1;
-    transform: scale(1.015);
-  }
+.winner-core {
+  transition:
+    transform 500ms var(--ease-drawer),
+    opacity 280ms var(--ease-out),
+    box-shadow 320ms var(--ease-out);
 }
 
 .app-shell[data-draw-state="finished"] .candidate-deck .pass-main {
   opacity: 0;
-  transform: translate3d(-22px, -12px, -8px) rotate(-3deg) scale(0.96);
+  transform: translate3d(-20px, -10px, -8px) rotate(-3deg) scale(0.96);
 }
 
 .app-shell[data-draw-state="finished"] .candidate-deck .pass-under {
-  opacity: 0.24;
+  opacity: 0.18;
+  filter: saturate(0.8);
 }
 
 .app-shell[data-draw-state="finished"] .candidate-deck .winner-core {
-  opacity: 1;
-  transform: translate3d(0, -60px, 0) rotate(0deg) scale(1);
+  animation: winner-card-arrive 520ms var(--ease-drawer) both;
+}
+
+.app-shell[data-draw-state="finished"] .winner-core .pass-avatar {
+  animation: winner-avatar-settle 440ms var(--ease-drawer) 130ms both;
+}
+
+.app-shell[data-draw-state="finished"] .winner-core .pass-identity > span:last-child {
+  animation: winner-copy-enter 360ms var(--ease-out) 170ms both;
+}
+
+.app-shell[data-draw-state="finished"] .winner-core > header svg {
+  animation: winner-badge-settle 420ms var(--ease-drawer) 190ms both;
 }
 
 .scene-caption {
   transition:
-    opacity 220ms var(--ease-out),
-    transform 300ms var(--ease-drawer);
+    opacity 240ms var(--ease-out),
+    transform 320ms var(--ease-drawer);
 }
 
 .app-shell[data-draw-state="finished"] .scene-caption {
-  opacity: 0.2;
+  opacity: 0.18;
   transform: translateY(8px);
+}
+
+.result-rail {
+  transition:
+    transform 500ms var(--ease-drawer) 180ms,
+    opacity 280ms var(--ease-out) 180ms;
 }
 
 .app-shell[data-draw-state="finished"] .result-rail {
@@ -245,15 +443,9 @@
   transform: translateY(0);
 }
 
-.result-rail {
-  transition:
-    transform 480ms var(--ease-drawer),
-    opacity 260ms var(--ease-out);
-}
-
 .winner-list button {
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateY(8px) scale(0.985);
   transition:
     transform 360ms var(--ease-drawer),
     opacity 240ms var(--ease-out);
@@ -261,118 +453,176 @@
 
 .app-shell[data-draw-state="finished"] .winner-list button {
   opacity: 1;
-  transform: translateY(0);
+  transform: translateY(0) scale(1);
 }
 
-.app-shell[data-draw-state="finished"] .winner-list button:nth-child(1) {
-  transition-delay: 120ms;
-}
-
-.app-shell[data-draw-state="finished"] .winner-list button:nth-child(2) {
-  transition-delay: 165ms;
-}
-
-.app-shell[data-draw-state="finished"] .winner-list button:nth-child(3) {
-  transition-delay: 210ms;
-}
-
-.app-shell[data-draw-state="finished"] .winner-list button:nth-child(4) {
-  transition-delay: 255ms;
-}
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(1) { transition-delay: 260ms; }
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(2) { transition-delay: 305ms; }
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(3) { transition-delay: 350ms; }
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(4) { transition-delay: 395ms; }
 
 .progress-indicator {
-  animation: spin 0.8s linear infinite;
+  animation: spin 680ms linear infinite;
+}
+
+.v3-progress {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.v3-progress > i {
+  position: relative;
+  grid-column: 1 / -1;
+  width: 100%;
+  overflow: hidden;
+  transform: scaleX(var(--progress-scale, 0));
+  transform-origin: left center;
+  transition: transform 360ms var(--ease-out);
+}
+
+.v3-progress > i::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
+  content: "";
+  transform: translateX(-110%);
+  animation: progress-sheen 1.1s linear infinite;
+}
+
+@keyframes chrome-enter {
+  from { opacity: 0; transform: translateY(-8px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes root-page-enter {
+  from { opacity: 0; transform: translate3d(var(--page-enter-x), 0, 0); }
+  to { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+
+@keyframes list-item-enter {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes selection-settle {
+  from { transform: scale(0.97); }
+  to { transform: scale(1); }
+}
+
+@keyframes disclosure-content-in {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes status-pulse {
+  from { opacity: 0.55; transform: scale(0.82); }
+  to { opacity: 1; transform: scale(1.12); }
+}
+
+@keyframes material-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes sheet-materialize {
+  from { opacity: 0; transform: translateY(7%) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes sheet-content-enter {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes alert-materialize {
+  from { opacity: 0; transform: translateY(8px) scale(0.955); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes notice-materialize {
+  from { opacity: 0; transform: translate(-50%, -12px) scale(0.98); }
+  to { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
+@keyframes icon-settle {
+  from { opacity: 0; transform: scale(0.9); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes control-state-enter {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes candidate-readout-enter {
+  from { opacity: 0.42; transform: translateY(4px); filter: blur(1.5px); }
+  to { opacity: 1; transform: translateY(0); filter: blur(0); }
+}
+
+@keyframes draw-glint-drift {
+  0% { opacity: 0.36; transform: translate3d(-2px, 4px, 0) scale(0.86); }
+  48% { opacity: 0.9; transform: translate3d(224px, 126px, 0) scale(1.04); }
+  100% { opacity: 0.38; transform: translate3d(8px, 224px, 0) scale(0.9); }
+}
+
+@keyframes draw-scene-breathe {
+  from { opacity: 0.78; transform: scale(0.994); }
+  to { opacity: 1; transform: scale(1.006); }
+}
+
+@keyframes stage-shadow-breathe {
+  from { opacity: 0.72; transform: rotateX(66deg) scaleX(0.94); }
+  to { opacity: 1; transform: rotateX(66deg) scaleX(1.04); }
+}
+
+@keyframes winner-card-arrive {
+  0% { opacity: 0; transform: translate3d(18px, -42px, 0) rotate(2deg) scale(0.965); }
+  58% { opacity: 1; transform: translate3d(-2px, -63px, 0) rotate(-0.35deg) scale(1.008); }
+  100% { opacity: 1; transform: translate3d(0, -60px, 0) rotate(0) scale(1); }
+}
+
+@keyframes winner-avatar-settle {
+  from { opacity: 0; transform: translateY(6px) scale(0.9) rotate(-4deg); }
+  to { opacity: 1; transform: translateY(0) scale(1) rotate(-2deg); }
+}
+
+@keyframes winner-copy-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes winner-badge-settle {
+  from { opacity: 0; transform: scale(0.82); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes progress-sheen {
+  to { transform: translateX(110%); }
 }
 
 @keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
+  to { transform: rotate(360deg); }
 }
 
-button:active,
-.brand-button:active,
-.app-summary:active,
-.list-row:active {
-  opacity: 0.72;
-  transform: scale(0.97);
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .navbar-actions button:hover,
-  .stack-navbar button:hover,
-  .root-tabbar button:hover,
-  .result-buttons button:hover {
-    background: rgba(10, 122, 255, 0.08);
-  }
-
-  .list-row:hover,
-  .compact-records > button:hover,
-  .people-list > button:hover,
-  .history-list button:hover,
-  .editable-list > button:hover,
-  .settings-navigation:hover,
-  .detail-group > button:hover,
-  .winner-section > button:hover,
-  .guide-list > button:hover {
-    background: rgba(118, 118, 128, 0.07);
-  }
-
-  .primary-button:hover,
-  .page-primary:hover {
-    background: var(--system-blue-pressed);
-    box-shadow: 0 10px 28px rgba(10, 122, 255, 0.26);
-  }
+.app-shell[data-motion="reduced"],
+.app-shell[data-motion="reduced"] *,
+.app-shell[data-motion="reduced"] *::before,
+.app-shell[data-motion="reduced"] *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 1ms !important;
+  animation-iteration-count: 1 !important;
+  transition-delay: 0ms !important;
+  transition-duration: 1ms !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  .app-shell:not([data-motion="full"]),
+  .app-shell:not([data-motion="full"]) *,
+  .app-shell:not([data-motion="full"]) *::before,
+  .app-shell:not([data-motion="full"]) *::after {
     scroll-behavior: auto !important;
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     transition-delay: 0ms !important;
     transition-duration: 1ms !important;
-  }
-}
-
-@media (prefers-reduced-transparency: reduce) {
-  .glass,
-  .alert-dialog,
-  .toast {
-    -webkit-backdrop-filter: none;
-    backdrop-filter: none;
-  }
-
-  .glass,
-  .alert-dialog {
-    background: #f9f9fb;
-  }
-
-  .toast {
-    background: #26262d;
-  }
-}
-
-@media (prefers-contrast: more) {
-  :root {
-    --label-secondary: #48484f;
-    --label-tertiary: #66666f;
-    --separator: rgba(22, 22, 28, 0.22);
-  }
-
-  .glass,
-  .grouped-list,
-  .compact-records,
-  .people-list,
-  .history-list,
-  .editable-list,
-  .settings-group,
-  .detail-group,
-  .winner-section,
-  .code-group,
-  .guide-list {
-    border-color: rgba(20, 20, 28, 0.2);
   }
 }

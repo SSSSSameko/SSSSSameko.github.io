@@ -70,3 +70,14 @@ test('login limiter blocks repeated failures and clears after success', () => {
   limiter.clear('127.0.0.1');
   assert.equal(limiter.check('127.0.0.1', 1000).allowed, true);
 });
+
+test('login limiter evicts old entries at its memory cap', () => {
+  const limiter = createLoginLimiter({ maxAttempts: 1, windowMs: 60_000, maxEntries: 2 });
+
+  limiter.fail('first', 1000);
+  limiter.fail('second', 1000);
+  limiter.fail('third', 1000);
+
+  assert.equal(limiter.check('first', 1001).allowed, true);
+  assert.equal(limiter.check('third', 1001).allowed, false);
+});

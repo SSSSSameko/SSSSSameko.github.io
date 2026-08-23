@@ -5,9 +5,16 @@ import {
   digestCandidates,
   friendlyProviderText,
   parseManualInput,
+  safeWeiboUrl,
   seededShuffle,
   toCsv,
 } from './appCore.js';
+
+test('safeWeiboUrl only keeps links to Weibo', () => {
+  assert.equal(safeWeiboUrl('javascript:alert(1)'), '');
+  assert.equal(safeWeiboUrl('https://evil.example/post'), '');
+  assert.equal(safeWeiboUrl('http://m.weibo.cn/detail/123'), 'https://m.weibo.cn/detail/123');
+});
 
 test('parseManualInput accepts one screen name per line', () => {
   const rows = parseManualInput('sameko\nalice');
@@ -23,6 +30,12 @@ test('parseManualInput reads csv headers and quoted values', () => {
   assert.equal(rows[0].uid, '1001');
   assert.equal(rows[0].screenName, 'sameko,chan');
   assert.equal(rows[0].text, '转发内容');
+});
+
+test('parseManualInput keeps JSON string names intact', () => {
+  const rows = parseManualInput('["sameko", "alice"]');
+  assert.deepEqual(rows.map((row) => row.screenName), ['sameko', 'alice']);
+  assert.deepEqual(rows.map((row) => row.uid), ['', '']);
 });
 
 test('seededShuffle is deterministic and keeps every item', async () => {
@@ -48,5 +61,5 @@ test('toCsv escapes formula-like values before export', () => {
 });
 
 test('friendlyProviderText deduplicates provider labels', () => {
-  assert.equal(friendlyProviderText('mobile/mobile,cookie'), 'H5 可见转发 / 服务器 Cookie 池');
+  assert.equal(friendlyProviderText('mobile/mobile,cookie'), '微博公开转发 / 服务器登录态');
 });

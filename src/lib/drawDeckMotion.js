@@ -6,6 +6,30 @@ const DECK_POSES = [
 
 const SHUFFLE_EASING = 'cubic-bezier(0.77, 0, 0.175, 1)';
 const SETTLE_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
+const SHUFFLE_DURATION = [1040, 1120, 1200];
+const SHUFFLE_DELAY = [0, -260, -520];
+
+const SHUFFLE_PATHS = [
+  [
+    { transform: DECK_POSES[0], opacity: 0.92 },
+    { offset: 0.28, transform: 'translate3d(-38px, 1px, -10px) rotate(-8deg) scale(0.985)', opacity: 0.98 },
+    { offset: 0.62, transform: 'translate3d(16px, 10px, -30px) rotate(2deg) scale(0.975)', opacity: 0.82 },
+    { transform: DECK_POSES[0], opacity: 0.92 },
+  ],
+  [
+    { transform: DECK_POSES[1], opacity: 0.96 },
+    { offset: 0.3, transform: 'translate3d(38px, 0, 2px) rotate(7deg) scale(1.005)', opacity: 1 },
+    { offset: 0.64, transform: 'translate3d(-15px, 9px, -20px) rotate(-2deg) scale(0.98)', opacity: 0.86 },
+    { transform: DECK_POSES[1], opacity: 0.96 },
+  ],
+  [
+    { transform: DECK_POSES[2], opacity: 1 },
+    { offset: 0.26, transform: 'translate3d(-8px, -3px, 7px) rotate(-1.2deg) scale(0.994)', opacity: 0.98 },
+    { offset: 0.56, transform: 'translate3d(9px, 2px, 8px) rotate(1.2deg) scale(1.008)', opacity: 1 },
+    { offset: 0.8, transform: 'translate3d(-4px, -2px, 5px) rotate(-0.6deg) scale(0.998)', opacity: 0.99 },
+    { transform: DECK_POSES[2], opacity: 1 },
+  ],
+];
 
 function deckCards(deck) {
   if (!deck?.querySelectorAll) return [];
@@ -38,26 +62,9 @@ export function startDrawDeckMotion(deck, { reducedMotion = false } = {}) {
   }
 
   return deckCards(deck).filter(supportsAnimation).map((card, index) => {
-    const travel = index === 2 ? 34 : 24;
-    const direction = index % 2 ? 1 : -1;
-    const base = DECK_POSES[index];
-
-    return card.animate([
-      { transform: base, opacity: index === 0 ? 0.92 : 1 },
-      {
-        offset: 0.32,
-        transform: `translate3d(${travel * direction}px, ${index === 2 ? 4 : 0}px, ${index === 2 ? 8 : -8}px) rotate(${direction * 4}deg)`,
-        opacity: 0.88,
-      },
-      {
-        offset: 0.68,
-        transform: `translate3d(${-travel * direction}px, ${index === 2 ? -3 : 6}px, ${index === 2 ? 4 : -16}px) rotate(${-direction * 3}deg)`,
-        opacity: 0.96,
-      },
-      { transform: base, opacity: index === 0 ? 0.92 : 1 },
-    ], {
-      duration: 760 + index * 90,
-      delay: index ? -index * 110 : 0,
+    return card.animate(SHUFFLE_PATHS[index], {
+      duration: SHUFFLE_DURATION[index],
+      delay: SHUFFLE_DELAY[index],
       iterations: Infinity,
       easing: SHUFFLE_EASING,
     });

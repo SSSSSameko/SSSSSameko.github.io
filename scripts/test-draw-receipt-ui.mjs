@@ -69,13 +69,21 @@ await mkdir(outputDir, { recursive: true });
 const browser = await chromium.launch({ headless: true, executablePath });
 try {
   for (const item of cases) {
+    const storedReceipt = item.name === 'reduced-motion'
+      ? { ...receipt, statusUrl: 'javascript:alert(1)' }
+      : receipt;
     const context = await browser.newContext({
       viewport: item.viewport,
       reducedMotion: item.reducedMotion,
     });
     await context.addInitScript(({ key, value }) => {
       localStorage.setItem(key, JSON.stringify({ version: 2, items: [value] }));
-    }, { key: historyKey, value: receipt });
+    }, { key: historyKey, value: storedReceipt });
+    if (item.reducedMotion === 'reduce') {
+      await context.addInitScript(() => {
+        localStorage.setItem('weibo-draw-motion', 'system');
+      });
+    }
     const page = await context.newPage();
     page.setDefaultTimeout(8_000);
     await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
@@ -98,6 +106,13 @@ try {
     assert.equal(await dialog.getByText('幸运奖').first().isVisible(), true);
     assert.equal(await dialog.getByText('sameko').first().isVisible(), true);
     assert.equal(await dialog.locator('.receipt-winner').count(), 6);
+    assert.equal(await dialog.locator('a[href^="javascript:"]').count(), 0);
+    const closeButton = dialog.getByRole('button', { name: /关闭开奖结果/ });
+    assert.equal(await closeButton.evaluate((element) => element === document.activeElement), true);
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await dialog.getByRole('button', { name: /复制文案/ }).evaluate((element) => element === document.activeElement), true);
+    await page.keyboard.press('Tab');
+    assert.equal(await closeButton.evaluate((element) => element === document.activeElement), true);
     const finalWinner = dialog.getByText('奈奈').first();
     await finalWinner.scrollIntoViewIfNeeded();
     assert.equal(await finalWinner.isVisible(), true);

@@ -1,4 +1,10 @@
 draw.example.com {
   encode zstd gzip
+  request_body {
+    max_size 3MB
+  }
+  header {
+    -Server
+  }
   reverse_proxy 127.0.0.1:4173
 }

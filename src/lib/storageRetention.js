@@ -12,3 +12,17 @@ export function selectFilesToPrune(files, options = {}) {
   }
   return { removals, retainedBytes };
 }
+
+export function retainLatestLines(lines, options = {}) {
+  const maxLines = Math.max(1, Number(options.maxLines || 1));
+  const maxBytes = Math.max(1, Number(options.maxBytes ?? Number.MAX_SAFE_INTEGER));
+  const items = (Array.isArray(lines) ? lines : [])
+    .map((line) => String(line || '').trim())
+    .filter(Boolean)
+    .slice(-maxLines);
+
+  while (items.length > 1 && Buffer.byteLength(`${items.join('\n')}\n`, 'utf8') > maxBytes) {
+    items.shift();
+  }
+  return items;
+}

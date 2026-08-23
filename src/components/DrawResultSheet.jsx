@@ -69,6 +69,7 @@ export default function DrawResultSheet({
   onCopyFairness,
   onRetrySave,
 }) {
+  const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
   const receipt = useMemo(
     () => (receiptInput ? normalizeDrawReceipt(receiptInput) : null),
@@ -83,6 +84,20 @@ export default function DrawResultSheet({
     closeButtonRef.current?.focus({ preventScroll: true });
     const handleKeyDown = (event) => {
       if (event.key === 'Escape') onClose?.();
+      if (event.key !== 'Tab' || !dialogRef.current) return;
+      const controls = [...dialogRef.current.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )].filter((element) => !element.hidden && element.getClientRects().length);
+      if (!controls.length) return;
+      const first = controls[0];
+      const last = controls.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => {
@@ -120,10 +135,11 @@ export default function DrawResultSheet({
   return (
     <div className="receipt-backdrop" onClick={onClose} role="presentation">
       <section
+        ref={dialogRef}
         className="receipt-sheet"
         role="dialog"
         aria-modal="true"
-        aria-label="开奖结果"
+        aria-labelledby="receipt-title"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="receipt-grabber" aria-hidden="true" />
@@ -132,7 +148,7 @@ export default function DrawResultSheet({
             <Sparkles />
           </span>
           <div>
-            <h2>开奖结果</h2>
+            <h2 id="receipt-title">开奖结果</h2>
             <p>{formatReceiptDate(receipt.drawnAt)}</p>
           </div>
           <button
@@ -151,7 +167,7 @@ export default function DrawResultSheet({
             <div className="receipt-summary-copy">
               <span><CheckCircle2 /> 开奖完成</span>
               <strong>{winnerCount} 位中奖用户</strong>
-              <p>{prizeCount} 个奖项 · {formatReceiptDate(receipt.drawnAt)}</p>
+              <p>{drawLabel} · {prizeCount} 个奖项</p>
             </div>
             <div className="receipt-avatar-stack" aria-label="中奖用户头像">
               {displayedWinners.map((winner, index) => (
@@ -181,7 +197,10 @@ export default function DrawResultSheet({
               <section
                 className="receipt-prize"
                 key={`${group.prize.name}-${groupIndex}`}
-                style={{ '--receipt-accent': group.prize.color || '#ee8fa1' }}
+                style={{
+                  '--receipt-accent': group.prize.color || '#ee8fa1',
+                  '--receipt-group': groupIndex,
+                }}
               >
                 <header>
                   <span className="receipt-prize-mark">{groupIndex + 1}</span>

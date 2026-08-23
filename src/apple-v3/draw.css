@@ -79,6 +79,7 @@
   place-items: center;
   overflow: hidden;
   perspective: 1000px;
+  scroll-margin-block: calc(var(--nav-height) + var(--safe-top) + 18px) calc(var(--tab-height) + var(--safe-bottom) + 18px);
 }
 
 .draw-scene::before {
@@ -418,6 +419,12 @@
   font-weight: 660;
 }
 
+.draw-studio .result-rail {
+  right: 22px;
+  bottom: 24px;
+  left: 22px;
+}
+
 .candidate-deck .winner-core {
   z-index: 5;
   inset: 0;
@@ -485,11 +492,6 @@
   font-weight: 650;
 }
 
-.draw-studio .result-rail {
-  right: 22px;
-  bottom: 24px;
-  left: 22px;
-}
 
 .draw-specs {
   display: grid;

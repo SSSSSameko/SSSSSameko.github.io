@@ -1,4 +1,4 @@
-import { buildFilterSummary, DRAW_RANDOM_ALGORITHM } from './appCore.js';
+import { buildFilterSummary, DRAW_RANDOM_ALGORITHM, safeWeiboUrl } from './appCore.js';
 
 export const DRAW_HISTORY_KEY = 'weibo-draw-history-v2';
 export const DRAW_HISTORY_LIMIT = 50;
@@ -118,7 +118,7 @@ export function normalizeDrawReceipt(input = {}) {
     id: String(input.id || auditHash || localReceiptId(input, drawnAt, summary)),
     source: String(input.source || 'manual'),
     statusId: String(input.statusId || audit.statusId || input.sourceMeta?.statusId || ''),
-    statusUrl: String(input.statusUrl || audit.statusUrl || input.sourceMeta?.statusUrl || ''),
+    statusUrl: safeWeiboUrl(input.statusUrl || audit.statusUrl || input.sourceMeta?.statusUrl),
     drawNumber,
     drawnAt,
     savedAt: String(input.savedAt || ''),

@@ -27,7 +27,7 @@
         <span class="topbar-divider"></span>
         <span id="lastUpdated">等待刷新</span>
       </div>
-      <div class="topbar-actions">
+      <div class="topbar-actions hidden" id="topbarActions">
         <button class="icon-button" id="refreshBtn" type="button" aria-label="刷新数据" title="刷新数据">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-14.9-4M4 5v5h5M4 13a8.1 8.1 0 0 0 14.9 4M20 19v-5h-5"/></svg>
         </button>
@@ -70,6 +70,7 @@
       <nav class="tabbar" aria-label="后台导航">
         <button class="tab-button active" type="button" data-tab="overview">总览</button>
         <button class="tab-button" type="button" data-tab="records">记录</button>
+        <button class="tab-button" type="button" data-tab="feedback">反馈</button>
         <button class="tab-button" type="button" data-tab="cookie">Cookie</button>
         <button class="tab-button" type="button" data-tab="system">系统</button>
         <span class="tab-indicator" aria-hidden="true"></span>
@@ -90,16 +91,16 @@
         <section class="overview-grid">
           <article class="panel chart-panel">
             <div class="panel-head">
-              <div>
-                <p class="eyebrow">近 24 小时</p>
-                <h2>服务内存</h2>
+            <div>
+              <p class="eyebrow">近 24 小时</p>
+                <h2>服务内存占用</h2>
               </div>
               <span class="trend-pill" id="memoryInsight">等待采样</span>
             </div>
             <div class="chart-wrap" id="memoryChart"></div>
             <div class="chart-legend">
-              <span><i class="legend-current"></i>服务总占用</span>
-              <span><i class="legend-anon"></i>匿名内存</span>
+              <span><i class="legend-current"></i>服务总占用 / 上限</span>
+              <span><i class="legend-anon"></i>匿名内存 / 上限</span>
             </div>
           </article>
 
@@ -154,15 +155,49 @@
         </div>
         <section class="workbench">
           <div class="records-panel">
-            <div class="record-list" id="recordList"></div>
+            <div class="records-panel-head">
+              <strong>全部记录</strong>
+              <span id="recordCount">0 条</span>
+            </div>
+            <div class="record-list-scroll">
+              <div class="record-list" id="recordList"></div>
+            </div>
           </div>
           <aside class="detail-panel" id="detailPanel">
-            <div class="empty-detail">
-              <span class="empty-symbol">⌁</span>
-              <h2>选择一条开奖记录</h2>
-              <p>查看中奖人、奖项、候选哈希和导出选项。</p>
+            <div class="detail-panel-head">
+              <strong>记录详情</strong>
+              <button class="detail-close" id="detailClose" type="button" aria-label="关闭开奖记录详情">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 7 10 10M17 7 7 17"/></svg>
+              </button>
+            </div>
+            <div class="detail-panel-scroll" id="detailContent">
+              <div class="empty-detail">
+                <span class="empty-symbol">⌁</span>
+                <h2>选择一条开奖记录</h2>
+                <p>查看中奖人、奖项、候选哈希和导出选项。</p>
+              </div>
             </div>
           </aside>
+        </section>
+      </section>
+
+      <section class="view" data-view="feedback">
+        <div class="section-head feedback-section-head">
+          <div>
+            <p class="eyebrow">来自前台</p>
+            <h1>用户反馈</h1>
+          </div>
+          <span class="badge neutral" id="feedbackCount">0 条</span>
+        </div>
+        <section class="panel feedback-panel">
+          <div class="feedback-toolbar" id="feedbackFilters" aria-label="反馈分类">
+            <button class="active" type="button" data-feedback-filter="all">全部</button>
+            <button type="button" data-feedback-filter="suggestion">建议</button>
+            <button type="button" data-feedback-filter="problem">问题</button>
+            <button type="button" data-feedback-filter="experience">体验</button>
+            <button type="button" data-feedback-filter="other">其他</button>
+          </div>
+          <div class="feedback-list" id="feedbackList"></div>
         </section>
       </section>
 

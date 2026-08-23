@@ -24,8 +24,14 @@ import {
   cookiePoolCounts,
 } from './src/lib/cookiePool.js';
 import { completedDrawStats } from './src/lib/drawReceipts.js';
+import { normalizeFeedbackSubmission } from './src/lib/feedback.js';
 import { safeAvatarUrl } from './src/lib/avatar.js';
-import { selectFilesToPrune } from './src/lib/storageRetention.js';
+import {
+  clientAddress,
+  firstHeaderValue,
+  trustedForwardedHeader,
+} from './src/lib/requestTrust.js';
+import { retainLatestLines, selectFilesToPrune } from './src/lib/storageRetention.js';
 import {
   analyzeMemoryTrend,
   parseCgroupMemoryStat,
@@ -41,6 +47,11 @@ import {
   preparePersistentProfile,
   stopProfileBrowsers,
 } from './src/lib/weiboBrowserLifecycle.js';
+import {
+  isWeiboThrottleStatus,
+  pageWaitPlan,
+  throttleRetryDelayMs,
+} from './src/lib/weiboPacing.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname);
@@ -48,7 +59,7 @@ const distDir = path.join(rootDir, 'dist');
 const publicDir = path.join(rootDir, 'public');
 const adminDir = path.join(rootDir, 'server-admin');
 const outputDir = path.join(rootDir, 'output');
-const drawsDir = path.join(outputDir, 'draws');
+const drawsDir = path.resolve(rootDir, process.env.DRAWS_DIR || 'output/draws');
 const authDir = path.join(outputDir, 'auth');
 const cookieStoreFile = path.join(authDir, 'weibo-cookie.json');
 const weiboLoginProfileDir = path.join(authDir, 'weibo-login-profile');
@@ -56,6 +67,7 @@ const weiboLoginStateFile = path.join(authDir, 'weibo-login-state.json');
 const drawAttemptsFile = path.join(rootDir, 'output', 'draw-attempts.jsonl');
 const systemMetricsFile = path.join(outputDir, 'system-metrics.json');
 const adminEventsFile = path.join(outputDir, 'admin-events.json');
+const feedbackFile = path.resolve(rootDir, process.env.FEEDBACK_FILE || 'output/feedback.json');
 
 function envNumber(name, fallback, minimum = 0) {
   const value = Number(process.env[name] ?? fallback);
@@ -69,6 +81,10 @@ const adminKey = String(process.env.ADMIN_KEY || '').trim();
 const adminUsername = String(process.env.ADMIN_USERNAME || '').trim();
 const adminPasswordHash = String(process.env.ADMIN_PASSWORD_HASH || '').trim();
 const adminSessionSecret = String(process.env.ADMIN_SESSION_SECRET || '').trim();
+const sourceFingerprintSecret = String(
+  process.env.SOURCE_FINGERPRINT_SECRET || adminSessionSecret || crypto.randomBytes(32).toString('hex'),
+);
+const isProduction = process.env.NODE_ENV === 'production';
 const adminSessionTtlMs = envNumber('ADMIN_SESSION_TTL_MS', 12 * 60 * 60_000, 60_000);
 const adminSessionSecure = /^(1|true|yes)$/i.test(String(
   process.env.ADMIN_SESSION_SECURE
@@ -81,11 +97,19 @@ const maxActiveJobs = envNumber('MAX_ACTIVE_JOBS', 2, 1);
 const maxQueuedJobs = envNumber('MAX_QUEUED_JOBS', 20, 1);
 const rateLimitWindowMs = envNumber('RATE_LIMIT_WINDOW_MS', 60_000, 1000);
 const rateLimitMax = envNumber('RATE_LIMIT_MAX', 240, 1);
+const rateLimitMaxBuckets = envNumber('RATE_LIMIT_MAX_BUCKETS', 5000, 100);
 const jobCreateRateLimitMax = envNumber('JOB_CREATE_RATE_LIMIT_MAX', 10, 1);
 const jobPollRateLimitMax = envNumber('JOB_POLL_RATE_LIMIT_MAX', 240, 1);
 const drawSaveRateLimitMax = envNumber('DRAW_SAVE_RATE_LIMIT_MAX', 12, 1);
 const avatarRateLimitMax = envNumber('AVATAR_RATE_LIMIT_MAX', 240, 1);
+const feedbackRateLimitMax = envNumber('FEEDBACK_RATE_LIMIT_MAX', 4, 1);
+const maxFeedbackBodyBytes = envNumber('MAX_FEEDBACK_BODY_BYTES', 16 * 1024, 2048);
+const maxFeedbackEntries = envNumber('MAX_FEEDBACK_ENTRIES', 500, 20);
+const feedbackDuplicateWindowMs = envNumber('FEEDBACK_DUPLICATE_WINDOW_MS', 10 * 60_000, 60_000);
 const maxCookieBytes = envNumber('MAX_COOKIE_BYTES', 16_384, 1024);
+const maxRepostJobBodyBytes = envNumber('MAX_REPOST_JOB_BODY_BYTES', 64 * 1024, 16 * 1024);
+const maxWeiboResponseBytes = envNumber('MAX_WEIBO_RESPONSE_BYTES', 4 * 1024 * 1024, 64 * 1024);
+const maxCandidates = envNumber('MAX_CANDIDATES', 20_000, 100);
 const maxStoredCookies = envNumber('MAX_STORED_COOKIES', 30, 1);
 const avatarProxyMaxBytes = envNumber('AVATAR_PROXY_MAX_BYTES', 512 * 1024, 16 * 1024);
 const avatarCacheMaxBytes = envNumber('AVATAR_CACHE_MAX_BYTES', 12 * 1024 * 1024, 1024 * 1024);
@@ -97,13 +121,23 @@ const officialPageDelayMs = envNumber('OFFICIAL_PAGE_DELAY_MS', 900, 0);
 const desktopPageDelayMs = envNumber('DESKTOP_PAGE_DELAY_MS', 1200, 0);
 const legacyPageDelayMs = envNumber('LEGACY_PAGE_DELAY_MS', 1200, 0);
 const mobilePageDelayMs = envNumber('MOBILE_PAGE_DELAY_MS', 1600, 0);
+const pageCooldownEvery = envNumber('PAGE_COOLDOWN_EVERY', 8, 2);
+const pageCooldownMs = envNumber('PAGE_COOLDOWN_MS', 5000, 0);
+const weiboThrottleRetryMax = envNumber('WEIBO_THROTTLE_RETRY_MAX', 2, 0);
+const weiboThrottleBackoffMs = envNumber('WEIBO_THROTTLE_BACKOFF_MS', 15_000, 1000);
+const weiboThrottleMaxWaitMs = envNumber('WEIBO_THROTTLE_MAX_WAIT_MS', 120_000, 1000);
 const sameStatusRequestGapMs = envNumber('SAME_STATUS_REQUEST_GAP_MS', 3000, 0);
 const weiboLoginSessionTtlMs = envNumber('WEIBO_LOGIN_SESSION_TTL_MS', 8 * 60_000, 60_000);
 const weiboKeepaliveIntervalMs = envNumber('WEIBO_KEEPALIVE_INTERVAL_MS', 12 * 60 * 60_000, 60_000);
 const weiboKeepaliveStartupDelayMs = envNumber('WEIBO_KEEPALIVE_STARTUP_DELAY_MS', 90_000, 10_000);
+const weiboKeepaliveRetryMs = envNumber('WEIBO_KEEPALIVE_RETRY_MS', 30 * 60_000, 60_000);
 const weiboBrowserLaunchTimeoutMs = envNumber('WEIBO_BROWSER_LAUNCH_TIMEOUT_MS', 60_000, 10_000);
 const maxDrawAttemptBodyBytes = envNumber('MAX_DRAW_ATTEMPT_BODY_BYTES', 256 * 1024, 16 * 1024);
+const maxDrawAttemptEntries = envNumber('MAX_DRAW_ATTEMPTS', 5000, 100);
+const maxDrawAttemptBytes = envNumber('MAX_DRAW_ATTEMPT_BYTES', 8 * 1024 * 1024, 256 * 1024);
 const maxDrawSaveBodyBytes = envNumber('MAX_DRAW_SAVE_BODY_BYTES', 2 * 1024 * 1024, 64 * 1024);
+const maxDrawResultGroups = envNumber('MAX_DRAW_RESULT_GROUPS', 20, 1);
+const maxDrawWinners = envNumber('MAX_DRAW_WINNERS', 500, 1);
 const maxSavedDraws = envNumber('MAX_SAVED_DRAWS', 1000, 20);
 const maxSavedDrawBytes = envNumber('MAX_SAVED_DRAW_BYTES', 100 * 1024 * 1024, 1024 * 1024);
 const enableWeiboKeepalive = !/^(0|false|no)$/i.test(String(process.env.WEIBO_KEEPALIVE_ENABLED ?? '1').trim());
@@ -138,6 +172,7 @@ let weiboLoginSession = null;
 let weiboKeepaliveRunning = false;
 let weiboBrowserOperation = null;
 let weiboKeepaliveContext = null;
+let weiboKeepaliveTimer = null;
 const adminLoginLimiter = createLoginLimiter({ maxAttempts: 5, windowMs: 15 * 60_000 });
 const revokedAdminSessions = new Map();
 const memorySamples = [];
@@ -153,6 +188,10 @@ const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 eventLoopDelay.enable();
 let metricsWrite = Promise.resolve();
 let adminEventWrite = Promise.resolve();
+let cookieStoreOperation = Promise.resolve();
+let weiboLoginStateOperation = Promise.resolve();
+let drawAttemptOperation = Promise.resolve();
+let feedbackWrite = Promise.resolve();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -208,10 +247,15 @@ function securityHeaders() {
     'content-security-policy': [
       "default-src 'self'",
       "script-src 'self'",
+      "script-src-attr 'none'",
       "style-src 'self' 'unsafe-inline'",
+      "font-src 'self' data:",
       "img-src 'self' data: blob: https:",
       `connect-src ${cspConnectSources()}`,
       "worker-src 'self' blob:",
+      "frame-src 'none'",
+      "media-src 'none'",
+      "manifest-src 'self'",
       "object-src 'none'",
       "base-uri 'self'",
       "form-action 'self'",
@@ -228,14 +272,11 @@ function isApiPath(pathname) {
   return pathname === '/api/health' || pathname.startsWith('/api/');
 }
 
-function firstHeaderValue(value) {
-  return Array.isArray(value) ? value[0] || '' : String(value || '');
-}
-
 function requestOriginSet(req) {
-  const host = (firstHeaderValue(req.headers['x-forwarded-host']) || firstHeaderValue(req.headers.host)).trim();
+  const forwardedHost = trustedForwardedHeader(req, 'x-forwarded-host');
+  const host = (forwardedHost || firstHeaderValue(req.headers.host)).trim();
   if (!host) return new Set();
-  const forwardedProto = firstHeaderValue(req.headers['x-forwarded-proto']).split(',')[0].trim();
+  const forwardedProto = trustedForwardedHeader(req, 'x-forwarded-proto').split(',')[0].trim();
   return new Set([
     forwardedProto ? `${forwardedProto}://${host}` : '',
     `https://${host}`,
@@ -249,7 +290,7 @@ function isAllowedCorsOrigin(req, origin) {
   if (!normalized) return false;
   if (requestOriginSet(req).has(normalized)) return true;
   if (configuredCorsOrigins.includes(normalized)) return true;
-  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(normalized);
+  return !isProduction && /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(?::\d+)?$/i.test(normalized);
 }
 
 function applyCors(req, res, pathname) {
@@ -259,7 +300,7 @@ function applyCors(req, res, pathname) {
   res.setHeader('access-control-allow-origin', origin);
   res.setHeader('vary', 'Origin');
   res.setHeader('access-control-allow-methods', 'GET,POST,DELETE,OPTIONS');
-  res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key, x-admin-csrf');
+  res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key, x-admin-csrf, x-cookie-write-key');
   res.setHeader('access-control-max-age', '86400');
   return true;
 }
@@ -280,7 +321,16 @@ function requestApiKey(req) {
 }
 
 function configuredAdminAccount() {
-  return Boolean(adminUsername && adminPasswordHash && adminSessionSecret);
+  return Boolean(
+    adminUsername
+    && adminPasswordHash
+    && Buffer.byteLength(adminSessionSecret, 'utf8') >= 32,
+  );
+}
+
+function requestCookieWriteKey(req) {
+  const value = req.headers['x-cookie-write-key'];
+  return Array.isArray(value) ? value[0] || '' : String(value || '');
 }
 
 function requestAdminSession(req) {
@@ -325,6 +375,7 @@ function authorizeApiRequest(req, pathname) {
     req.method === 'OPTIONS'
     || pathname === '/api/health'
     || (req.method === 'GET' && pathname === '/api/weibo/avatar')
+    || (req.method === 'POST' && pathname === '/api/feedback')
     || (req.method === 'POST' && pathname === '/api/admin/login')
   ) {
     return { ok: true, mode: 'public' };
@@ -339,12 +390,11 @@ function authorizeApiRequest(req, pathname) {
 }
 
 function canWriteCookieStore(req) {
-  return !cookieWriteKey || timingSafeEqualText(requestApiKey(req), cookieWriteKey);
+  return Boolean(cookieWriteKey) && timingSafeEqualText(requestCookieWriteKey(req), cookieWriteKey);
 }
 
 function clientRateKey(req) {
-  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return forwarded || req.socket.remoteAddress || 'unknown';
+  return clientAddress(req);
 }
 
 function normalizedRatePath(pathname) {
@@ -356,6 +406,7 @@ function rateLimitMaxForPath(req, pathname) {
   if (req.method === 'GET' && pathname.startsWith('/api/weibo/reposts/jobs/')) return jobPollRateLimitMax;
   if (req.method === 'GET' && pathname === '/api/weibo/avatar') return avatarRateLimitMax;
   if (req.method === 'POST' && pathname === '/api/draws') return drawSaveRateLimitMax;
+  if (req.method === 'POST' && pathname === '/api/feedback') return feedbackRateLimitMax;
   return rateLimitMax;
 }
 
@@ -365,23 +416,44 @@ function checkRateLimit(req, pathname) {
   const limit = rateLimitMaxForPath(req, pathname);
   const key = `${clientRateKey(req)}:${normalizedRatePath(pathname)}`;
   const current = rateLimitBuckets.get(key);
-  const bucket = current && current.resetAt > now
-    ? current
-    : { count: 0, resetAt: now + rateLimitWindowMs };
+  let bucket = current && current.resetAt > now ? current : null;
+  if (!bucket) {
+    if (current) rateLimitBuckets.delete(key);
+    if (rateLimitBuckets.size >= rateLimitMaxBuckets) {
+      pruneRateLimitBuckets(now);
+    }
+    while (rateLimitBuckets.size >= rateLimitMaxBuckets) {
+      rateLimitBuckets.delete(rateLimitBuckets.keys().next().value);
+    }
+    bucket = { count: 0, resetAt: now + rateLimitWindowMs };
+  }
   bucket.count += 1;
   rateLimitBuckets.set(key, bucket);
-  if (rateLimitBuckets.size > 5000) {
-    for (const [entryKey, entry] of rateLimitBuckets.entries()) {
-      if (entry.resetAt <= now) rateLimitBuckets.delete(entryKey);
-    }
-  }
   return {
     ok: bucket.count <= limit,
     retryAfter: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
   };
 }
 
+function pruneRateLimitBuckets(now = Date.now()) {
+  for (const [entryKey, entry] of rateLimitBuckets) {
+    if (entry.resetAt <= now) rateLimitBuckets.delete(entryKey);
+  }
+}
+
 async function readJsonBody(req, maxBytes = 1024 * 1024) {
+  const contentType = firstHeaderValue(req.headers['content-type']).split(';')[0].trim().toLowerCase();
+  if (!/^application\/(?:[a-z0-9.+-]+\+)?json$/.test(contentType)) {
+    const error = new Error('请求必须使用 application/json');
+    error.status = 415;
+    throw error;
+  }
+  const declaredLength = Number(firstHeaderValue(req.headers['content-length']));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    const error = new Error('请求体过大');
+    error.status = 413;
+    throw error;
+  }
   let raw = '';
   let bytes = 0;
   for await (const chunk of req) {
@@ -403,13 +475,27 @@ async function readJsonBody(req, maxBytes = 1024 * 1024) {
   }
 }
 
-async function readResponseBuffer(response, maxBytes) {
+async function writeJsonFileAtomic(filePath, payload, options = {}) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: options.directoryMode || 0o700 });
+  const temporary = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  const content = `${JSON.stringify(payload, null, 2)}\n`;
+  try {
+    await fs.writeFile(temporary, content, { encoding: 'utf8', mode: options.fileMode || 0o600 });
+    await fs.chmod(temporary, options.fileMode || 0o600).catch(() => {});
+    await fs.rename(temporary, filePath);
+    await fs.chmod(filePath, options.fileMode || 0o600).catch(() => {});
+  } finally {
+    await fs.rm(temporary, { force: true }).catch(() => {});
+  }
+}
+
+async function readResponseBuffer(response, maxBytes, tooLargeMessage = '返回内容过大') {
   const chunks = [];
   let total = 0;
   for await (const chunk of response.body || []) {
     total += chunk.byteLength;
     if (total > maxBytes) {
-      const error = new Error('头像文件过大');
+      const error = new Error(tooLargeMessage);
       error.status = 413;
       throw error;
     }
@@ -490,11 +576,12 @@ async function handleAvatarProxy(req, res, url) {
   }
   const declaredLength = Number(response.headers.get('content-length') || 0);
   if (declaredLength > avatarProxyMaxBytes) {
+    await response.body?.cancel().catch(() => {});
     const error = new Error('头像文件过大');
     error.status = 413;
     throw error;
   }
-  const body = await readResponseBuffer(response, avatarProxyMaxBytes);
+  const body = await readResponseBuffer(response, avatarProxyMaxBytes, '头像文件过大');
   if (!body.length) {
     const error = new Error('头像服务返回了空图片');
     error.status = 502;
@@ -563,21 +650,21 @@ function canonicalStatusUrl(statusId) {
 
 function extractStatusId(input) {
   const text = String(input || '').trim();
-  if (!text) return '';
-  if (/^\d+$/.test(text)) return text;
-  if (/^[0-9A-Za-z]+$/.test(text) && text.length >= 5) return bidToMid(text);
+  if (!text || text.length > 2048) return '';
+  if (/^\d+$/.test(text) && text.length <= 64) return text;
+  if (/^[0-9A-Za-z]+$/.test(text) && text.length >= 5 && text.length <= 64) return bidToMid(text);
 
   try {
     const url = new URL(text);
     if (!isWeiboUrlHost(url.hostname)) return '';
     const queryCandidate = url.searchParams.get('id') || url.searchParams.get('mid') || url.searchParams.get('mblogid');
-    if (queryCandidate && /^[0-9A-Za-z]+$/.test(queryCandidate)) return bidToMid(queryCandidate);
+    if (queryCandidate && /^[0-9A-Za-z]{1,64}$/.test(queryCandidate)) return bidToMid(queryCandidate);
     const pathParts = url.pathname.split('/').filter(Boolean);
-    const candidate = [...pathParts].reverse().find((part) => /^[0-9A-Za-z]+$/.test(part) && part.length >= 5);
+    const candidate = [...pathParts].reverse().find((part) => /^[0-9A-Za-z]{5,64}$/.test(part));
     return candidate ? bidToMid(candidate) : '';
   } catch {
     const match = text.match(/(?:status|detail|weibo\.com\/\d+)\/([0-9A-Za-z]+)/i);
-    return match ? bidToMid(match[1]) : '';
+    return match?.[1]?.length <= 64 ? bidToMid(match[1]) : '';
   }
 }
 
@@ -699,6 +786,38 @@ async function getDrawCountForStatus(statusId, auditHash = '') {
   };
 }
 
+function appendDrawAttempt(payload) {
+  const previous = drawAttemptOperation;
+  let release;
+  const currentOperation = new Promise((resolve) => { release = resolve; });
+  drawAttemptOperation = previous.catch(() => {}).then(() => currentOperation);
+  return previous
+    .catch(() => {})
+    .then(async () => {
+      await fs.mkdir(path.dirname(drawAttemptsFile), { recursive: true });
+      await fs.appendFile(drawAttemptsFile, `${JSON.stringify(payload)}\n`, 'utf8');
+      const stat = await fs.stat(drawAttemptsFile).catch(() => null);
+      if (!stat) return;
+      const lines = (await fs.readFile(drawAttemptsFile, 'utf8'))
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean)
+      if (lines.length <= maxDrawAttemptEntries && stat.size <= maxDrawAttemptBytes) return;
+      const retained = retainLatestLines(lines, {
+        maxLines: maxDrawAttemptEntries,
+        maxBytes: maxDrawAttemptBytes,
+      });
+      const temporary = `${drawAttemptsFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
+      try {
+        await fs.writeFile(temporary, `${retained.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
+        await fs.rename(temporary, drawAttemptsFile);
+      } finally {
+        await fs.rm(temporary, { force: true }).catch(() => {});
+      }
+    })
+    .finally(() => release());
+}
+
 async function recordDrawAttempt(body) {
   const statusId = extractStatusId(body.statusId || body.statusUrl || body.sourceMeta?.statusId || body.sourceMeta?.statusUrl);
   if (!statusId) {
@@ -707,7 +826,6 @@ async function recordDrawAttempt(body) {
     throw error;
   }
 
-  await fs.mkdir(path.dirname(drawAttemptsFile), { recursive: true });
   const drawnAt = new Date().toISOString();
   const statusUrl = normalizeStatusUrl(body.statusUrl || body.sourceMeta?.statusUrl, statusId);
   const attemptHash = crypto.createHash('sha256')
@@ -726,17 +844,17 @@ async function recordDrawAttempt(body) {
     attemptId: attemptHash.slice(0, 16),
     statusId,
     statusUrl,
-    source: body.source || '',
+    source: String(body.source || '').slice(0, 80),
     drawnAt,
-    seed: body.seed || '',
+    seed: String(body.seed || '').slice(0, 120),
     eligibleCount: finiteNumber(body.eligibleCount, null),
     candidateCount: finiteNumber(body.candidateCount, null),
     prizeCount: finiteNumber(body.prizeCount, null),
-    candidateDigest: body.candidateDigest || '',
-    rules: body.rules || null,
+    candidateDigest: String(body.candidateDigest || '').slice(0, 120),
+    rules: publicDrawRules(body.rules),
   };
 
-  await fs.appendFile(drawAttemptsFile, `${JSON.stringify(payload)}\n`, 'utf8');
+  await appendDrawAttempt(payload);
   const stats = await getAttemptCountForStatus(statusId);
   return {
     ok: true,
@@ -786,11 +904,11 @@ function candidateKey(raw) {
 
 function normalizeCandidate(item, source) {
   const user = item?.user || item?.mblog?.user || item?.retweeted_status?.user || {};
-  const uid = String(user.idstr || user.id || item.uid || item.user_id || '').trim();
-  const screenName = String(user.screen_name || user.name || item.screen_name || item.name || '未命名用户').trim();
-  const text = stripHtml(item.text || item.raw_text || item.mblog?.text || item.reason || '');
-  const createdAt = item.created_at || item.createdAt || item.mblog?.created_at || '';
-  const repostId = String(item.idstr || item.id || item.mid || item.mblog?.idstr || item.mblog?.id || '').trim();
+  const uid = String(user.idstr || user.id || item.uid || item.user_id || '').trim().slice(0, 80);
+  const screenName = String(user.screen_name || user.name || item.screen_name || item.name || '未命名用户').trim().slice(0, 120);
+  const text = stripHtml(item.text || item.raw_text || item.mblog?.text || item.reason || '').slice(0, 1000);
+  const createdAt = String(item.created_at || item.createdAt || item.mblog?.created_at || '').slice(0, 100);
+  const repostId = String(item.idstr || item.id || item.mid || item.mblog?.idstr || item.mblog?.id || '').trim().slice(0, 100);
 
   return {
     id: candidateKey({ uid, screenName, repostId, text, createdAt }),
@@ -802,8 +920,15 @@ function normalizeCandidate(item, source) {
     text,
     createdAt,
     repostId,
-    source,
+    source: String(source || '').slice(0, 80),
   };
+}
+
+function appendNormalizedCandidates(target, items, source) {
+  const remaining = Math.max(0, maxCandidates - target.length);
+  if (!remaining) return true;
+  target.push(...items.slice(0, remaining).map((item) => normalizeCandidate(item, source)));
+  return target.length >= maxCandidates;
 }
 
 function uniqueCandidates(candidates) {
@@ -814,6 +939,7 @@ function uniqueCandidates(candidates) {
     if (!key || seen.has(key)) continue;
     seen.add(key);
     result.push(candidate);
+    if (result.length >= maxCandidates) break;
   }
   return result;
 }
@@ -827,21 +953,26 @@ function uniqueByRepostId(candidates) {
     if (!key || seen.has(key)) continue;
     seen.add(key);
     result.push(candidate);
+    if (result.length >= maxCandidates) break;
   }
   return result;
 }
 
 function safeError(error) {
+  const rawStatus = Number(error?.status);
+  const status = Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599 ? rawStatus : 500;
   return {
     message: redactSensitiveText(error?.message || '未知错误'),
-    status: error?.status || 500,
+    status,
   };
 }
 
 function redactSensitiveText(value) {
   return String(value || '')
     .replace(/((?:SUB|SUBP|ALF|SCF|SSOLoginState|XSRF-TOKEN|MLOGIN|M_WEIBOCN_PARAMS)=)[^;\s]+/gi, '$1[redacted]')
-    .replace(/(cookie\s*[:=]\s*)[^\n；。]+/gi, '$1[redacted]');
+    .replace(/(cookie\s*[:=]\s*)[^\n；。]+/gi, '$1[redacted]')
+    .replace(/(authorization\s*[:=]\s*bearer\s+)[^\s,;]+/gi, '$1[redacted]')
+    .replace(/((?:access_token|api[_-]?key|token)\s*[:=]\s*)[^\s,;&]+/gi, '$1[redacted]');
 }
 
 // Cookie and browser sessions
@@ -951,9 +1082,19 @@ async function writeCookieStore(store) {
   if (disableCookieStore) return payload;
   await fs.mkdir(authDir, { recursive: true, mode: 0o700 });
   await fs.chmod(authDir, 0o700).catch(() => {});
-  await fs.writeFile(cookieStoreFile, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await fs.chmod(cookieStoreFile, 0o600).catch(() => {});
+  await writeJsonFileAtomic(cookieStoreFile, payload, { directoryMode: 0o700, fileMode: 0o600 });
   return payload;
+}
+
+function withCookieStoreLock(task) {
+  const previous = cookieStoreOperation;
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  cookieStoreOperation = previous.catch(() => {}).then(() => current);
+  return previous
+    .catch(() => {})
+    .then(task)
+    .finally(() => release());
 }
 
 function sortCookieEntries(entries, preferredId = '') {
@@ -1026,84 +1167,90 @@ async function checkCookieValidity(cookie) {
 }
 
 async function upsertStoredCookie(cookie, validation = {}) {
-  const cleaned = cleanCookieHeader(cookie);
-  if (!cleaned) return { cookie: '', savedAt: '' };
-  assertCookieHeaderInput(cleaned);
-  const now = new Date().toISOString();
-  const id = cookieFingerprint(cleaned);
-  const store = await readCookieStore();
-  const existing = store.cookies.find((entry) => entry.id === id);
-  const user = normalizeCookieUser(validation.user || existing?.user);
-  const entry = {
-    id,
-    cookie: cleaned,
-    savedAt: existing?.savedAt || now,
-    updatedAt: now,
-    lastCheckedAt: validation.checkedAt || existing?.lastCheckedAt || '',
-    lastValidAt: validation.lastValidAt || existing?.lastValidAt || '',
-    lastError: validation.ok === false ? validation.message || 'Cookie 校验失败' : '',
-    ...(user.id || user.screenName ? { user } : {}),
-  };
-  if (disableCookieStore) return entry;
-  const cookies = [entry, ...store.cookies.filter((item) => item.id !== id)];
-  await writeCookieStore({ ...store, activeId: id, cookies });
-  return entry;
+  return withCookieStoreLock(async () => {
+    const cleaned = cleanCookieHeader(cookie);
+    if (!cleaned) return { cookie: '', savedAt: '' };
+    assertCookieHeaderInput(cleaned);
+    const now = new Date().toISOString();
+    const id = cookieFingerprint(cleaned);
+    const store = await readCookieStore();
+    const existing = store.cookies.find((entry) => entry.id === id);
+    const user = normalizeCookieUser(validation.user || existing?.user);
+    const entry = {
+      id,
+      cookie: cleaned,
+      savedAt: existing?.savedAt || now,
+      updatedAt: now,
+      lastCheckedAt: validation.checkedAt || existing?.lastCheckedAt || '',
+      lastValidAt: validation.lastValidAt || existing?.lastValidAt || '',
+      lastError: validation.ok === false ? validation.message || 'Cookie 校验失败' : '',
+      ...(user.id || user.screenName ? { user } : {}),
+    };
+    if (disableCookieStore) return entry;
+    const cookies = [entry, ...store.cookies.filter((item) => item.id !== id)];
+    await writeCookieStore({ ...store, activeId: id, cookies });
+    return entry;
+  });
 }
 
 async function removeStoredCookie(idOrCookie) {
-  const id = String(idOrCookie || '').includes(';') ? cookieFingerprint(idOrCookie) : String(idOrCookie || '');
-  const store = await readCookieStore();
-  const cookies = store.cookies.filter((entry) => entry.id !== id);
-  if (cookies.length === store.cookies.length) return cookieStoreSummary(store, { removedCount: 0 });
-  const nextStore = await writeCookieStore({
-    ...store,
-    activeId: store.activeId === id ? cookies[0]?.id || '' : store.activeId,
-    cookies,
+  return withCookieStoreLock(async () => {
+    const id = String(idOrCookie || '').includes(';') ? cookieFingerprint(idOrCookie) : String(idOrCookie || '');
+    const store = await readCookieStore();
+    const cookies = store.cookies.filter((entry) => entry.id !== id);
+    if (cookies.length === store.cookies.length) return cookieStoreSummary(store, { removedCount: 0 });
+    const nextStore = await writeCookieStore({
+      ...store,
+      activeId: store.activeId === id ? cookies[0]?.id || '' : store.activeId,
+      cookies,
+    });
+    return cookieStoreSummary(nextStore, { removedCount: 1 });
   });
-  return cookieStoreSummary(nextStore, { removedCount: 1 });
 }
 
 async function validateStoredCookies(reportProgress) {
-  if (disableCookieStore) {
-    return cookieStoreSummary({ version: 2, activeId: '', updatedAt: '', cookies: [] }, { cookieStoreDisabled: true });
-  }
-  const store = await readCookieStore();
-  const kept = [];
-  let removedCount = 0;
-
-  for (let index = 0; index < store.cookies.length; index += 1) {
-    const entry = store.cookies[index];
-    reportProgress?.({
-      phase: 'cookie-check',
-      percent: Math.min(8, 1 + index),
-      message: `校验服务器 Cookie：${index + 1}/${store.cookies.length}`,
-    });
-    const validation = await checkCookieValidity(entry.cookie);
-    if (validation.ok) {
-      const user = normalizeCookieUser(validation.user || entry.user);
-      kept.push({
-        ...entry,
-        lastCheckedAt: validation.checkedAt,
-        lastValidAt: validation.lastValidAt,
-        lastError: '',
-        ...(user.id || user.screenName ? { user } : {}),
-      });
-    } else if (validation.invalid) {
-      removedCount += 1;
-    } else {
-      kept.push({
-        ...entry,
-        lastCheckedAt: validation.checkedAt,
-        lastError: validation.message,
-      });
+  return withCookieStoreLock(async () => {
+    if (disableCookieStore) {
+      return cookieStoreSummary({ version: 2, activeId: '', updatedAt: '', cookies: [] }, { cookieStoreDisabled: true });
     }
-  }
+    const store = await readCookieStore();
+    const kept = [];
+    let removedCount = 0;
 
-  const active = sortCookieEntries(kept, store.activeId)[0]?.id || '';
-  const nextStore = await writeCookieStore({ ...store, activeId: active, cookies: kept });
-  return cookieStoreSummary(nextStore, {
-    checkedCount: store.cookies.length,
-    removedCount,
+    for (let index = 0; index < store.cookies.length; index += 1) {
+      const entry = store.cookies[index];
+      reportProgress?.({
+        phase: 'cookie-check',
+        percent: Math.min(8, 1 + index),
+        message: `校验服务器 Cookie：${index + 1}/${store.cookies.length}`,
+      });
+      const validation = await checkCookieValidity(entry.cookie);
+      if (validation.ok) {
+        const user = normalizeCookieUser(validation.user || entry.user);
+        kept.push({
+          ...entry,
+          lastCheckedAt: validation.checkedAt,
+          lastValidAt: validation.lastValidAt,
+          lastError: '',
+          ...(user.id || user.screenName ? { user } : {}),
+        });
+      } else if (validation.invalid) {
+        removedCount += 1;
+      } else {
+        kept.push({
+          ...entry,
+          lastCheckedAt: validation.checkedAt,
+          lastError: validation.message,
+        });
+      }
+    }
+
+    const active = sortCookieEntries(kept, store.activeId)[0]?.id || '';
+    const nextStore = await writeCookieStore({ ...store, activeId: active, cookies: kept });
+    return cookieStoreSummary(nextStore, {
+      checkedCount: store.cookies.length,
+      removedCount,
+    });
   });
 }
 
@@ -1137,34 +1284,59 @@ async function readWeiboLoginState() {
   }
 }
 
+function withWeiboLoginStateLock(task) {
+  const previous = weiboLoginStateOperation;
+  let release;
+  const currentOperation = new Promise((resolve) => { release = resolve; });
+  weiboLoginStateOperation = previous.catch(() => {}).then(() => currentOperation);
+  return previous
+    .catch(() => {})
+    .then(task)
+    .finally(() => release());
+}
+
 async function writeWeiboLoginState(patch = {}) {
-  const current = await readWeiboLoginState();
-  const cleanPatch = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
-  const next = emptyWeiboLoginState({
-    ...current,
-    ...cleanPatch,
-    updatedAt: new Date().toISOString(),
+  return await withWeiboLoginStateLock(async () => {
+    const current = await readWeiboLoginState();
+    const cleanPatch = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+    const next = emptyWeiboLoginState({
+      ...current,
+      ...cleanPatch,
+      updatedAt: new Date().toISOString(),
+    });
+    await fs.mkdir(authDir, { recursive: true, mode: 0o700 });
+    await fs.chmod(authDir, 0o700).catch(() => {});
+    await writeJsonFileAtomic(weiboLoginStateFile, next, { directoryMode: 0o700, fileMode: 0o600 });
+    return next;
   });
-  await fs.mkdir(authDir, { recursive: true, mode: 0o700 });
-  await fs.chmod(authDir, 0o700).catch(() => {});
-  await fs.writeFile(weiboLoginStateFile, `${JSON.stringify(next, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  await fs.chmod(weiboLoginStateFile, 0o600).catch(() => {});
-  return next;
 }
 
 async function appendWeiboLoginEvent(event = {}, patch = {}) {
-  const current = await readWeiboLoginState();
-  const nextState = appendKeepaliveEvent(current, event, 12);
-  return await writeWeiboLoginState({
-    ...patch,
-    history: nextState.history,
+  return await withWeiboLoginStateLock(async () => {
+    const current = await readWeiboLoginState();
+    const nextState = appendKeepaliveEvent(current, event, 12);
+    const cleanPatch = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+    const next = emptyWeiboLoginState({
+      ...current,
+      ...cleanPatch,
+      history: nextState.history,
+      updatedAt: new Date().toISOString(),
+    });
+    await fs.mkdir(authDir, { recursive: true, mode: 0o700 });
+    await fs.chmod(authDir, 0o700).catch(() => {});
+    await writeJsonFileAtomic(weiboLoginStateFile, next, { directoryMode: 0o700, fileMode: 0o600 });
+    return next;
   });
 }
 
 function nextWeiboKeepaliveAt(state) {
-  const last = Date.parse(state.lastRefreshAt || state.lastLoginAt || '');
-  if (!Number.isFinite(last)) return '';
-  return new Date(last + weiboKeepaliveIntervalMs).toISOString();
+  const lastSuccess = Date.parse(state.lastRefreshAt || state.lastLoginAt || '');
+  const lastFailure = Date.parse(state.lastFailureAt || '');
+  if (Number.isFinite(lastFailure) && (!Number.isFinite(lastSuccess) || lastFailure > lastSuccess)) {
+    return new Date(lastFailure + weiboKeepaliveRetryMs).toISOString();
+  }
+  if (!Number.isFinite(lastSuccess)) return '';
+  return new Date(lastSuccess + weiboKeepaliveIntervalMs).toISOString();
 }
 
 async function publicWeiboLoginState(extra = {}) {
@@ -1175,6 +1347,8 @@ async function publicWeiboLoginState(extra = {}) {
     enabled: enableWeiboKeepalive,
     intervalMs: weiboKeepaliveIntervalMs,
     intervalText: formatDurationMs(weiboKeepaliveIntervalMs),
+    retryMs: weiboKeepaliveRetryMs,
+    retryText: formatDurationMs(weiboKeepaliveRetryMs),
     startupDelayMs: weiboKeepaliveStartupDelayMs,
     startupDelayText: formatDurationMs(weiboKeepaliveStartupDelayMs),
     active: Boolean(weiboLoginSession),
@@ -1222,7 +1396,7 @@ async function runWeiboBrowserOperation(label, task) {
   weiboBrowserOperation = operation;
   try {
     return await task();
-  } finally {
+      } finally {
     if (weiboBrowserOperation === operation) weiboBrowserOperation = null;
   }
 }
@@ -1613,32 +1787,44 @@ async function refreshCookieFromBrowserProfile(reason = 'manual-refresh') {
       weiboKeepaliveContext = null;
       weiboKeepaliveRunning = false;
       await collectSystemSample(`${reason}:after`).catch(() => {});
+      scheduleWeiboKeepalive();
     }
   });
 }
 
 function scheduleWeiboKeepalive() {
-  if (!enableWeiboKeepalive) return;
-  setTimeout(async () => {
-    try {
-      const state = await readWeiboLoginState();
-      const nextAt = nextWeiboKeepaliveAt(state);
-      if (nextAt && Date.now() >= Date.parse(nextAt)) {
-        await refreshCookieFromBrowserProfile('scheduled-refresh');
+  if (!enableWeiboKeepalive || shutdownStarted) return;
+  clearTimeout(weiboKeepaliveTimer);
+  weiboKeepaliveTimer = null;
+
+  Promise.resolve()
+    .then(async () => {
+      let delayMs = weiboKeepaliveStartupDelayMs;
+      try {
+        const state = await readWeiboLoginState();
+        const nextAt = nextWeiboKeepaliveAt(state);
+        if (nextAt) delayMs = Math.max(1000, Date.parse(nextAt) - Date.now());
+      } catch (error) {
+        console.warn(`Weibo keepalive schedule check failed: ${safeError(error).message}`);
       }
-    } catch (error) {
-      console.warn(`Weibo keepalive startup check failed: ${safeError(error).message}`);
-    } finally {
-      setInterval(() => {
-        refreshCookieFromBrowserProfile('scheduled-refresh').catch((error) => {
-          console.warn(`Weibo keepalive interval failed: ${safeError(error).message}`);
-        });
-      }, weiboKeepaliveIntervalMs).unref?.();
-    }
-  }, weiboKeepaliveStartupDelayMs).unref?.();
+      const maxTimerDelay = 2_147_000_000;
+      weiboKeepaliveTimer = setTimeout(async () => {
+        try {
+          await refreshCookieFromBrowserProfile('scheduled-refresh');
+        } catch (error) {
+          console.warn(`Weibo keepalive timer failed: ${safeError(error).message}`);
+        } finally {
+          scheduleWeiboKeepalive();
+        }
+      }, Math.min(maxTimerDelay, delayMs));
+      weiboKeepaliveTimer.unref?.();
+    })
+    .catch((error) => {
+      console.warn(`Weibo keepalive scheduler failed: ${safeError(error).message}`);
+    });
 }
 
-async function prepareCookieCandidates(body, reportProgress) {
+async function prepareCookieCandidates(body, reportProgress, { allowCookieStoreWrite = false } = {}) {
   const failures = [];
   const warnings = [];
   const supplied = cleanCookieHeader(body.mobileCookie);
@@ -1677,7 +1863,12 @@ async function prepareCookieCandidates(body, reportProgress) {
     };
   }
 
-  const summary = await validateStoredCookies(reportProgress);
+  const store = allowCookieStoreWrite
+    ? null
+    : await readCookieStore();
+  const summary = allowCookieStoreWrite
+    ? await validateStoredCookies(reportProgress)
+    : cookieStoreSummary(store, { checkSkipped: Boolean(cookieWriteKey) });
   if (disableCookieStore) {
     return {
       candidates: [],
@@ -1690,13 +1881,13 @@ async function prepareCookieCandidates(body, reportProgress) {
       },
     };
   }
-  const store = await readCookieStore();
-  const candidates = sortCookieEntries(store.cookies, store.activeId);
+  const currentStore = store || await readCookieStore();
+  const candidates = sortCookieEntries(currentStore.cookies, currentStore.activeId);
   return { candidates, failures, warnings, summary };
 }
 
-async function fetchCookieRepostsWithPool({ statusId, body, reportProgress }) {
-  const { candidates, failures, warnings, summary } = await prepareCookieCandidates(body, reportProgress);
+async function fetchCookieRepostsWithPool({ statusId, body, reportProgress, allowCookieStoreWrite = false }) {
+  const { candidates, failures, warnings, summary } = await prepareCookieCandidates(body, reportProgress, { allowCookieStoreWrite });
   if (!candidates.length) {
     const detail = failures.length ? `；${failures.join('；')}` : '';
     const error = new Error(`未填写用户 Cookie，服务器端也没有可用微博 Cookie${detail}`);
@@ -1716,7 +1907,7 @@ async function fetchCookieRepostsWithPool({ statusId, body, reportProgress }) {
 
     try {
       const result = await fetchCookieReposts({ statusId, mobileCookie: entry.cookie, reportProgress });
-      if (!entry.transient) {
+      if (!entry.transient && allowCookieStoreWrite) {
         await upsertStoredCookie(entry.cookie, {
           ok: true,
           checkedAt: new Date().toISOString(),
@@ -1741,7 +1932,7 @@ async function fetchCookieRepostsWithPool({ statusId, body, reportProgress }) {
     } catch (error) {
       failures.push(`${entry.transient ? '输入的 Cookie' : `服务器 Cookie ${index + 1}`}不可用：${error.message}`);
       if (isCookieAuthError(error)) {
-        if (!entry.transient) await removeStoredCookie(entry.id);
+        if (!entry.transient && allowCookieStoreWrite) await removeStoredCookie(entry.id);
         continue;
       }
       if (index === candidates.length - 1) throw error;
@@ -1766,12 +1957,13 @@ function finiteNumber(value, fallback = null) {
 }
 
 async function fetchJson(url, options = {}) {
-  const { headers = {}, signal = AbortSignal.timeout(fetchTimeoutMs), ...rest } = options;
+  const { headers = {}, signal, onThrottle, ...rest } = options;
   let response;
   try {
-    response = await fetch(url, {
+    response = await fetchWeiboResponse(url, {
       ...rest,
       signal,
+      onThrottle,
       headers: {
         accept: 'application/json, text/plain, */*',
         ...headers,
@@ -1782,7 +1974,14 @@ async function fetchJson(url, options = {}) {
     wrapped.status = error.name === 'TimeoutError' || error.name === 'AbortError' ? 504 : 502;
     throw wrapped;
   }
-  const text = await response.text();
+  const declaredLength = Number(response.headers.get('content-length') || 0);
+  if (declaredLength > maxWeiboResponseBytes) {
+    await response.body?.cancel().catch(() => {});
+    const error = new Error('微博接口返回内容过大');
+    error.status = 502;
+    throw error;
+  }
+  const text = (await readResponseBuffer(response, maxWeiboResponseBytes, '微博接口返回内容过大')).toString('utf8');
   let json;
   try {
     json = JSON.parse(text);
@@ -1810,12 +2009,13 @@ async function fetchJson(url, options = {}) {
 }
 
 async function fetchText(url, options = {}) {
-  const { headers = {}, signal = AbortSignal.timeout(fetchTimeoutMs), ...rest } = options;
+  const { headers = {}, signal, onThrottle, ...rest } = options;
   let response;
   try {
-    response = await fetch(url, {
+    response = await fetchWeiboResponse(url, {
       ...rest,
       signal,
+      onThrottle,
       headers: {
         accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         ...headers,
@@ -1826,7 +2026,14 @@ async function fetchText(url, options = {}) {
     wrapped.status = error.name === 'TimeoutError' || error.name === 'AbortError' ? 504 : 502;
     throw wrapped;
   }
-  const text = await response.text();
+  const declaredLength = Number(response.headers.get('content-length') || 0);
+  if (declaredLength > maxWeiboResponseBytes) {
+    await response.body?.cancel().catch(() => {});
+    const error = new Error('微博页面返回内容过大');
+    error.status = 502;
+    throw error;
+  }
+  const text = (await readResponseBuffer(response, maxWeiboResponseBytes, '微博页面返回内容过大')).toString('utf8');
   if (!response.ok) {
     const error = new Error(`微博页面返回 ${response.status}`);
     error.status = response.status || 502;
@@ -1839,6 +2046,34 @@ async function sleep(ms) {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function fetchWeiboResponse(url, options = {}) {
+  const { signal: configuredSignal, onThrottle, ...requestOptions } = options;
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await fetch(url, {
+      ...requestOptions,
+      signal: configuredSignal || AbortSignal.timeout(fetchTimeoutMs),
+    });
+    if (!isWeiboThrottleStatus(response.status) || attempt >= weiboThrottleRetryMax) {
+      return response;
+    }
+
+    const delayMs = throttleRetryDelayMs({
+      retryAfter: response.headers.get('retry-after'),
+      attempt,
+      baseMs: weiboThrottleBackoffMs,
+      maxMs: weiboThrottleMaxWaitMs,
+    });
+    await response.body?.cancel().catch(() => {});
+    onThrottle?.({
+      status: response.status,
+      delayMs,
+      attempt: attempt + 1,
+      maxAttempts: weiboThrottleRetryMax,
+    });
+    await sleepWithJitter(delayMs, Math.min(pageDelayJitterMs, 1000));
+  }
+}
+
 async function sleepWithJitter(baseMs, jitterMs = pageDelayJitterMs) {
   const base = Math.max(0, finiteNumber(baseMs, 0));
   const jitter = Math.max(0, finiteNumber(jitterMs, 0));
@@ -1846,13 +2081,29 @@ async function sleepWithJitter(baseMs, jitterMs = pageDelayJitterMs) {
   if (base || offset) await sleep(base + offset);
 }
 
-async function waitBetweenPages(label, delayMs, reportProgress) {
-  if (!delayMs && !pageDelayJitterMs) return;
+function throttleProgress(reportProgress, label) {
+  return ({ status, delayMs, attempt, maxAttempts }) => reportProgress?.({
+    phase: 'wait',
+    message: `${label}返回 ${status}，等待 ${Math.ceil(delayMs / 1000)} 秒后重试（${attempt}/${maxAttempts}）`,
+  });
+}
+
+async function waitBetweenPages(label, delayMs, reportProgress, page) {
+  const plan = pageWaitPlan({
+    page,
+    baseMs: delayMs,
+    jitterMs: pageDelayJitterMs,
+    cooldownEvery: pageCooldownEvery,
+    cooldownMs: pageCooldownMs,
+  });
+  if (!plan.delayMs) return;
   reportProgress?.({
     phase: 'wait',
-    message: `${label}：稍等一下再读取下一页`,
+    message: plan.cooldownMs
+      ? `${label}：已读取 ${page} 页，冷却 ${Math.ceil(plan.delayMs / 1000)} 秒后继续`
+      : `${label}：等待 ${Math.ceil(plan.delayMs / 1000)} 秒后读取下一页`,
   });
-  await sleepWithJitter(delayMs);
+  await sleep(plan.delayMs);
 }
 
 function cookieRequired(mobileCookie) {
@@ -1927,6 +2178,7 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress }) {
   const pages = [];
   let totalNumber = null;
   let hitPageCap = false;
+  let hitCandidateCap = false;
 
   for (let page = 1; page <= OFFICIAL_MAX_PAGES; page += 1) {
     const apiUrl = new URL('https://api.weibo.com/2/statuses/repost_timeline.json');
@@ -1935,15 +2187,18 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress }) {
     apiUrl.searchParams.set('count', String(OFFICIAL_PAGE_SIZE));
     apiUrl.searchParams.set('page', String(page));
 
-    const json = await fetchJson(apiUrl);
+    const json = await fetchJson(apiUrl, {
+      onThrottle: throttleProgress(reportProgress, '官方接口'),
+    });
     const list = Array.isArray(json.reposts) ? json.reposts : [];
     totalNumber = Number.isFinite(Number(json.total_number)) ? Number(json.total_number) : totalNumber;
     pages.push({ page, count: list.length });
-    candidates.push(...list.map((item) => normalizeCandidate(item, 'official')));
+    hitCandidateCap = appendNormalizedCandidates(candidates, list, 'official');
+    if (hitCandidateCap) break;
     if (totalNumber !== null && candidates.length >= totalNumber) break;
     if (list.length < OFFICIAL_PAGE_SIZE) break;
     if (page === OFFICIAL_MAX_PAGES) hitPageCap = true;
-    await waitBetweenPages('官方接口', officialPageDelayMs, reportProgress);
+    await waitBetweenPages('官方接口', officialPageDelayMs, reportProgress, page);
   }
 
   const unique = uniqueCandidates(candidates);
@@ -1954,10 +2209,11 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress }) {
       pages,
       totalNumber,
       pageSize: OFFICIAL_PAGE_SIZE,
-      complete: !hitPageCap && (totalNumber === null || unique.length >= totalNumber || pages.at(-1)?.count < OFFICIAL_PAGE_SIZE),
+      complete: !hitPageCap && !hitCandidateCap && (totalNumber === null || unique.length >= totalNumber || pages.at(-1)?.count < OFFICIAL_PAGE_SIZE),
       warnings: [
         '已自动分页抓取全部可见转发；官方开放接口的配额和可见范围以账号权限为准。',
         ...(hitPageCap ? [`为避免异常长任务，本次在 ${OFFICIAL_MAX_PAGES} 页后停止。`] : []),
+        ...(hitCandidateCap ? [`为控制服务器资源，本次最多载入 ${maxCandidates} 位候选。`] : []),
       ],
     },
   };
@@ -1994,6 +2250,7 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
   let totalNumber = null;
   let maxPage = null;
   let hitPageCap = false;
+  let hitCandidateCap = false;
   let statusInfo = null;
 
   try {
@@ -2021,6 +2278,7 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
 
     const json = await fetchJson(apiUrl, {
       headers: desktopHeaders(cookie, statusInfo.referer),
+      onThrottle: throttleProgress(reportProgress, '桌面端接口'),
     });
     const list = desktopTimelineList(json);
     const advertisedMax = finiteNumber(json?.max_page);
@@ -2033,7 +2291,7 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
       maxPage,
       nextCursor: json?.next_cursor || 0,
     });
-    candidates.push(...list.map((item) => normalizeCandidate(item, 'desktop-cookie')));
+    hitCandidateCap = appendNormalizedCandidates(candidates, list, 'desktop-cookie');
     reportPageProgress(reportProgress, {
       phase: 'desktop',
       label: '桌面端接口',
@@ -2044,10 +2302,11 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
       count: list.length,
     });
 
+    if (hitCandidateCap) break;
     if (!maxPage && list.length === 0) break;
     if (maxPage && page >= maxPage) break;
     if (page === DESKTOP_MAX_PAGES) hitPageCap = true;
-    await waitBetweenPages('桌面端接口', desktopPageDelayMs, reportProgress);
+    await waitBetweenPages('桌面端接口', desktopPageDelayMs, reportProgress, page);
   }
 
   return {
@@ -2058,10 +2317,11 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
       totalNumber,
       maxPage,
       statusInfo,
-      complete: !hitPageCap,
+      complete: !hitPageCap && !hitCandidateCap,
       warnings: [
         '已按桌面端微博页面脚本的方式请求 ajax/statuses/repostTimeline，并扫描接口声明的页数范围。',
         ...(hitPageCap ? [`为避免异常长任务，桌面端在 ${DESKTOP_MAX_PAGES} 页后停止。`] : []),
+        ...(hitCandidateCap ? [`为控制服务器资源，本次最多载入 ${maxCandidates} 位候选。`] : []),
       ],
     },
   };
@@ -2135,6 +2395,7 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
   let totalNumber = info.repostsCount;
   let maxPage = null;
   let hitPageCap = false;
+  let hitCandidateCap = false;
 
   for (let page = 1; page <= LEGACY_MAX_PAGES; page += 1) {
     const apiUrl = new URL(`https://weibo.cn/repost/${info.bid}`);
@@ -2143,6 +2404,7 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
     apiUrl.searchParams.set('page', String(page));
     const html = await fetchText(apiUrl, {
       headers: legacyHeaders(cookie, `https://weibo.cn/${info.uid}/${info.bid}`),
+      onThrottle: throttleProgress(reportProgress, '旧版页面'),
     });
     const list = legacyTimelineList(html, page);
     const advertisedMax = legacyMaxPage(html);
@@ -2153,7 +2415,7 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
       count: list.length,
       maxPage,
     });
-    candidates.push(...list.map((item) => normalizeCandidate(item, 'weibo-cn')));
+    hitCandidateCap = appendNormalizedCandidates(candidates, list, 'weibo-cn');
     reportPageProgress(reportProgress, {
       phase: 'weibo-cn',
       label: '旧版页面',
@@ -2164,10 +2426,11 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
       count: list.length,
     });
 
+    if (hitCandidateCap) break;
     if (!maxPage && list.length === 0) break;
     if (maxPage && page >= maxPage) break;
     if (page === LEGACY_MAX_PAGES) hitPageCap = true;
-    await waitBetweenPages('旧版页面', legacyPageDelayMs, reportProgress);
+    await waitBetweenPages('旧版页面', legacyPageDelayMs, reportProgress, page);
   }
 
   return {
@@ -2177,10 +2440,11 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
       pages,
       totalNumber,
       maxPage,
-      complete: !hitPageCap,
+      complete: !hitPageCap && !hitCandidateCap,
       warnings: [
         '已补扫旧版 weibo.cn 转发页面；该页面必须使用 bid/mblogid，纯数字 mid 会返回目标不存在。',
         ...(hitPageCap ? [`为避免异常长任务，旧版页面在 ${LEGACY_MAX_PAGES} 页后停止。`] : []),
+        ...(hitCandidateCap ? [`为控制服务器资源，本次最多载入 ${maxCandidates} 位候选。`] : []),
       ],
     },
   };
@@ -2190,6 +2454,7 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress }) {
   const candidates = [];
   const pages = [];
   let hitPageCap = false;
+  let hitCandidateCap = false;
   const cookie = cookieRequired(mobileCookie);
   let totalNumber = null;
   let maxPage = null;
@@ -2201,6 +2466,7 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress }) {
 
     const json = await fetchJson(apiUrl, {
       headers: mobileHeaders(cookie, statusId),
+      onThrottle: throttleProgress(reportProgress, 'H5 接口'),
     });
     const list = mobileTimelineList(json);
     const advertisedMax = finiteNumber(json?.data?.max || json?.max);
@@ -2214,7 +2480,7 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress }) {
       ok: json?.ok,
       msg: json?.msg || '',
     });
-    candidates.push(...list.map((item) => normalizeCandidate(item, 'mobile')));
+    hitCandidateCap = appendNormalizedCandidates(candidates, list, 'mobile');
     reportPageProgress(reportProgress, {
       phase: 'mobile',
       label: 'H5 接口',
@@ -2224,10 +2490,11 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress }) {
       totalPages: maxPage || page,
       count: list.length,
     });
+    if (hitCandidateCap) break;
     if (!maxPage && list.length === 0) break;
     if (maxPage && page >= maxPage) break;
     if (page === MOBILE_MAX_PAGES) hitPageCap = true;
-    await waitBetweenPages('H5 接口', mobilePageDelayMs, reportProgress);
+    await waitBetweenPages('H5 接口', mobilePageDelayMs, reportProgress, page);
   }
 
   const unique = uniqueCandidates(candidates);
@@ -2238,11 +2505,12 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress }) {
       pages,
       totalNumber,
       maxPage,
-      complete: !hitPageCap,
+      complete: !hitPageCap && !hitCandidateCap,
       cookieMode: Boolean(cookie),
       warnings: [
         '已按 H5 接口返回的页数范围扫描可见转发。',
         ...(hitPageCap ? [`为避免异常长任务，本次在 ${MOBILE_MAX_PAGES} 页后停止。`] : []),
+        ...(hitCandidateCap ? [`为控制服务器资源，本次最多载入 ${maxCandidates} 位候选。`] : []),
       ],
     },
   };
@@ -2348,6 +2616,7 @@ async function buildRepostsPayload(body, reportProgress) {
       statusId,
       body,
       reportProgress,
+      allowCookieStoreWrite: body.allowCookieStoreWrite === true,
     });
   } else {
     const error = new Error('未知数据源');
@@ -2394,13 +2663,6 @@ async function runWithStatusLock(statusId, task) {
   }
 }
 
-async function handleReposts(req, res) {
-  const body = await readJsonBody(req);
-  const statusId = extractStatusId(body.statusUrl || body.statusId);
-  const payload = await runWithStatusLock(statusId, () => buildRepostsPayload(body, null));
-  return sendJson(res, 200, payload);
-}
-
 function createJob() {
   const id = crypto.randomUUID();
   const job = {
@@ -2418,10 +2680,20 @@ function createJob() {
     },
     result: null,
     error: null,
+    cleanupTimer: null,
   };
   jobs.set(id, job);
-  setTimeout(() => jobs.delete(id), jobTtlMs).unref?.();
   return job;
+}
+
+function expireJobLater(job) {
+  clearTimeout(job.cleanupTimer);
+  job.cleanupTimer = setTimeout(() => {
+    jobs.delete(job.id);
+    job.body = null;
+    job.result = null;
+  }, jobTtlMs);
+  job.cleanupTimer.unref?.();
 }
 
 function activeJobCount() {
@@ -2479,6 +2751,11 @@ function runRepostsJob(job) {
       job.updatedAt = job.finishedAt;
     })
     .finally(() => {
+      if (job.body) {
+        job.body.mobileCookie = '';
+        job.body.accessToken = '';
+      }
+      expireJobLater(job);
       drainJobQueue();
     });
 }
@@ -2507,7 +2784,8 @@ async function handleStartRepostsJob(req, res) {
       error: `当前抓取队列已满，请稍后再试（MAX_QUEUED_JOBS=${maxQueuedJobs}）`,
     });
   }
-  const body = await readJsonBody(req);
+  const body = await readJsonBody(req, maxRepostJobBodyBytes);
+  body.allowCookieStoreWrite = canWriteCookieStore(req);
   const job = createJob();
   enqueueRepostsJob(job, body);
   sendJson(res, 202, {
@@ -2583,14 +2861,21 @@ async function handleDrawAttempt(req, res) {
 
 async function handleSaveDraw(req, res) {
   const body = await readJsonBody(req, maxDrawSaveBodyBytes);
-  const rawResultGroups = Array.isArray(body.results) ? body.results : [];
-  const bodyWinners = Array.isArray(body.winners) ? body.winners : [];
-  const rawWinners = bodyWinners.length ? bodyWinners : rawResultGroups.flatMap((item) => Array.isArray(item?.winners) ? item.winners : []);
-  const winners = rawWinners.map(publicWinner).filter((winner) => winner.uid || winner.screenName);
+  const rawResultGroups = Array.isArray(body.results) ? body.results.slice(0, maxDrawResultGroups) : [];
+  const bodyWinners = Array.isArray(body.winners) ? body.winners.slice(0, maxDrawWinners) : [];
+  const rawWinners = bodyWinners.length
+    ? bodyWinners
+    : rawResultGroups
+      .flatMap((item) => Array.isArray(item?.winners) ? item.winners : [])
+      .slice(0, maxDrawWinners);
+  const winners = rawWinners.map(publicWinner).filter((winner) => winner.uid || winner.screenName).slice(0, maxDrawWinners);
   const resultGroups = rawResultGroups
     .map((item, index) => ({
       prize: publicPrize(item?.prize, index),
-      winners: (Array.isArray(item?.winners) ? item.winners : []).map(publicWinner).filter((winner) => winner.uid || winner.screenName),
+      winners: (Array.isArray(item?.winners) ? item.winners : [])
+        .slice(0, maxDrawWinners)
+        .map(publicWinner)
+        .filter((winner) => winner.uid || winner.screenName),
     }))
     .filter((item) => item.winners.length);
   const normalizedResults = resultGroups.length
@@ -2604,7 +2889,12 @@ async function handleSaveDraw(req, res) {
   const savedAt = new Date().toISOString();
   const statusId = extractStatusId(body.statusId || body.statusUrl || body.sourceMeta?.statusId || body.sourceMeta?.statusUrl);
   const statusUrl = normalizeStatusUrl(body.statusUrl || body.sourceMeta?.statusUrl, statusId);
-  const stableDrawnAt = body.audit?.drawnAt || body.drawnAt || savedAt;
+  const clientDrawnAt = String(body.audit?.drawnAt || body.drawnAt || '');
+  const parsedDrawnAt = Date.parse(clientDrawnAt);
+  const stableDrawnAt = Number.isFinite(parsedDrawnAt)
+    && Math.abs(parsedDrawnAt - Date.now()) <= 7 * 24 * 60 * 60_000
+    ? new Date(parsedDrawnAt).toISOString()
+    : savedAt;
   const auditHash = crypto.createHash('sha256')
     .update(JSON.stringify({
       source: body.source || '',
@@ -2622,11 +2912,11 @@ async function handleSaveDraw(req, res) {
       winners: winners.map((winner) => winner?.uid || winner?.screenName || winner?.id || ''),
     }))
     .digest('hex');
-  const stamp = stableDrawnAt.replace(/[-:.TZ]/g, '').slice(0, 14) || savedAt.replace(/[-:.TZ]/g, '').slice(0, 14);
+  const stamp = savedAt.replace(/[-:.TZ]/g, '').slice(0, 14);
   const file = path.join(drawsDir, `draw-${stamp}-${auditHash.slice(0, 8)}.json`);
   const sourceMeta = body.sourceMeta && typeof body.sourceMeta === 'object' ? body.sourceMeta : {};
   const audit = body.audit && typeof body.audit === 'object' ? body.audit : {};
-  const rules = audit.rules && typeof audit.rules === 'object' ? audit.rules : body.rules;
+  const rules = publicDrawRules(audit.rules && typeof audit.rules === 'object' ? audit.rules : body.rules);
   const payload = {
     source: String(body.source || '').slice(0, 80),
     statusId,
@@ -2652,22 +2942,19 @@ async function handleSaveDraw(req, res) {
       statusUrl,
       candidateDigest: String(audit.candidateDigest || body.candidateDigest || '').slice(0, 120),
       eligibleCount: finiteNumber(body.eligibleCount ?? audit.eligibleCount, null),
-      rules: rules && typeof rules === 'object' ? {
-        filters: rules.filters || null,
-        prizes: Array.isArray(rules.prizes) ? rules.prizes.map(publicPrize).slice(0, 20) : null,
-      } : null,
+      rules,
     },
     savedAt,
     drawnAt: stableDrawnAt,
     drawNumber: null,
     auditHash,
   };
-  await fs.writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  await writeJsonFileAtomic(file, payload, { directoryMode: 0o700, fileMode: 0o600 });
   const drawStats = statusId
     ? await getDrawCountForStatus(statusId, auditHash)
     : { count: null, drawNumber: null, lastDrawnAt: '' };
   payload.drawNumber = drawStats.drawNumber;
-  await fs.writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  await writeJsonFileAtomic(file, payload, { directoryMode: 0o700, fileMode: 0o600 });
   const retention = await pruneSavedDrawFiles();
 
   return sendJson(res, 200, {
@@ -2763,6 +3050,22 @@ function publicPrize(prize = {}, fallbackIndex = 0) {
   };
 }
 
+function publicDrawRules(rules) {
+  if (!rules || typeof rules !== 'object' || Array.isArray(rules)) return null;
+  const filters = rules.filters && typeof rules.filters === 'object' && !Array.isArray(rules.filters)
+    ? {
+        keyword: String(rules.filters.keyword || '').slice(0, 100),
+        mentionMin: Math.max(0, Math.min(100, finiteNumber(rules.filters.mentionMin, 0))),
+        uniqueByUser: rules.filters.uniqueByUser !== false,
+        excludePrevious: rules.filters.excludePrevious === true,
+      }
+    : null;
+  const prizes = Array.isArray(rules.prizes)
+    ? rules.prizes.slice(0, maxDrawResultGroups).map(publicPrize)
+    : null;
+  return filters || prizes ? { filters, prizes } : null;
+}
+
 function drawResultGroups(record = {}) {
   if (Array.isArray(record.results) && record.results.length) {
     return record.results.map((item, index) => ({
@@ -2814,7 +3117,7 @@ function drawRecordPublic(record, file, detail = false) {
     audit: {
       seed: String(record.audit?.seed || record.seed || '').slice(0, 120),
       candidateDigest: String(record.audit?.candidateDigest || record.candidateDigest || '').slice(0, 120),
-      rules: record.audit?.rules || record.rules || null,
+      rules: publicDrawRules(record.audit?.rules || record.rules),
     },
     sourceMeta: {
       provider: record.sourceMeta?.provider || '',
@@ -2945,12 +3248,51 @@ async function writeJsonArray(filePath, items) {
   await fs.rename(temporary, filePath);
 }
 
+async function appendFeedback(item) {
+  feedbackWrite = feedbackWrite
+    .catch(() => {})
+    .then(async () => {
+      const stored = await readJsonArray(feedbackFile);
+      const duplicate = stored.find((entry) => (
+        entry?.source === item.source
+        && entry?.contentHash === item.contentHash
+        && Date.parse(entry?.createdAt || 0) >= Date.now() - feedbackDuplicateWindowMs
+      ));
+      if (duplicate) {
+        const error = new Error('相同反馈已经提交，请勿重复发送');
+        error.status = 409;
+        throw error;
+      }
+      stored.push(item);
+      await writeJsonFileAtomic(feedbackFile, stored.slice(-maxFeedbackEntries), {
+        directoryMode: 0o700,
+        fileMode: 0o600,
+      });
+    });
+  return await feedbackWrite;
+}
+
+async function listFeedback(limit = maxFeedbackEntries) {
+  const stored = await readJsonArray(feedbackFile);
+  return stored
+    .filter((item) => item && typeof item === 'object' && item.id && item.content)
+    .slice(-Math.max(1, Math.min(maxFeedbackEntries, limit)))
+    .reverse()
+    .map((item) => ({
+      id: String(item.id),
+      category: String(item.category || 'other'),
+      content: String(item.content),
+      createdAt: String(item.createdAt || ''),
+      source: String(item.source || ''),
+    }));
+}
+
 function sourceFingerprint(req) {
   return crypto
-    .createHash('sha256')
+    .createHmac('sha256', sourceFingerprintSecret)
     .update(clientRateKey(req))
     .digest('hex')
-    .slice(0, 10);
+    .slice(0, 12);
 }
 
 function recordRuntimeEvent(event) {
@@ -3043,6 +3385,7 @@ async function adminSystemSummary() {
       fileDiagnostic('开奖记录目录', drawsDir),
       fileDiagnostic('系统采样', systemMetricsFile),
       fileDiagnostic('后台事件', adminEventsFile),
+      fileDiagnostic('用户反馈', feedbackFile),
     ]),
     findProfileBrowserPids(weiboLoginProfileDir),
     cgroupMemoryDiagnostic(),
@@ -3112,6 +3455,8 @@ async function adminSystemSummary() {
       systemCpuMs: Math.round(resources.systemCPUTime / 1000),
       maxRssMb: Math.round((resources.maxRSS / 1024) * 10) / 10,
       involuntaryContextSwitches: resources.involuntaryContextSwitches,
+      rateLimitBuckets: rateLimitBuckets.size,
+      adminLoginBuckets: adminLoginLimiter.size(),
       requests: { ...requestStats },
     },
     service: {
@@ -3142,6 +3487,8 @@ async function adminSystemSummary() {
       keepaliveEnabled: enableWeiboKeepalive,
       keepaliveIntervalMs: weiboKeepaliveIntervalMs,
       keepaliveIntervalText: formatDurationMs(weiboKeepaliveIntervalMs),
+      keepaliveRetryMs: weiboKeepaliveRetryMs,
+      keepaliveRetryText: formatDurationMs(weiboKeepaliveRetryMs),
       keepaliveStartupDelayMs: weiboKeepaliveStartupDelayMs,
       keepaliveStartupDelayText: formatDurationMs(weiboKeepaliveStartupDelayMs),
       browserLaunchTimeoutMs: weiboBrowserLaunchTimeoutMs,
@@ -3352,10 +3699,44 @@ async function handleAdminWeiboLoginRefresh(req, res) {
 }
 
 async function handleAdminDraws(req, res, url) {
-  const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit') || 100)));
-  const search = url.searchParams.get('search') || '';
+  const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '', 10);
+  const limit = Math.min(500, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 100));
+  const search = String(url.searchParams.get('search') || '').slice(0, 200);
   const items = await listSavedDraws({ limit, search });
   return sendJson(res, 200, { ok: true, items });
+}
+
+async function handleFeedback(req, res) {
+  const body = await readJsonBody(req, maxFeedbackBodyBytes);
+  const submission = normalizeFeedbackSubmission(body);
+  const item = {
+    id: crypto.randomUUID(),
+    ...submission,
+    createdAt: new Date().toISOString(),
+    source: sourceFingerprint(req),
+    contentHash: crypto
+      .createHmac('sha256', sourceFingerprintSecret)
+      .update(`${submission.category}\0${submission.content}`)
+      .digest('hex')
+      .slice(0, 24),
+  };
+  await appendFeedback(item);
+  recordRuntimeEvent({
+    category: 'feedback',
+    action: 'submit',
+    status: 'ok',
+    message: '收到一条新的用户反馈',
+  });
+  return sendJson(res, 201, { ok: true, id: item.id, createdAt: item.createdAt });
+}
+
+async function handleAdminFeedback(req, res, url) {
+  const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '', 10);
+  const limit = Math.min(
+    maxFeedbackEntries,
+    Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : maxFeedbackEntries),
+  );
+  return sendJson(res, 200, { ok: true, items: await listFeedback(limit) });
 }
 
 async function handleAdminDrawDetail(req, res, fileName) {
@@ -3550,6 +3931,9 @@ const server = http.createServer(async (req, res) => {
         weiboKeepaliveIntervalText: formatDurationMs(weiboKeepaliveIntervalMs),
       });
     }
+    if (req.method === 'POST' && url.pathname === '/api/feedback') {
+      return await handleFeedback(req, res);
+    }
     if (req.method === 'POST' && url.pathname === '/api/admin/login') {
       return await handleAdminLogin(req, res);
     }
@@ -3577,6 +3961,9 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname === '/api/admin/draws') {
       return await handleAdminDraws(req, res, url);
     }
+    if (req.method === 'GET' && url.pathname === '/api/admin/feedback') {
+      return await handleAdminFeedback(req, res, url);
+    }
     if (url.pathname.startsWith('/api/admin/draws/')) {
       const fileName = decodeURIComponent(url.pathname.replace('/api/admin/draws/', ''));
       if (req.method === 'GET') return await handleAdminDrawDetail(req, res, fileName);
@@ -3597,9 +3984,6 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname.startsWith('/api/weibo/reposts/jobs/')) {
       const jobId = decodeURIComponent(url.pathname.replace('/api/weibo/reposts/jobs/', ''));
       return await handleGetRepostsJob(req, res, jobId);
-    }
-    if (req.method === 'POST' && url.pathname === '/api/weibo/reposts') {
-      return await handleReposts(req, res);
     }
     if (req.method === 'POST' && url.pathname === '/api/weibo/draw-attempts') {
       return await handleDrawAttempt(req, res);
@@ -3626,19 +4010,29 @@ const server = http.createServer(async (req, res) => {
         message: `${pathname || '未知接口'}：${normalized.message}`,
       });
     }
-    return sendJson(res, normalized.status, { ok: false, error: normalized.message });
+    return sendJson(res, normalized.status, {
+      ok: false,
+      error: normalized.status >= 500 ? '服务器暂时无法完成请求，请稍后再试' : normalized.message,
+    });
   }
 });
 
 server.requestTimeout = 120_000;
 server.headersTimeout = 65_000;
 server.keepAliveTimeout = 5_000;
+server.maxHeadersCount = 100;
+server.on('clientError', (_error, socket) => {
+  if (!socket.writable) return socket.destroy();
+  socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+});
 
 let shutdownStarted = false;
 
 async function shutdown(signal) {
   if (shutdownStarted) return;
   shutdownStarted = true;
+  clearTimeout(weiboKeepaliveTimer);
+  weiboKeepaliveTimer = null;
   console.log(`Received ${signal}; closing HTTP and Weibo browser resources.`);
   const forceExit = setTimeout(() => process.exit(1), 15_000);
   forceExit.unref?.();
@@ -3672,6 +4066,11 @@ setInterval(() => {
     console.warn(`System sample failed: ${safeError(error).message}`);
   });
 }, 5 * 60_000).unref?.();
+
+setInterval(() => {
+  pruneRateLimitBuckets();
+  adminLoginLimiter.prune();
+}, 60_000).unref?.();
 
 scheduleWeiboKeepalive();
 

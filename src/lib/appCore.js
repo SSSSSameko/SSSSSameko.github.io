@@ -1,19 +1,37 @@
-export const SOURCE_LABELS = { mobile: 'H5 可见转发', manual: '手动名单', official: '官方接口' };
+export const SOURCE_LABELS = { mobile: '微博公开转发', manual: '手动名单', official: '官方接口' };
 
 export const PROVIDER_LABELS = {
   manual: '手动名单',
-  cookie: '服务器 Cookie 池',
-  mobile: 'H5 可见转发',
+  cookie: '服务器登录态',
+  mobile: '微博公开转发',
   official: '官方接口',
-  desktop: '桌面可见转发',
+  desktop: '微博桌面接口',
   legacy: '微博旧版接口',
-  'desktop-cookie': '桌面 Cookie 接口',
+  'desktop-cookie': '微博桌面登录态',
 };
 
 export const DRAW_RANDOM_ALGORITHM = 'SHA-256 · Fisher–Yates';
 
 export function cleanApiBase(value) {
   return String(value || '').trim().replace(/\/+$/, '');
+}
+
+export function safeWeiboUrl(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    const host = url.hostname.toLowerCase();
+    const isWeiboHost = host === 'weibo.com'
+      || host.endsWith('.weibo.com')
+      || host === 'weibo.cn'
+      || host.endsWith('.weibo.cn');
+    if (!isWeiboHost || !['http:', 'https:'].includes(url.protocol)) return '';
+    url.protocol = 'https:';
+    url.username = '';
+    url.password = '';
+    return url.toString();
+  } catch {
+    return '';
+  }
 }
 
 export function readStoredValue(key) {
@@ -50,7 +68,7 @@ export function buildFilterSummary({ keyword, mentionMin, uniqueByUser, excludeP
   if (keyword) parts.push(`关键词：${keyword}`);
   if (Number(mentionMin || 0) > 0) parts.push(`至少 @${Number(mentionMin || 0)}`);
   if (uniqueByUser) parts.push('同一用户只保留一次');
-  if (excludePrevious) parts.push('排除本轮已中奖用户');
+  if (excludePrevious) parts.push('排除当前任务已中奖用户');
   return parts.length ? parts.join(' / ') : '未启用额外筛选';
 }
 
@@ -71,6 +89,11 @@ export function parseCsvLine(line, delimiter) {
 }
 
 export function normalizeManualItem(raw, index) {
+  if (typeof raw === 'string' || typeof raw === 'number') {
+    const screenName = String(raw).trim();
+    const stable = screenName || String(index);
+    return { id: stable, uid: '', screenName: screenName || `候选人 ${index + 1}`, avatar: '', verified: false, followers: 0, text: '', createdAt: '', repostId: '', source: 'manual' };
+  }
   const values = Array.isArray(raw) ? raw : Object.values(raw || {});
   const singleCell = Array.isArray(raw) && values.length === 1;
   const uid = String(raw.uid || raw.UID || raw.userId || raw.user_id || (singleCell ? '' : values[0]) || '').trim();

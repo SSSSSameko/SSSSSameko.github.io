@@ -33,15 +33,16 @@ function fakeDeck() {
   };
 }
 
-test('startDrawDeckMotion gives three cards independent continuous 3D motion', () => {
+test('startDrawDeckMotion gives three cards an independent shuffle cycle', () => {
   const { deck, calls } = fakeDeck();
   const animations = startDrawDeckMotion(deck);
 
   assert.equal(animations.length, 3);
-  assert.deepEqual(calls.map(({ options }) => options.duration), [760, 850, 940]);
-  assert.deepEqual(calls.map(({ options }) => options.delay), [0, -110, -220]);
+  assert.deepEqual(calls.map(({ options }) => options.duration), [1040, 1120, 1200]);
+  assert.deepEqual(calls.map(({ options }) => options.delay), [0, -260, -520]);
   assert.ok(calls.every(({ options }) => options.iterations === Infinity));
-  assert.ok(calls.every(({ keyframes }) => keyframes.every((frame) => 'transform' in frame)));
+  assert.deepEqual(calls.map(({ keyframes }) => keyframes.length), [4, 4, 5]);
+  assert.ok(calls.every(({ keyframes }) => keyframes.every((frame) => 'transform' in frame && 'opacity' in frame)));
 });
 
 test('draw deck motion uses a gentler shuffle when reduced motion is requested', () => {
@@ -55,7 +56,7 @@ test('draw deck motion uses a gentler shuffle when reduced motion is requested',
   assert.ok(calls.every(({ keyframes }) => !String(keyframes[1].transform).includes('rotate(4deg)')));
 });
 
-test('settleDrawDeckMotion returns cards to their resting poses', () => {
+test('settleDrawDeckMotion returns the cards to a quiet resting state', () => {
   const { deck, calls } = fakeDeck();
   const animations = settleDrawDeckMotion(deck, {
     readTransform: (_, index) => `matrix-${index}`,

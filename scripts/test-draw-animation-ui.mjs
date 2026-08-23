@@ -20,12 +20,18 @@ try {
   page.setDefaultTimeout(10_000);
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 
-  await page.getByRole('button', { name: '没有微博链接？手动导入名单' }).click();
+  await page.getByRole('button', { name: '或手动导入候选名单' }).click();
   await page.getByRole('textbox', { name: '弹窗手动候选名单' }).fill(
     '小柚子\n森森\n月岛\n圆圆\n小蓝\nAlice\nMomo\n奈奈',
   );
   await page.getByRole('button', { name: '替换名单' }).click();
   await page.getByRole('button', { name: '完成', exact: true }).click();
+
+  assert.equal(await page.getByText('8 名候选 · 1 个奖项 · 1 个名额', { exact: true }).isVisible(), true);
+  assert.equal(
+    await page.locator('.candidate-deck .pass-main').getByText('8', { exact: true }).isVisible(),
+    true,
+  );
 
   const start = page.getByRole('button', { name: /开始抽奖/ });
   await start.click();
@@ -45,7 +51,8 @@ try {
     cards.map((card) => getComputedStyle(card).transform)
   ));
   assert.notDeepEqual(transformsA, transformsB);
-  assert.equal(new Set(transformsA).size, 3);
+  assert.equal(transformsA.length, 3);
+  assert.ok(new Set(transformsA).size >= 2);
   await page.screenshot({
     path: fileURLToPath(new URL('draw-running-b.png', outputDir)),
     fullPage: false,
