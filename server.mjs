@@ -26,12 +26,14 @@ import {
 import { completedDrawStats } from './src/lib/drawReceipts.js';
 import { normalizeFeedbackSubmission } from './src/lib/feedback.js';
 import { safeAvatarUrl } from './src/lib/avatar.js';
+import { mergeRepostHead, repostIdentity, uniqueReposts } from './src/lib/repostCandidates.js';
+import { createSnapshotCache, repostTaskKey } from './src/lib/repostTaskCache.js';
 import {
   clientAddress,
   firstHeaderValue,
   trustedForwardedHeader,
 } from './src/lib/requestTrust.js';
-import { retainLatestLines, selectFilesToPrune } from './src/lib/storageRetention.js';
+import { selectFilesToPrune } from './src/lib/storageRetention.js';
 import {
   analyzeMemoryTrend,
   parseCgroupMemoryStat,
@@ -50,6 +52,7 @@ import {
 import {
   isWeiboThrottleStatus,
   pageWaitPlan,
+  shouldReconcileRepostHead,
   throttleRetryDelayMs,
 } from './src/lib/weiboPacing.js';
 
@@ -93,6 +96,7 @@ const adminSessionSecure = /^(1|true|yes)$/i.test(String(
 const cookieWriteKey = String(process.env.COOKIE_WRITE_KEY || '').trim();
 const fetchTimeoutMs = envNumber('FETCH_TIMEOUT_MS', 20_000, 1000);
 const jobTtlMs = envNumber('JOB_TTL_MS', 10 * 60_000, 60_000);
+const completedJobReleaseMs = envNumber('COMPLETED_JOB_RELEASE_MS', 60_000, 10_000);
 const maxActiveJobs = envNumber('MAX_ACTIVE_JOBS', 2, 1);
 const maxQueuedJobs = envNumber('MAX_QUEUED_JOBS', 20, 1);
 const rateLimitWindowMs = envNumber('RATE_LIMIT_WINDOW_MS', 60_000, 1000);
@@ -127,14 +131,13 @@ const weiboThrottleRetryMax = envNumber('WEIBO_THROTTLE_RETRY_MAX', 2, 0);
 const weiboThrottleBackoffMs = envNumber('WEIBO_THROTTLE_BACKOFF_MS', 15_000, 1000);
 const weiboThrottleMaxWaitMs = envNumber('WEIBO_THROTTLE_MAX_WAIT_MS', 120_000, 1000);
 const sameStatusRequestGapMs = envNumber('SAME_STATUS_REQUEST_GAP_MS', 3000, 0);
+const repostSnapshotTtlMs = envNumber('REPOST_SNAPSHOT_TTL_MS', 15_000, 5000);
+const maxRepostSnapshots = envNumber('MAX_REPOST_SNAPSHOTS', 2, 1);
 const weiboLoginSessionTtlMs = envNumber('WEIBO_LOGIN_SESSION_TTL_MS', 8 * 60_000, 60_000);
 const weiboKeepaliveIntervalMs = envNumber('WEIBO_KEEPALIVE_INTERVAL_MS', 12 * 60 * 60_000, 60_000);
 const weiboKeepaliveStartupDelayMs = envNumber('WEIBO_KEEPALIVE_STARTUP_DELAY_MS', 90_000, 10_000);
 const weiboKeepaliveRetryMs = envNumber('WEIBO_KEEPALIVE_RETRY_MS', 30 * 60_000, 60_000);
 const weiboBrowserLaunchTimeoutMs = envNumber('WEIBO_BROWSER_LAUNCH_TIMEOUT_MS', 60_000, 10_000);
-const maxDrawAttemptBodyBytes = envNumber('MAX_DRAW_ATTEMPT_BODY_BYTES', 256 * 1024, 16 * 1024);
-const maxDrawAttemptEntries = envNumber('MAX_DRAW_ATTEMPTS', 5000, 100);
-const maxDrawAttemptBytes = envNumber('MAX_DRAW_ATTEMPT_BYTES', 8 * 1024 * 1024, 256 * 1024);
 const maxDrawSaveBodyBytes = envNumber('MAX_DRAW_SAVE_BODY_BYTES', 2 * 1024 * 1024, 64 * 1024);
 const maxDrawResultGroups = envNumber('MAX_DRAW_RESULT_GROUPS', 20, 1);
 const maxDrawWinners = envNumber('MAX_DRAW_WINNERS', 500, 1);
@@ -165,6 +168,16 @@ const jobs = new Map();
 const jobQueue = [];
 const rateLimitBuckets = new Map();
 const statusLocks = new Map();
+const sharedRepostJobs = new Map();
+const repostSnapshotCache = createSnapshotCache({
+  ttlMs: repostSnapshotTtlMs,
+  maxEntries: maxRepostSnapshots,
+});
+const repostTaskStats = {
+  fresh: 0,
+  sharedRunning: 0,
+  recentSnapshot: 0,
+};
 const avatarCache = new Map();
 const serverStartedAt = new Date().toISOString();
 let avatarCacheBytes = 0;
@@ -190,7 +203,6 @@ let metricsWrite = Promise.resolve();
 let adminEventWrite = Promise.resolve();
 let cookieStoreOperation = Promise.resolve();
 let weiboLoginStateOperation = Promise.resolve();
-let drawAttemptOperation = Promise.resolve();
 let feedbackWrite = Promise.resolve();
 
 const MIME = {
@@ -716,39 +728,6 @@ function drawStatusIdFromPayload(payload) {
   ).trim();
 }
 
-async function getAttemptCountsByStatus() {
-  const counts = new Map();
-  const attempts = await listDrawAttempts();
-
-  for (const payload of attempts) {
-    try {
-      const statusId = drawStatusIdFromPayload(payload);
-      if (!statusId) continue;
-      const current = counts.get(statusId) || {
-        statusId,
-        statusUrl: payload.statusUrl || payload.sourceMeta?.statusUrl || '',
-        count: 0,
-        lastDrawnAt: '',
-      };
-      current.count += 1;
-      const drawnAt = payload.drawnAt || payload.createdAt || payload.savedAt || '';
-      if (drawnAt && drawnAt > current.lastDrawnAt) current.lastDrawnAt = drawnAt;
-      if (!current.statusUrl && payload.statusUrl) current.statusUrl = payload.statusUrl;
-      counts.set(statusId, current);
-    } catch {
-      // Ignore malformed historical records so one bad line does not break the dashboard.
-    }
-  }
-
-  return counts;
-}
-
-async function getAttemptCountForStatus(statusId) {
-  if (!statusId) return { statusId: '', count: null, lastDrawnAt: '' };
-  const counts = await getAttemptCountsByStatus();
-  return counts.get(statusId) || { statusId, count: 0, lastDrawnAt: '' };
-}
-
 async function listCompletedDrawRecords() {
   const files = await listDrawFiles();
   const records = [];
@@ -783,87 +762,6 @@ async function getDrawCountForStatus(statusId, auditHash = '') {
     statusId,
     statusUrl: String(latest?.statusUrl || latest?.sourceMeta?.statusUrl || ''),
     ...stats,
-  };
-}
-
-function appendDrawAttempt(payload) {
-  const previous = drawAttemptOperation;
-  let release;
-  const currentOperation = new Promise((resolve) => { release = resolve; });
-  drawAttemptOperation = previous.catch(() => {}).then(() => currentOperation);
-  return previous
-    .catch(() => {})
-    .then(async () => {
-      await fs.mkdir(path.dirname(drawAttemptsFile), { recursive: true });
-      await fs.appendFile(drawAttemptsFile, `${JSON.stringify(payload)}\n`, 'utf8');
-      const stat = await fs.stat(drawAttemptsFile).catch(() => null);
-      if (!stat) return;
-      const lines = (await fs.readFile(drawAttemptsFile, 'utf8'))
-        .split(/\r?\n/)
-        .map((line) => line.trim())
-        .filter(Boolean)
-      if (lines.length <= maxDrawAttemptEntries && stat.size <= maxDrawAttemptBytes) return;
-      const retained = retainLatestLines(lines, {
-        maxLines: maxDrawAttemptEntries,
-        maxBytes: maxDrawAttemptBytes,
-      });
-      const temporary = `${drawAttemptsFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
-      try {
-        await fs.writeFile(temporary, `${retained.join('\n')}\n`, { encoding: 'utf8', mode: 0o600 });
-        await fs.rename(temporary, drawAttemptsFile);
-      } finally {
-        await fs.rm(temporary, { force: true }).catch(() => {});
-      }
-    })
-    .finally(() => release());
-}
-
-async function recordDrawAttempt(body) {
-  const statusId = extractStatusId(body.statusId || body.statusUrl || body.sourceMeta?.statusId || body.sourceMeta?.statusUrl);
-  if (!statusId) {
-    const error = new Error('缺少微博链接、mid 或 bid，无法记录本次抽奖次数');
-    error.status = 400;
-    throw error;
-  }
-
-  const drawnAt = new Date().toISOString();
-  const statusUrl = normalizeStatusUrl(body.statusUrl || body.sourceMeta?.statusUrl, statusId);
-  const attemptHash = crypto.createHash('sha256')
-    .update(JSON.stringify({
-      statusId,
-      statusUrl,
-      source: body.source || '',
-      seed: body.seed || '',
-      drawnAt,
-      eligibleCount: body.eligibleCount,
-      prizeCount: body.prizeCount,
-      candidateDigest: body.candidateDigest || '',
-    }))
-    .digest('hex');
-  const payload = {
-    attemptId: attemptHash.slice(0, 16),
-    statusId,
-    statusUrl,
-    source: String(body.source || '').slice(0, 80),
-    drawnAt,
-    seed: String(body.seed || '').slice(0, 120),
-    eligibleCount: finiteNumber(body.eligibleCount, null),
-    candidateCount: finiteNumber(body.candidateCount, null),
-    prizeCount: finiteNumber(body.prizeCount, null),
-    candidateDigest: String(body.candidateDigest || '').slice(0, 120),
-    rules: publicDrawRules(body.rules),
-  };
-
-  await appendDrawAttempt(payload);
-  const stats = await getAttemptCountForStatus(statusId);
-  return {
-    ok: true,
-    statusId,
-    statusUrl,
-    drawnAt,
-    attemptId: payload.attemptId,
-    drawCount: stats.count,
-    lastDrawnAt: stats.lastDrawnAt || drawnAt,
   };
 }
 
@@ -925,37 +823,20 @@ function normalizeCandidate(item, source) {
 }
 
 function appendNormalizedCandidates(target, items, source) {
-  const remaining = Math.max(0, maxCandidates - target.length);
-  if (!remaining) return true;
-  target.push(...items.slice(0, remaining).map((item) => normalizeCandidate(item, source)));
+  const seen = new Set(target.map(repostIdentity));
+  for (const item of items) {
+    if (target.length >= maxCandidates) return true;
+    const candidate = normalizeCandidate(item, source);
+    const key = repostIdentity(candidate);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    target.push(candidate);
+  }
   return target.length >= maxCandidates;
 }
 
-function uniqueCandidates(candidates) {
-  const seen = new Set();
-  const result = [];
-  for (const candidate of candidates) {
-    const key = candidate.uid || `${candidate.screenName}|${candidate.repostId}|${candidate.text}`;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    result.push(candidate);
-    if (result.length >= maxCandidates) break;
-  }
-  return result;
-}
-
 function uniqueByRepostId(candidates) {
-  const seen = new Set();
-  const result = [];
-  for (const candidate of candidates) {
-    const stableRepostId = candidate.repostId && !candidate.repostId.startsWith('weibo-cn-') ? candidate.repostId : '';
-    const key = stableRepostId || `${candidate.uid}|${candidate.screenName}|${candidate.text}|${candidate.createdAt}`;
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    result.push(candidate);
-    if (result.length >= maxCandidates) break;
-  }
-  return result;
+  return uniqueReposts(candidates, maxCandidates);
 }
 
 function safeError(error) {
@@ -2176,6 +2057,7 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress }) {
 
   const candidates = [];
   const pages = [];
+  const startedAt = Date.now();
   let totalNumber = null;
   let hitPageCap = false;
   let hitCandidateCap = false;
@@ -2201,7 +2083,37 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress }) {
     await waitBetweenPages('官方接口', officialPageDelayMs, reportProgress, page);
   }
 
-  const unique = uniqueCandidates(candidates);
+  let unique = uniqueByRepostId(candidates);
+  let headAddedCount = 0;
+  let headReconciled = false;
+  let headWarning = '';
+  if (shouldReconcileRepostHead({
+    pageCount: pages.length,
+    elapsedMs: Date.now() - startedAt,
+    hitCandidateCap,
+  })) {
+    try {
+      reportProgress?.({ phase: 'official', percent: 97, message: '核对抓取期间新增的转发' });
+      const headUrl = new URL('https://api.weibo.com/2/statuses/repost_timeline.json');
+      headUrl.searchParams.set('id', statusId);
+      headUrl.searchParams.set('access_token', token);
+      headUrl.searchParams.set('count', String(OFFICIAL_PAGE_SIZE));
+      headUrl.searchParams.set('page', '1');
+      const headJson = await fetchJson(headUrl, {
+        onThrottle: throttleProgress(reportProgress, '官方接口'),
+      });
+      totalNumber = finiteNumber(headJson?.total_number, totalNumber);
+      const headCandidates = (Array.isArray(headJson.reposts) ? headJson.reposts : [])
+        .map((item) => normalizeCandidate(item, 'official'));
+      const merged = mergeRepostHead(unique, headCandidates, maxCandidates);
+      unique = merged.candidates;
+      headAddedCount = merged.addedCount;
+      hitCandidateCap ||= merged.truncatedCount > 0;
+      headReconciled = true;
+    } catch (error) {
+      headWarning = `最新转发复核失败：${error.message}`;
+    }
+  }
   return {
     candidates: unique,
     meta: {
@@ -2209,9 +2121,13 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress }) {
       pages,
       totalNumber,
       pageSize: OFFICIAL_PAGE_SIZE,
-      complete: !hitPageCap && !hitCandidateCap && (totalNumber === null || unique.length >= totalNumber || pages.at(-1)?.count < OFFICIAL_PAGE_SIZE),
+      headReconciled,
+      headAddedCount,
+      complete: !hitPageCap && !hitCandidateCap && !headWarning && (totalNumber === null || unique.length >= totalNumber || pages.at(-1)?.count < OFFICIAL_PAGE_SIZE),
       warnings: [
         '已自动分页抓取全部可见转发；官方开放接口的配额和可见范围以账号权限为准。',
+        ...(headAddedCount ? [`结束前补入 ${headAddedCount} 条刚新增的可见转发。`] : []),
+        ...(headWarning ? [headWarning] : []),
         ...(hitPageCap ? [`为避免异常长任务，本次在 ${OFFICIAL_MAX_PAGES} 页后停止。`] : []),
         ...(hitCandidateCap ? [`为控制服务器资源，本次最多载入 ${maxCandidates} 位候选。`] : []),
       ],
@@ -2247,6 +2163,7 @@ async function fetchDesktopStatusInfo({ statusId, cookie }) {
 async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatusInfo, reportProgress }) {
   const candidates = [];
   const pages = [];
+  const startedAt = Date.now();
   let totalNumber = null;
   let maxPage = null;
   let hitPageCap = false;
@@ -2309,17 +2226,53 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
     await waitBetweenPages('桌面端接口', desktopPageDelayMs, reportProgress, page);
   }
 
+  let unique = uniqueByRepostId(candidates);
+  let headAddedCount = 0;
+  let headReconciled = false;
+  let headWarning = '';
+  if (shouldReconcileRepostHead({
+    pageCount: pages.length,
+    elapsedMs: Date.now() - startedAt,
+    hitCandidateCap,
+  })) {
+    try {
+      reportProgress?.({ phase: 'desktop', percent: 97, message: '核对抓取期间新增的转发' });
+      const headUrl = new URL('https://weibo.com/ajax/statuses/repostTimeline');
+      headUrl.searchParams.set('id', timelineId);
+      headUrl.searchParams.set('page', '1');
+      headUrl.searchParams.set('moduleID', 'feed');
+      headUrl.searchParams.set('count', String(DESKTOP_PAGE_SIZE));
+      const headJson = await fetchJson(headUrl, {
+        headers: desktopHeaders(cookie, statusInfo.referer),
+        onThrottle: throttleProgress(reportProgress, '桌面端接口'),
+      });
+      totalNumber = finiteNumber(headJson?.total_number, totalNumber);
+      const headCandidates = desktopTimelineList(headJson)
+        .map((item) => normalizeCandidate(item, 'desktop-cookie'));
+      const merged = mergeRepostHead(unique, headCandidates, maxCandidates);
+      unique = merged.candidates;
+      headAddedCount = merged.addedCount;
+      hitCandidateCap ||= merged.truncatedCount > 0;
+      headReconciled = true;
+    } catch (error) {
+      headWarning = `最新转发复核失败：${error.message}`;
+    }
+  }
   return {
-    candidates: uniqueByRepostId(candidates),
+    candidates: unique,
     meta: {
       provider: 'desktop-cookie',
       pages,
       totalNumber,
       maxPage,
       statusInfo,
-      complete: !hitPageCap && !hitCandidateCap,
+      headReconciled,
+      headAddedCount,
+      complete: !hitPageCap && !hitCandidateCap && !headWarning,
       warnings: [
         '已按桌面端微博页面脚本的方式请求 ajax/statuses/repostTimeline，并扫描接口声明的页数范围。',
+        ...(headAddedCount ? [`结束前补入 ${headAddedCount} 条刚新增的可见转发。`] : []),
+        ...(headWarning ? [headWarning] : []),
         ...(hitPageCap ? [`为避免异常长任务，桌面端在 ${DESKTOP_MAX_PAGES} 页后停止。`] : []),
         ...(hitCandidateCap ? [`为控制服务器资源，本次最多载入 ${maxCandidates} 位候选。`] : []),
       ],
@@ -2453,6 +2406,7 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
 async function fetchMobileReposts({ statusId, mobileCookie, reportProgress }) {
   const candidates = [];
   const pages = [];
+  const startedAt = Date.now();
   let hitPageCap = false;
   let hitCandidateCap = false;
   const cookie = cookieRequired(mobileCookie);
@@ -2497,18 +2451,51 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress }) {
     await waitBetweenPages('H5 接口', mobilePageDelayMs, reportProgress, page);
   }
 
-  const unique = uniqueCandidates(candidates);
+  let unique = uniqueByRepostId(candidates);
+  let headAddedCount = 0;
+  let headReconciled = false;
+  let headWarning = '';
+  if (shouldReconcileRepostHead({
+    pageCount: pages.length,
+    elapsedMs: Date.now() - startedAt,
+    hitCandidateCap,
+  })) {
+    try {
+      reportProgress?.({ phase: 'mobile', percent: 97, message: '核对抓取期间新增的转发' });
+      const headUrl = new URL('https://m.weibo.cn/api/statuses/repostTimeline');
+      headUrl.searchParams.set('id', statusId);
+      headUrl.searchParams.set('page', '1');
+      const headJson = await fetchJson(headUrl, {
+        headers: mobileHeaders(cookie, statusId),
+        onThrottle: throttleProgress(reportProgress, 'H5 接口'),
+      });
+      totalNumber = finiteNumber(headJson?.data?.total_number || headJson?.total_number, totalNumber);
+      const headCandidates = mobileTimelineList(headJson)
+        .map((item) => normalizeCandidate(item, 'mobile'));
+      const merged = mergeRepostHead(unique, headCandidates, maxCandidates);
+      unique = merged.candidates;
+      headAddedCount = merged.addedCount;
+      hitCandidateCap ||= merged.truncatedCount > 0;
+      headReconciled = true;
+    } catch (error) {
+      headWarning = `最新转发复核失败：${error.message}`;
+    }
+  }
   return {
-    candidates: uniqueByRepostId(unique),
+    candidates: unique,
     meta: {
       provider: 'mobile',
       pages,
       totalNumber,
       maxPage,
-      complete: !hitPageCap && !hitCandidateCap,
+      headReconciled,
+      headAddedCount,
+      complete: !hitPageCap && !hitCandidateCap && !headWarning,
       cookieMode: Boolean(cookie),
       warnings: [
         '已按 H5 接口返回的页数范围扫描可见转发。',
+        ...(headAddedCount ? [`结束前补入 ${headAddedCount} 条刚新增的可见转发。`] : []),
+        ...(headWarning ? [headWarning] : []),
         ...(hitPageCap ? [`为避免异常长任务，本次在 ${MOBILE_MAX_PAGES} 页后停止。`] : []),
         ...(hitCandidateCap ? [`为控制服务器资源，本次最多载入 ${maxCandidates} 位候选。`] : []),
       ],
@@ -2558,7 +2545,7 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress }) {
   }
 
   const rawCandidates = results.flatMap((result) => result.candidates);
-  const candidates = uniqueCandidates(rawCandidates);
+  const candidates = uniqueByRepostId(rawCandidates);
   const pages = results.flatMap((result) => result.meta?.pages || []);
   const totalNumber = results.reduce((max, result) => {
     const value = finiteNumber(result.meta?.totalNumber);
@@ -2638,6 +2625,7 @@ async function buildRepostsPayload(body, reportProgress) {
       ...result.meta,
       statusId,
       statusUrl: normalizeStatusUrl(body.statusUrl, statusId),
+      loadedAt: new Date().toISOString(),
     },
   };
 }
@@ -2680,19 +2668,21 @@ function createJob() {
     },
     result: null,
     error: null,
+    delivery: 'fresh',
+    shareKey: '',
     cleanupTimer: null,
   };
   jobs.set(id, job);
   return job;
 }
 
-function expireJobLater(job) {
+function expireJobLater(job, delayMs = jobTtlMs) {
   clearTimeout(job.cleanupTimer);
   job.cleanupTimer = setTimeout(() => {
     jobs.delete(job.id);
     job.body = null;
     job.result = null;
-  }, jobTtlMs);
+  }, delayMs);
   job.cleanupTimer.unref?.();
 }
 
@@ -2706,6 +2696,38 @@ function queuedJobCount() {
 
 function jobQueuePosition(job) {
   return jobQueue.findIndex((item) => item.id === job.id) + 1;
+}
+
+function repostJobResponse(job, delivery = job.delivery) {
+  return {
+    ok: true,
+    jobId: job.id,
+    status: job.status,
+    delivery,
+    queue: {
+      position: job.status === 'queued' ? jobQueuePosition(job) : 0,
+      active: activeJobCount(),
+      queued: queuedJobCount(),
+      maxActive: maxActiveJobs,
+      maxQueued: maxQueuedJobs,
+    },
+    progress: job.progress,
+    result: job.result,
+    error: job.error,
+  };
+}
+
+function repostCredentialScope(body) {
+  const source = String(body?.source || 'mobile').trim().toLowerCase();
+  const credential = source === 'official'
+    ? String(body?.accessToken || '').trim()
+    : cleanCookieHeader(body?.mobileCookie);
+  if (!credential) return '';
+  return crypto
+    .createHmac('sha256', sourceFingerprintSecret)
+    .update(`${source}:${credential}`)
+    .digest('hex')
+    .slice(0, 20);
 }
 
 function updateQueuedProgress() {
@@ -2739,6 +2761,7 @@ function runRepostsJob(job) {
     .then((result) => {
       job.status = 'done';
       job.result = result;
+      repostSnapshotCache.set(job.shareKey, result);
       job.progress = { phase: 'done', percent: 100, message: `抓取完成：${result.candidates.length} 条记录` };
       job.finishedAt = new Date().toISOString();
       job.updatedAt = job.finishedAt;
@@ -2754,6 +2777,10 @@ function runRepostsJob(job) {
       if (job.body) {
         job.body.mobileCookie = '';
         job.body.accessToken = '';
+      }
+      job.body = null;
+      if (job.shareKey && sharedRepostJobs.get(job.shareKey) === job) {
+        sharedRepostJobs.delete(job.shareKey);
       }
       expireJobLater(job);
       drainJobQueue();
@@ -2778,29 +2805,64 @@ function enqueueRepostsJob(job, body) {
 }
 
 async function handleStartRepostsJob(req, res) {
+  const body = await readJsonBody(req, maxRepostJobBodyBytes);
+  body.allowCookieStoreWrite = canWriteCookieStore(req);
+  const statusId = extractStatusId(body.statusUrl || body.statusId);
+  const shareKey = repostTaskKey(statusId, {
+    source: body.source,
+    authScope: repostCredentialScope(body),
+  });
+  const sharedJob = shareKey ? sharedRepostJobs.get(shareKey) : null;
+
+  if (sharedJob && (sharedJob.status === 'queued' || sharedJob.status === 'running')) {
+    repostTaskStats.sharedRunning += 1;
+    return sendJson(res, 202, repostJobResponse(sharedJob, 'shared-running'));
+  }
+
+  const snapshot = body.forceRefresh === true ? null : repostSnapshotCache.get(shareKey);
+  if (snapshot) {
+    const drawStats = await getDrawCountForStatus(statusId);
+    const result = {
+      ...snapshot.result,
+      drawCount: drawStats.count,
+      lastDrawnAt: drawStats.lastDrawnAt,
+      meta: {
+        ...(snapshot.result.meta || {}),
+        snapshotAgeMs: snapshot.ageMs,
+      },
+    };
+    repostTaskStats.recentSnapshot += 1;
+    return sendJson(res, 200, {
+      ok: true,
+      jobId: '',
+      status: 'done',
+      delivery: 'recent-snapshot',
+      queue: {
+        position: 0,
+        active: activeJobCount(),
+        queued: queuedJobCount(),
+        maxActive: maxActiveJobs,
+        maxQueued: maxQueuedJobs,
+      },
+      progress: { phase: 'done', percent: 100, message: `已复用刚刚载入的 ${result.candidates.length} 条记录` },
+      result,
+      error: null,
+    });
+  }
+
   if (queuedJobCount() >= maxQueuedJobs) {
     return sendJson(res, 429, {
       ok: false,
       error: `当前抓取队列已满，请稍后再试（MAX_QUEUED_JOBS=${maxQueuedJobs}）`,
     });
   }
-  const body = await readJsonBody(req, maxRepostJobBodyBytes);
-  body.allowCookieStoreWrite = canWriteCookieStore(req);
+
   const job = createJob();
+  job.shareKey = shareKey;
+  if (shareKey) sharedRepostJobs.set(shareKey, job);
+  repostTaskStats.fresh += 1;
   enqueueRepostsJob(job, body);
-  sendJson(res, 202, {
-    ok: true,
-    jobId: job.id,
-    status: job.status,
-    queue: {
-      position: job.status === 'queued' ? jobQueuePosition(job) : 0,
-      active: activeJobCount(),
-      queued: queuedJobCount(),
-      maxActive: maxActiveJobs,
-      maxQueued: maxQueuedJobs,
-    },
-    progress: job.progress,
-  });
+  return sendJson(res, 202, repostJobResponse(job));
 }
 
 async function handleGetRepostsJob(_req, res, jobId) {
@@ -2808,21 +2870,10 @@ async function handleGetRepostsJob(_req, res, jobId) {
   if (!job) {
     return sendJson(res, 404, { ok: false, error: '任务不存在或已过期' });
   }
-  return sendJson(res, 200, {
-    ok: true,
-    jobId: job.id,
-    status: job.status,
-    queue: {
-      position: job.status === 'queued' ? jobQueuePosition(job) : 0,
-      active: activeJobCount(),
-      queued: queuedJobCount(),
-      maxActive: maxActiveJobs,
-      maxQueued: maxQueuedJobs,
-    },
-    progress: job.progress,
-    result: job.result,
-    error: job.error,
-  });
+  if (job.status === 'done' || job.status === 'error') {
+    expireJobLater(job, completedJobReleaseMs);
+  }
+  return sendJson(res, 200, repostJobResponse(job));
 }
 
 async function handleCookieStatus(req, res, url) {
@@ -2851,12 +2902,6 @@ async function handleDrawCount(req, res, url) {
     lastDrawnAt: result.lastDrawnAt,
     statusUrl: result.statusUrl || normalizeStatusUrl(url.searchParams.get('statusUrl'), statusId),
   });
-}
-
-async function handleDrawAttempt(req, res) {
-  const body = await readJsonBody(req, maxDrawAttemptBodyBytes);
-  const result = await recordDrawAttempt(body);
-  return sendJson(res, 200, result);
 }
 
 async function handleSaveDraw(req, res) {
@@ -3634,6 +3679,11 @@ async function handleAdminSummary(req, res) {
       maxActive: maxActiveJobs,
       maxQueued: maxQueuedJobs,
       sameStatusLocks: statusLocks.size,
+      sharedTasks: sharedRepostJobs.size,
+      recentSnapshots: repostSnapshotCache.size,
+      snapshotTtlMs: repostSnapshotTtlMs,
+      maxSnapshots: maxRepostSnapshots,
+      deliveries: { ...repostTaskStats },
     },
     cookie: {
       hasCookie: cookieSummary.hasCookie,
@@ -3923,6 +3973,8 @@ const server = http.createServer(async (req, res) => {
         queuedJobs: queuedJobCount(),
         maxActiveJobs,
         maxQueuedJobs,
+        sharedRepostTasks: sharedRepostJobs.size,
+        recentRepostSnapshots: repostSnapshotCache.size,
         apiKeyRequired: Boolean(apiKey),
         cookieStoreDisabled: disableCookieStore,
         cookieStoreWriteProtected: Boolean(cookieWriteKey),
@@ -3984,9 +4036,6 @@ const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && url.pathname.startsWith('/api/weibo/reposts/jobs/')) {
       const jobId = decodeURIComponent(url.pathname.replace('/api/weibo/reposts/jobs/', ''));
       return await handleGetRepostsJob(req, res, jobId);
-    }
-    if (req.method === 'POST' && url.pathname === '/api/weibo/draw-attempts') {
-      return await handleDrawAttempt(req, res);
     }
     if (req.method === 'POST' && url.pathname === '/api/draws') {
       return await handleSaveDraw(req, res);

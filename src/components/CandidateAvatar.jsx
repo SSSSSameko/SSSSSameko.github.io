@@ -25,6 +25,8 @@ export default function CandidateAvatar({ candidate, className = '', apiBase = '
         <img
           src={source}
           alt={`${name}的头像`}
+          width="96"
+          height="96"
           loading="lazy"
           decoding="async"
           referrerPolicy="no-referrer"

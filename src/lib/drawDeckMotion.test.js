@@ -41,7 +41,7 @@ test('startDrawDeckMotion gives three cards an independent shuffle cycle', () =>
   assert.deepEqual(calls.map(({ options }) => options.duration), [1040, 1120, 1200]);
   assert.deepEqual(calls.map(({ options }) => options.delay), [0, -260, -520]);
   assert.ok(calls.every(({ options }) => options.iterations === Infinity));
-  assert.deepEqual(calls.map(({ keyframes }) => keyframes.length), [4, 4, 5]);
+  assert.deepEqual(calls.map(({ keyframes }) => keyframes.length), [5, 5, 5]);
   assert.ok(calls.every(({ keyframes }) => keyframes.every((frame) => 'transform' in frame && 'opacity' in frame)));
 });
 

@@ -72,6 +72,26 @@ export function buildFilterSummary({ keyword, mentionMin, uniqueByUser, excludeP
   return parts.length ? parts.join(' / ') : '未启用额外筛选';
 }
 
+export function candidateCutoffInfo(value, now = Date.now()) {
+  const loadedAt = new Date(value || '');
+  if (Number.isNaN(loadedAt.getTime())) return { label: '本次载入', ageMs: 0 };
+
+  const current = new Date(now);
+  const sameDay = loadedAt.getFullYear() === current.getFullYear()
+    && loadedAt.getMonth() === current.getMonth()
+    && loadedAt.getDate() === current.getDate();
+  const time = loadedAt.toLocaleTimeString('zh-CN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+  const date = `${loadedAt.getMonth() + 1}月${loadedAt.getDate()}日`;
+  return {
+    label: `${sameDay ? time : `${date} ${time}`} 截止`,
+    ageMs: Math.max(0, current.getTime() - loadedAt.getTime()),
+  };
+}
+
 export function parseCsvLine(line, delimiter) {
   const cells = [];
   let value = '';

@@ -220,6 +220,108 @@ button:active:not(:disabled) {
   color: #cf5960 !important;
 }
 
+.confirm-dialog {
+  width: min(340px, calc(100% - 32px));
+  padding: 0;
+  border: 0;
+  color: var(--ink);
+  background: transparent;
+  overflow: visible;
+}
+
+.confirm-dialog::backdrop {
+  background: rgba(34, 38, 49, .32);
+  backdrop-filter: blur(10px) saturate(110%);
+  -webkit-backdrop-filter: blur(10px) saturate(110%);
+  animation: confirm-backdrop-in .18s ease-out both;
+}
+
+.confirm-dialog[open] .confirm-dialog-card {
+  animation: confirm-dialog-in .28s var(--ease-drawer) both;
+}
+
+.confirm-dialog-card {
+  isolation: isolate;
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, .9);
+  border-radius: 22px;
+  background: rgba(252, 253, 255, .985);
+  box-shadow: var(--inset), 0 30px 80px rgba(29, 34, 49, .28);
+  backdrop-filter: blur(30px) saturate(145%);
+  -webkit-backdrop-filter: blur(30px) saturate(145%);
+}
+
+.confirm-dialog-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  margin-bottom: 18px;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .84);
+  border-radius: 13px;
+  color: #cf5960;
+  background: rgba(255, 235, 237, .86);
+  box-shadow: var(--inset), 0 7px 18px rgba(161, 66, 73, .09);
+}
+
+.confirm-dialog-icon svg {
+  width: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.confirm-dialog-copy h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.confirm-dialog-copy p {
+  margin: 7px 0 22px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.confirm-dialog-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 9px;
+}
+
+.confirm-dialog-actions button {
+  min-height: 44px;
+}
+
+.danger-button {
+  border: 1px solid rgba(204, 75, 86, .08);
+  border-radius: 13px;
+  color: #fff;
+  background: #d85c65;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .22), 0 8px 18px rgba(191, 73, 83, .16);
+  font-size: 13px;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.danger-button:disabled {
+  opacity: .5;
+  cursor: wait;
+}
+
+@keyframes confirm-dialog-in {
+  from { opacity: 0; transform: translateY(12px) scale(.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes confirm-backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .login-stage {
   display: grid;
   min-height: calc(100vh - 120px);

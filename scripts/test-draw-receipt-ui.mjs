@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { chromium } from 'playwright';
 
-const baseUrl = process.env.DRAW_UI_URL || 'http://127.0.0.1:5191/';
+const baseUrl = process.env.DRAW_UI_URL || 'http://127.0.0.1:5195/';
 const executablePath = process.env.PLAYWRIGHT_CHROME_PATH
   || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const outputDir = new URL('../output/ui-checks/', import.meta.url);
@@ -52,6 +52,7 @@ const receipt = {
     complete: true,
     totalNumber: 20,
     visibleNumber: 20,
+    loadedAt: '2026-07-24T01:59:00.000Z',
   },
   seed: 'seed-for-ui-test',
   candidateDigest: 'candidate-digest-for-ui-test',
@@ -113,6 +114,8 @@ try {
     assert.equal(await dialog.getByRole('button', { name: /复制文案/ }).evaluate((element) => element === document.activeElement), true);
     await page.keyboard.press('Tab');
     assert.equal(await closeButton.evaluate((element) => element === document.activeElement), true);
+    await dialog.getByText('查看完整记录', { exact: true }).click();
+    assert.equal(await dialog.getByText('名单截止', { exact: true }).isVisible(), true);
     const finalWinner = dialog.getByText('奈奈').first();
     await finalWinner.scrollIntoViewIfNeeded();
     assert.equal(await finalWinner.isVisible(), true);
@@ -179,6 +182,9 @@ try {
       fullPage: true,
     });
     await dialog.getByRole('button', { name: /关闭/ }).click();
+    if (item.reducedMotion === 'no-preference') {
+      await page.locator('.receipt-backdrop.is-closing').waitFor({ state: 'attached' });
+    }
     await dialog.waitFor({ state: 'detached' });
     await context.close();
   }

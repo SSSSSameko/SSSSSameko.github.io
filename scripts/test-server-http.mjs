@@ -92,6 +92,13 @@ try {
   });
   assert.equal(retiredSyncEndpoint.status, 405);
 
+  const retiredAttemptEndpoint = await fetch(`${baseUrl}/api/weibo/draw-attempts`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-api-key': apiKey },
+    body: JSON.stringify({ statusId: 'test' }),
+  });
+  assert.equal(retiredAttemptEndpoint.status, 405);
+
   const oversizedJob = await fetch(`${baseUrl}/api/weibo/reposts/jobs`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': apiKey },

@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import {
   buildFilterSummary,
+  candidateCutoffInfo,
   cleanApiBase,
   digestCandidates,
   friendlyProviderText,
@@ -58,6 +59,13 @@ import {
   winnerIdsForStatus,
   writeDrawHistory,
 } from './lib/drawReceipts.js';
+import {
+  acquireDrawGuard,
+  completeDrawGuard,
+  drawCooldownScope,
+  drawCooldownStatus,
+  releaseDrawGuard,
+} from './lib/drawCooldown.js';
 import { createResultPoster } from './lib/resultPoster.js';
 import {
   FEEDBACK_CATEGORIES,
@@ -67,9 +75,10 @@ import {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const publicAsset = (name) => `${import.meta.env.BASE_URL}${name}`;
-const APP_VERSION = '3.0.0';
+const APP_VERSION = '3.1.0';
 const REPOST_JOB_TIMEOUT_MS = 90 * 60 * 1000;
 const REPOST_JOB_POLL_MS = 1200;
+const CANDIDATE_BATCH_SIZE = 100;
 function configuredApiBases() {
   const configured = [
     window.WEIBO_DRAW_API_BASE,
@@ -106,6 +115,18 @@ function initialApiBase() {
 }
 function isStaticHostedPage() {
   return /\.github\.io$/i.test(location.hostname) || location.protocol === 'file:';
+}
+
+async function readApiResponse(response, label = '服务') {
+  const text = await response.text();
+  if (!text.trim()) {
+    throw new Error(`${label}暂时不可用（HTTP ${response.status}），请检查后端连接后重试。`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`${label}返回格式异常（HTTP ${response.status}），请稍后重试。`);
+  }
 }
 
 function download(name, content, type = 'text/csv;charset=utf-8') {
@@ -166,18 +187,39 @@ function shouldReduceMotion(preference) {
   return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
+function shortLoadedTime(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+function candidateIdentity(candidate) {
+  return String(candidate?.uid || candidate?.screenName || candidate?.id || '').toLowerCase();
+}
+
 const GUIDE_STEPS = [
   ['1', '载入候选', '粘贴微博正文链接、mid 或 bid。你填写的 Cookie 优先使用，留空时使用服务器登录态。'],
   ['2', '核对名单', '确认候选人数和筛选结果。你也可以手动填写名单，或导入 CSV、TXT、TSV 和 JSON 文件。'],
   ['3', '确认抽奖设置', '检查奖项顺序、中奖人数和筛选规则。中奖总人数不能超过可抽人数。'],
-  ['4', '开奖并保存', '点击“开始抽奖”。完成后可查看公平记录、保存结果图或复制公示文案。'],
+  ['4', '核对并开奖', '在开奖确认页核对候选、奖项和历史次数，再开始抽取。完成后可保存结果图或复制公示文案。'],
 ];
 
 const UPDATE_LOGS = [
   {
+    version: '3.1.0',
+    date: '2026 年 8 月 25 日',
+    label: '当前版本',
+    title: '优化开奖体验',
+    items: [
+      '优化界面与开奖结果',
+      '增加开奖前确认',
+      '提升运行稳定性',
+    ],
+  },
+  {
     version: '3.0.0',
     date: '2026 年 8 月 23 日',
-    label: '当前版本',
+    label: '历史版本',
     title: '全面优化操作体验与服务器稳定性',
     items: [
       '优化UI',
@@ -285,7 +327,7 @@ const LEGAL_DOCUMENTS = {
       ['账号授权', '只能填写你有权使用的 Cookie 或访问令牌。不得盗用账号、绕过平台安全措施或干扰微博服务。'],
       ['数据使用', '不得非法收集、出售、披露或滥用候选信息，也不得使用本应用批量骚扰他人。'],
       ['开奖诚信', '不得篡改候选名单、筛选规则、随机记录或开奖结果，不得使用本应用制造虚假公示。'],
-      ['开奖确认', '点击“开始抽奖”表示你已确认候选范围、筛选条件、奖项顺序和名额。随机种子、名单摘要和过程哈希用于复查，不代表第三方认证。'],
+      ['开奖确认', '点击“确认并开始抽奖”表示你已核对候选范围、筛选条件、奖项顺序和名额。随机种子、名单摘要和过程哈希用于复查，不代表第三方认证。'],
       ['结果履行', '活动主办方负责联系获奖者、核验资格、发放奖品并处理活动争议。'],
     ],
   },
@@ -389,11 +431,24 @@ function ErrorNoticeDialog({ notice, onClose }) {
 }
 
 function NoticeToast({ notice, onClose }) {
+  const [isClosing, setIsClosing] = useState(false);
+
+  useEffect(() => {
+    setIsClosing(false);
+    if (!notice || notice.tone === 'error') return undefined;
+    const dismissTimer = window.setTimeout(() => setIsClosing(true), 2800);
+    const closeTimer = window.setTimeout(onClose, 2980);
+    return () => {
+      window.clearTimeout(dismissTimer);
+      window.clearTimeout(closeTimer);
+    };
+  }, [notice?.id]);
+
   if (!notice) return null;
   if (notice.tone === 'error') return <ErrorNoticeDialog notice={notice} onClose={onClose} />;
   const icon = notice.tone === 'success' ? I.check : I.alert;
   return (
-    <div className={`flow-notice flow-notice-${notice.tone || 'neutral'}`} role="alert" aria-live="assertive">
+    <div className={`flow-notice flow-notice-${notice.tone || 'neutral'} ${isClosing ? 'is-closing' : ''}`} role="status" aria-live="polite">
       <span className="flow-notice-icon">{icon}</span>
       <div>
         <strong>{notice.title}</strong>
@@ -404,11 +459,76 @@ function NoticeToast({ notice, onClose }) {
   );
 }
 
+function ConfirmActionDialog({ action, motionPreference, onClose, onConfirm }) {
+  const dialogRef = useRef(null);
+  const cancelRef = useRef(null);
+  const timerRef = useRef(null);
+  const closingRef = useRef(false);
+  const [isClosing, setIsClosing] = useState(false);
+
+  function close(afterClose) {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setIsClosing(true);
+    timerRef.current = window.setTimeout(() => {
+      onClose();
+      afterClose?.();
+    }, shouldReduceMotion(motionPreference) ? 1 : 160);
+  }
+
+  useEffect(() => {
+    const previousFocus = document.activeElement;
+    cancelRef.current?.focus({ preventScroll: true });
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') close();
+      keepFocusInDialog(event, dialogRef.current);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.clearTimeout(timerRef.current);
+      previousFocus?.focus?.({ preventScroll: true });
+    };
+  }, []);
+
+  return (
+    <div className={`v3-alert-backdrop ${isClosing ? 'is-closing' : ''}`} role="presentation" onClick={() => close()}>
+      <section ref={dialogRef} className="v3-alert-dialog v3-confirm-action-dialog" role="alertdialog" aria-modal="true" aria-labelledby={`confirm-${action.kind}`} onClick={(event) => event.stopPropagation()}>
+        <span className="v3-alert-icon">{I.trash}</span>
+        <h2 id={`confirm-${action.kind}`}>{action.title}</h2>
+        <p>{action.message}</p>
+        <div className="v3-confirm-action-buttons">
+          <button ref={cancelRef} type="button" onClick={() => close()}>取消</button>
+          <button className="is-destructive" type="button" onClick={() => close(onConfirm)}>{action.confirmLabel || '清空'}</button>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function SheetFrame({ title, subtitle, icon, onClose, children, className = '' }) {
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
+  const closeTimerRef = useRef(null);
+  const requestCloseRef = useRef(null);
+  const closingRef = useRef(false);
+  const [isClosing, setIsClosing] = useState(false);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
+
+  function requestClose(afterClose) {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setIsClosing(true);
+    const shellMotion = dialogRef.current?.closest('.app-shell')?.dataset.motion;
+    const reduceMotion = shellMotion === 'reduced'
+      || (shellMotion !== 'full' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+    closeTimerRef.current = window.setTimeout(() => {
+      onCloseRef.current?.();
+      afterClose?.();
+    }, reduceMotion ? 1 : 190);
+  }
+  requestCloseRef.current = requestClose;
 
   useEffect(() => {
     const previousFocus = document.activeElement;
@@ -416,19 +536,20 @@ function SheetFrame({ title, subtitle, icon, onClose, children, className = '' }
     document.body.style.overflow = 'hidden';
     closeButtonRef.current?.focus({ preventScroll: true });
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') onCloseRef.current?.();
+      if (event.key === 'Escape') requestCloseRef.current?.();
       keepFocusInDialog(event, dialogRef.current);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleKeyDown);
+      window.clearTimeout(closeTimerRef.current);
       previousFocus?.focus?.({ preventScroll: true });
     };
   }, []);
 
   return (
-    <div className="flow-sheet-backdrop" onClick={onClose}>
+    <div className={`flow-sheet-backdrop ${isClosing ? 'is-closing' : ''}`} onClick={() => requestClose()}>
       <div ref={dialogRef} className={`flow-sheet ${className}`} role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
         <div className="flow-sheet-grabber" aria-hidden="true" />
         <div className="flow-sheet-head">
@@ -439,29 +560,105 @@ function SheetFrame({ title, subtitle, icon, onClose, children, className = '' }
               {subtitle && <p>{subtitle}</p>}
             </div>
           </div>
-          <button ref={closeButtonRef} type="button" aria-label={`关闭${title}`} onClick={onClose} className="flow-sheet-close">{I.close}</button>
+          <button ref={closeButtonRef} type="button" aria-label={`关闭${title}`} onClick={() => requestClose()} className="flow-sheet-close">{I.close}</button>
         </div>
-        {children}
+        {typeof children === 'function' ? children(requestClose) : children}
       </div>
     </div>
+  );
+}
+
+function DrawConfirmSheet({ controller: c, onClose, onConfirm, onRefresh }) {
+  const previousCount = Math.max(0, Number(c.previousDrawCount || 0));
+  const nextCount = previousCount + 1;
+
+  return (
+    <SheetFrame
+      title="开奖前确认"
+      subtitle="确认无误后再开始抽取"
+      icon={I.shield}
+      onClose={onClose}
+      className="v3-draw-confirm-sheet"
+    >
+      {(close) => (
+        <>
+          <div className={`v3-confirm-hero ${previousCount > 0 ? 'is-repeat' : ''}`}>
+            <span>{previousCount > 0 ? I.history : I.sparkles}</span>
+            <div>
+              <small>{previousCount > 0 ? `此前已完成 ${previousCount} 次` : '暂无历史开奖记录'}</small>
+              <strong>{c.nextDrawText}</strong>
+              <p>只有成功保存的结果才会计入次数</p>
+            </div>
+          </div>
+
+          <dl className="v3-confirm-facts">
+            <div><dt>可抽候选</dt><dd>{c.eligible.length.toLocaleString()} 人</dd></div>
+            <div><dt>中奖名额</dt><dd>{c.totalSlots} 人</dd></div>
+            <div className={c.candidateNeedsRefresh ? 'is-stale' : ''}>
+              <dt>名单截止</dt>
+              <dd>{c.candidateCutoffLabel}</dd>
+            </div>
+            <div><dt>筛选规则</dt><dd>{c.filterSummary}</dd></div>
+          </dl>
+
+          <div className="v3-confirm-prizes" aria-label="本轮奖项">
+            {c.normalizedPrizes.map((prize, index) => (
+              <div key={`${prize.name}-${index}`}>
+                <span style={{ '--prize-color': prize.color }}>{index + 1}</span>
+                <strong>{prize.name}</strong>
+                <small>{prize.count} 名</small>
+              </div>
+            ))}
+          </div>
+
+          <p className="v3-repeat-note">
+            {previousCount > 0 ? I.info : I.clock}
+            {previousCount > 0
+              ? `本次完成后显示为第 ${nextCount} 次；同一浏览器一分钟内不能重复开奖。`
+              : '同一浏览器内，本链接成功开奖后一分钟内不能重复开奖。'}
+          </p>
+
+          <button type="button" className="flow-sheet-primary v3-primary-action v3-confirm-draw" onClick={() => close(onConfirm)}>
+            {I.shuffle}
+            <span>确认并开始抽奖</span>
+          </button>
+          <div className="v3-confirm-secondary-actions">
+            {c.source !== 'manual' && (
+              <button type="button" onClick={() => close(onRefresh)}>
+                {I.refresh}
+                更新候选
+              </button>
+            )}
+            <button type="button" onClick={() => close(() => c.setShowPrizeEditor(true))}>
+              {I.gift}
+              修改奖项
+            </button>
+          </div>
+        </>
+      )}
+    </SheetFrame>
   );
 }
 
 function GuideSheet({ onClose }) {
   return (
     <SheetFrame title="使用教程" subtitle="从载入候选到保存结果" icon={I.book} onClose={onClose} className="flow-guide-sheet">
-      <div className="flow-guide-list">
-        {GUIDE_STEPS.map(([step, title, detail]) => (
-          <div key={step} className="flow-guide-row">
-            <span>{step}</span>
-            <div>
-              <strong>{title}</strong>
-              <p>{detail}</p>
-            </div>
+      {(close) => (
+        <>
+          <div className="flow-guide-list">
+            {GUIDE_STEPS.map(([step, title, detail]) => (
+              <div key={step} className="flow-guide-row">
+                <span>{step}</span>
+                <div>
+                  <strong>{title}</strong>
+                  <p>{detail}</p>
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-      <button type="button" onClick={onClose} className="flow-sheet-primary v3-primary-action">知道了</button>
+          <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">知道了</button>
+        </>
+      )}
     </SheetFrame>
   );
 }
@@ -497,12 +694,12 @@ function FeedbackSheet({ onClose, onSubmit }) {
 
   return (
     <SheetFrame title="意见反馈" subtitle="你的建议会由站长直接查看" icon={I.feedback} onClose={onClose} className="flow-feedback-sheet">
-      {sent ? (
+      {(close) => sent ? (
         <div className="feedback-success" role="status">
           <span>{I.check}</span>
           <h3>谢谢你的反馈</h3>
           <p>内容已经送达，站长会在后台查看。</p>
-          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={onClose}>完成</button>
+          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
         </div>
       ) : (
         <form className="feedback-form" onSubmit={submit}>
@@ -556,52 +753,53 @@ function LegalSheet({ document, onClose, onOpenUpdates }) {
   if (!document) return null;
   return (
     <SheetFrame key={document.key || document.title} title={document.title} subtitle={document.subtitle} icon={document.key === 'updates' ? I.history : I.file} onClose={onClose} className="flow-legal-sheet">
-      <p className="flow-legal-date">更新日期：{document.key === 'updates' || document.key === 'about' ? '2026 年 8 月 23 日' : '2026 年 8 月 22 日'}</p>
-      {document.updates ? (
-        <div className="flow-update-list">
-          {document.updates.map((entry) => (
-            <article className="flow-update-entry" key={entry.version}>
-              <header>
-                <div><strong>版本 {entry.version}</strong><small>{entry.date}</small></div>
-                <span>{entry.label}</span>
-              </header>
-              <h3>{entry.title}</h3>
-              {entry.summary && <p>{entry.summary}</p>}
-              {entry.items.length > 0 && <ul>{entry.items.map((item) => <li key={item}>{item}</li>)}</ul>}
-            </article>
-          ))}
-        </div>
-      ) : (
+      {(close) => (
         <>
-          <div className="flow-legal-sections">
-            {document.sections.map(([title, detail]) => (
-              <section key={title}>
-                <h3>{title}</h3>
-                <p>{detail}</p>
-              </section>
-            ))}
-          </div>
-          {document.key === 'about' && (
-            <button type="button" className="flow-legal-update-link list-row" onClick={onOpenUpdates}>
-              <span className="row-icon mint">{I.history}</span>
-              <span className="row-copy"><strong>更新日志</strong><small>查看 {APP_VERSION} 与历史正式版本</small></span>
-              {I.chevron}
-            </button>
+          <p className="flow-legal-date">更新日期：{document.key === 'updates' || document.key === 'about' ? '2026 年 8 月 25 日' : '2026 年 8 月 22 日'}</p>
+          {document.updates ? (
+            <div className="flow-update-list">
+              {document.updates.map((entry) => (
+                <article className="flow-update-entry" key={entry.version}>
+                  <header>
+                    <div><strong>版本 {entry.version}</strong><small>{entry.date}</small></div>
+                    <span>{entry.label}</span>
+                  </header>
+                  <h3>{entry.title}</h3>
+                  {entry.summary && <p>{entry.summary}</p>}
+                  {entry.items.length > 0 && <ul>{entry.items.map((item) => <li key={item}>{item}</li>)}</ul>}
+                </article>
+              ))}
+            </div>
+          ) : (
+            <>
+              <div className="flow-legal-sections">
+                {document.sections.map(([title, detail]) => (
+                  <section key={title}>
+                    <h3>{title}</h3>
+                    <p>{detail}</p>
+                  </section>
+                ))}
+              </div>
+              {document.key === 'about' && (
+                <button type="button" className="flow-legal-update-link list-row" onClick={() => close(onOpenUpdates)}>
+                  <span className="row-icon mint">{I.history}</span>
+                  <span className="row-copy"><strong>更新日志</strong><small>查看 {APP_VERSION} 与历史正式版本</small></span>
+                  {I.chevron}
+                </button>
+              )}
+            </>
           )}
+          <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">完成</button>
         </>
       )}
-      <button type="button" onClick={onClose} className="flow-sheet-primary v3-primary-action">完成</button>
     </SheetFrame>
   );
 }
 
-function SectionTitle({ eyebrow, title, action, onAction }) {
+function SectionTitle({ title, action, onAction }) {
   return (
     <header className="section-header">
-      <div>
-        {eyebrow && <span>{eyebrow}</span>}
-        <h2>{title}</h2>
-      </div>
+      <h2>{title}</h2>
       {action && <button type="button" onClick={onAction}>{action}</button>}
     </header>
   );
@@ -624,6 +822,7 @@ function AppListRow({ icon, tone = 'blue', title, detail, value, onClick }) {
 function AppleNavigationV3({ controller: c }) {
   const drawState = c.isDrawing ? 'running' : c.hasResults ? 'finished' : 'ready';
   const [tabDirection, setTabDirection] = useState('forward');
+  const [candidateLimit, setCandidateLimit] = useState(CANDIDATE_BATCH_SIZE);
   const drawDeckRef = useRef(null);
   const drawSceneRef = useRef(null);
   const deckAnimationsRef = useRef([]);
@@ -649,24 +848,27 @@ function AppleNavigationV3({ controller: c }) {
   }, []);
 
   const tabIndex = { home: 0, candidates: 1, history: 2, more: 3 }[c.activeTab] ?? 0;
-  const identityOf = (candidate) => String(
-    candidate?.uid || candidate?.screenName || candidate?.id || '',
-  ).toLowerCase();
-  const eligibleIds = new Set(c.eligible.map(identityOf));
-  const excludedCandidates = c.candidates.filter((candidate) => !eligibleIds.has(identityOf(candidate)));
-  const segmentCandidates = c.candidateSegment === 'all'
-    ? c.candidates
-    : c.candidateSegment === 'excluded'
-      ? excludedCandidates
-      : c.eligible;
-  const query = c.candidateQuery.trim().toLowerCase();
-  const visibleCandidates = segmentCandidates
-    .filter((candidate) => !query || [
+  const candidateView = useMemo(() => {
+    const eligibleIds = new Set(c.eligible.map(candidateIdentity));
+    const excludedCandidates = c.candidates.filter((candidate) => (
+      !eligibleIds.has(candidateIdentity(candidate))
+    ));
+    const segmentCandidates = c.candidateSegment === 'all'
+      ? c.candidates
+      : c.candidateSegment === 'excluded'
+        ? excludedCandidates
+        : c.eligible;
+    const query = c.candidateQuery.trim().toLowerCase();
+    const matchingCandidates = segmentCandidates.filter((candidate) => !query || [
       candidate.screenName,
       candidate.uid,
       candidate.text,
-    ].some((value) => String(value || '').toLowerCase().includes(query)))
-    .slice(0, 100);
+    ].some((value) => String(value || '').toLowerCase().includes(query)));
+    return { eligibleIds, excludedCandidates, matchingCandidates, query };
+  }, [c.candidateQuery, c.candidateSegment, c.candidates, c.eligible]);
+  const { eligibleIds, excludedCandidates, matchingCandidates, query } = candidateView;
+  const visibleCandidates = matchingCandidates.slice(0, candidateLimit);
+  const remainingCandidates = Math.max(0, matchingCandidates.length - visibleCandidates.length);
   const visibleHistory = c.historyExpanded ? c.drawHistory : c.drawHistory.slice(0, 3);
   const totalHistoricWinners = c.drawHistory.reduce((sum, item) => sum + Number(item.total || 0), 0);
   const latestHistory = c.drawHistory.slice(0, 2);
@@ -692,6 +894,33 @@ function AppleNavigationV3({ controller: c }) {
     if (!uid) return friendlyProviderText(candidate?.source) || '微博候选';
     return uid.length > 8 ? `UID ${uid.slice(0, 4)}••••${uid.slice(-2)}` : `UID ${uid}`;
   };
+  const drawAction = c.hasCandidates && !c.candidateSourceReady
+    ? {
+      icon: I.link,
+      title: '载入当前来源',
+      detail: '来源或链接已更改，载入后再设置奖项',
+    }
+    : !c.eligible.length
+    ? {
+      icon: I.listChecks,
+      title: '调整筛选',
+      detail: '当前没有符合条件的候选',
+    }
+    : c.drawSetupConfirmed
+      ? {
+        icon: I.shuffle,
+        title: '核对并开奖',
+        detail: `${c.nextDrawText} · 将抽取 ${c.totalSlots} 人`,
+      }
+      : {
+        icon: I.gift,
+        title: '设置奖项并确认',
+        detail: `${c.normalizedPrizes.length} 个奖项 · ${c.totalSlots} 个名额`,
+      };
+
+  useEffect(() => {
+    setCandidateLimit(CANDIDATE_BATCH_SIZE);
+  }, [c.candidateQuery, c.candidateSegment, c.candidates]);
 
   const switchTab = (tab) => {
     const tabOrder = { home: 0, candidates: 1, history: 2, more: 3 };
@@ -707,13 +936,17 @@ function AppleNavigationV3({ controller: c }) {
     });
   };
 
-  const startDraw = () => {
+  const requestDraw = () => {
+    c.requestDraw();
+  };
+
+  const confirmDraw = () => {
     const reducedMotion = shouldReduceMotion(c.motionPreference);
     drawSceneRef.current?.scrollIntoView({
       behavior: reducedMotion ? 'auto' : 'smooth',
       block: 'center',
     });
-    c.drawAll();
+    c.confirmAndDraw();
   };
 
   return (
@@ -721,12 +954,13 @@ function AppleNavigationV3({ controller: c }) {
       className="app-shell v3-app-shell"
       data-draw-state={drawState}
       data-motion={c.motionPreference}
+      data-setup={c.drawSetupConfirmed ? 'confirmed' : 'unconfirmed'}
       data-root-tab={c.activeTab === 'home' ? 'draw' : c.activeTab}
       data-tab-direction={tabDirection}
     >
       <header className="root-navbar glass">
         <button className="brand-button" type="button" onClick={() => switchTab('more')}>
-          <img src={publicAsset('avatar.jpg')} alt="" />
+          <img src={publicAsset('avatar.jpg')} alt="" width="48" height="48" />
           <span>
             <strong>微博转发抽奖</strong>
             <small>by.sameko</small>
@@ -743,6 +977,14 @@ function AppleNavigationV3({ controller: c }) {
       </header>
 
       <NoticeToast notice={c.notice} onClose={c.dismissNotice} />
+      {c.confirmAction && (
+        <ConfirmActionDialog
+          action={c.confirmAction}
+          motionPreference={c.motionPreference}
+          onClose={() => c.setConfirmAction(null)}
+          onConfirm={() => c.applySettingsAction(c.confirmAction.kind)}
+        />
+      )}
 
       <main className="root-pages">
         <section className={`root-view ${c.activeTab === 'home' ? 'is-active' : ''}`} data-root-view="home" hidden={c.activeTab !== 'home'}>
@@ -759,7 +1001,9 @@ function AppleNavigationV3({ controller: c }) {
                         : c.hasResults
                           ? '本轮开奖已完成'
                           : c.hasCandidates
-                         ? '已准备开奖'
+                            ? !c.candidateSourceReady
+                              ? '请载入当前来源'
+                              : c.drawSetupConfirmed ? '已准备开奖' : '请确认奖项'
                             : '等待载入候选'}
                   </span>
                   <strong>
@@ -776,7 +1020,7 @@ function AppleNavigationV3({ controller: c }) {
 
               {!c.hasCandidates ? (
                 <>
-                  <div className="draw-scene v3-intake-scene">
+                  <div className={`draw-scene v3-intake-scene ${c.statusUrl.trim() ? 'has-link' : ''}`}>
                     <div className="scene-geometry" aria-hidden="true"><i /><i /></div>
                     <div className="scene-glint" aria-hidden="true" />
                     <div className="candidate-deck v3-intake-deck">
@@ -792,16 +1036,16 @@ function AppleNavigationV3({ controller: c }) {
                             {I.link}
                             <i>{I.sparkles}</i>
                           </span>
-                          <span key={stageCandidate?.id || stageCandidate?.uid || stageCandidate?.screenName || 'candidate'}>
+                          <span aria-live="polite">
                             <small>微博转发名单</small>
-                            <strong>等待链接</strong>
-                            <em>载入后会显示符合条件的候选</em>
+                            <strong>{c.statusUrl.trim() ? '链接已识别' : '等待链接'}</strong>
+                            <em>{c.statusUrl.trim() ? '可以载入候选名单' : '载入后会显示符合条件的候选'}</em>
                           </span>
                         </div>
                         <footer>
                           <span><small>来源</small><strong>微博转发</strong></span>
                           <span><small>载入</small><strong>链接识别</strong></span>
-                          <span><small>状态</small><strong>待载入</strong></span>
+                          <span><small>状态</small><strong>{c.statusUrl.trim() ? '可载入' : '待载入'}</strong></span>
                         </footer>
                       </article>
                     </div>
@@ -812,23 +1056,19 @@ function AppleNavigationV3({ controller: c }) {
                       <input
                         ref={c.statusInputRef}
                         value={c.statusUrl}
-                        onChange={(event) => {
-                          c.setStatusUrl(event.target.value);
-                          c.setCurrentStatusUrl(event.target.value);
-                        }}
+                        onChange={(event) => c.updateStatusInput(event.target.value)}
                         onPaste={c.handleStatusPaste}
                         name="weiboStatusUrl"
                         autoComplete="off"
                         inputMode="url"
-                        placeholder="粘贴微博正文链接、mid 或 bid"
+                        placeholder="粘贴微博正文链接、mid 或 bid…"
                       />
                       {c.statusUrl.trim() && (
                         <button
                           type="button"
                           aria-label="清空微博链接"
                           onClick={() => {
-                            c.setStatusUrl('');
-                            c.setCurrentStatusUrl('');
+                            c.updateStatusInput('');
                             c.statusInputRef.current?.focus();
                           }}
                         >
@@ -879,7 +1119,7 @@ function AppleNavigationV3({ controller: c }) {
                         <footer>
                           <span><small>奖项</small><strong>{c.normalizedPrizes.length} 个</strong></span>
                           <span><small>名额</small><strong>{c.totalSlots} 名</strong></span>
-                          <span><small>状态</small><strong>{c.isDrawing ? '抽取中' : c.eligible.length ? '可开奖' : '需调整'}</strong></span>
+                          <span><small>状态</small><strong>{c.isDrawing ? '抽取中' : !c.candidateSourceReady ? '待载入' : c.eligible.length ? c.drawSetupConfirmed ? '可开奖' : '待确认' : '需调整'}</strong></span>
                         </footer>
                       </article>
                       <article className="candidate-pass winner-core" aria-hidden={!c.hasResults}>
@@ -902,7 +1142,7 @@ function AppleNavigationV3({ controller: c }) {
                       </article>
                     </div>
                     <div className="scene-caption" aria-hidden="true">
-                      <span><i /><b>{c.isDrawing ? '抽取中' : c.hasResults ? '已完成' : '待开始'}</b></span>
+                      <span><i /><b>{c.isDrawing ? '抽取中' : c.hasResults ? '已完成' : !c.candidateSourceReady ? '待载入' : c.drawSetupConfirmed ? '待开始' : '待确认'}</b></span>
                       <small>微博抽奖</small>
                     </div>
                     <div className="result-rail" aria-label="中奖结果">
@@ -931,16 +1171,27 @@ function AppleNavigationV3({ controller: c }) {
                       </div>
                     </div>
                   </div>
-                  <div className="draw-specs">
-                    <button type="button" onClick={() => c.setShowSourceEditor(true)}>
+                  <div className="draw-specs" aria-label="开奖准备情况">
+                    <button
+                      type="button"
+                      data-state={c.candidateSourceReady ? 'complete' : 'pending'}
+                      aria-label={`候选：${c.eligible.length.toLocaleString()} 人，${c.candidateSourceReady ? '已载入' : '待载入'}`}
+                      onClick={() => c.setShowSourceEditor(true)}
+                    >
                       <span className="spec-icon blue">{I.users}</span>
                       <span><small>候选</small><strong>{c.eligible.length.toLocaleString()}</strong></span>
                     </button>
-                    <button type="button" onClick={() => c.setShowPrizeEditor(true)}>
+                    <button
+                      type="button"
+                      className={c.drawSetupConfirmed ? 'is-confirmed' : ''}
+                      data-state={c.drawSetupConfirmed ? 'complete' : 'pending'}
+                      aria-label={`奖项：${c.normalizedPrizes.length} 个，${c.drawSetupConfirmed ? '已确认' : '待确认'}`}
+                      onClick={() => c.setShowPrizeEditor(true)}
+                    >
                       <span className="spec-icon coral">{I.gift}</span>
-                      <span><small>奖项</small><strong>{c.normalizedPrizes.length} 个</strong></span>
+                      <span><small>{c.drawSetupConfirmed ? '奖项已确认' : '奖项'}</small><strong>{c.normalizedPrizes.length} 个</strong></span>
                     </button>
-                    <button type="button" onClick={() => c.setShowFilters(true)}>
+                    <button type="button" data-state="complete" aria-label={`筛选规则：${c.filterEnabledText}`} onClick={() => c.setShowFilters(true)}>
                       <span className="spec-icon mint">{I.badgeCheck}</span>
                       <span><small>规则</small><strong>{c.filterEnabledText}</strong></span>
                     </button>
@@ -957,17 +1208,13 @@ function AppleNavigationV3({ controller: c }) {
                       <button
                         className="primary-button v3-primary-action"
                         type="button"
-                        onClick={c.eligible.length ? startDraw : () => c.setShowFilters(true)}
+                        onClick={requestDraw}
                         disabled={c.isDrawing || c.isLoading}
                       >
-                        <span className="draw-button-icon">{c.eligible.length ? I.shuffle : I.listChecks}</span>
+                        <span className="draw-button-icon">{drawAction.icon}</span>
                         <span>
-                          <strong>{c.eligible.length ? '开始抽奖' : '调整筛选'}</strong>
-                          <small>
-                            {c.eligible.length
-                              ? `将抽取 ${c.totalSlots} 位用户`
-                              : '当前没有符合条件的候选'}
-                          </small>
+                          <strong>{drawAction.title}</strong>
+                          <small>{drawAction.detail}</small>
                         </span>
                         {I.chevron}
                       </button>
@@ -985,8 +1232,8 @@ function AppleNavigationV3({ controller: c }) {
                         <span><small>开奖完成</small><strong>{c.drawCountText}</strong></span>
                       </div>
                       <div className="result-buttons">
-                        <button type="button" aria-label="再次抽奖" onClick={startDraw}>{I.shuffle}</button>
-                        <button type="button" aria-label="查看开奖结果" onClick={() => c.setSelectedReceipt(c.drawHistory[0] || null)}>{I.clock}</button>
+                        <button type="button" aria-label="设置并再次抽奖" title="设置并再次抽奖" onClick={requestDraw}>{I.shuffle}</button>
+                        <button type="button" aria-label="查看开奖结果" title="查看开奖结果" onClick={() => c.setSelectedReceipt(c.drawHistory[0] || null)}>{I.clock}</button>
                       </div>
                     </div>
                   </div>
@@ -1003,7 +1250,7 @@ function AppleNavigationV3({ controller: c }) {
             </section>
 
             <section className="content-section">
-              <SectionTitle eyebrow="开奖前确认" title="抽奖设置" />
+              <SectionTitle title="抽奖设置" />
               <div className="grouped-list">
                 <AppListRow
                   icon={I.link}
@@ -1031,7 +1278,6 @@ function AppleNavigationV3({ controller: c }) {
 
             <section className="content-section">
               <SectionTitle
-                eyebrow="最近完成"
                 title="开奖记录"
                 action={c.drawHistory.length ? '查看全部' : ''}
                 onAction={() => switchTab('history')}
@@ -1066,18 +1312,18 @@ function AppleNavigationV3({ controller: c }) {
             <header className="large-title">
               <span className={`title-status ${c.hasCandidates ? '' : 'neutral'}`}><i /> {c.hasCandidates ? '名单已载入' : '尚未载入候选'}</span>
               <h1>候选名单</h1>
-              <p>{c.hasCandidates ? `${c.eligible.length.toLocaleString()} 人符合当前筛选规则` : '从微博载入，也可手动填写或导入文件'}</p>
+              <p>{c.hasCandidates ? `${c.eligible.length.toLocaleString()} 人符合当前筛选规则 · ${c.candidateFreshnessText}` : '从微博载入，也可手动填写或导入文件'}</p>
             </header>
 
             <section className="content-section v3-source-section">
-              <SectionTitle eyebrow="候选来源" title="载入名单" action={c.hasCandidates ? '刷新' : ''} onAction={() => c.safeLoadCandidates({ jumpAfterLoad: false })} />
+              <SectionTitle title="载入名单" action={c.hasCandidates ? '刷新' : ''} onAction={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: true })} />
               <div className="segmented-control v3-source-control">
                 {SOURCE_OPTIONS.map(({ value, label }) => (
                   <button
                     key={value}
                     type="button"
                     className={c.source === value ? 'is-active' : ''}
-                    onClick={() => c.setSource(value)}
+                    onClick={() => { c.setSource(value); c.clearResult('候选来源已更新，请重新开奖。'); }}
                   >
                     {label}
                   </button>
@@ -1091,10 +1337,7 @@ function AppleNavigationV3({ controller: c }) {
                     <input
                       ref={c.activeTab === 'candidates' ? c.statusInputRef : null}
                       value={c.statusUrl}
-                      onChange={(event) => {
-                        c.setStatusUrl(event.target.value);
-                        c.setCurrentStatusUrl(event.target.value);
-                      }}
+                      onChange={(event) => c.updateStatusInput(event.target.value)}
                       onPaste={c.handleStatusPaste}
                       name="candidateStatusUrl"
                       inputMode="url"
@@ -1136,7 +1379,7 @@ function AppleNavigationV3({ controller: c }) {
                     onChange={(event) => c.setManualInput(event.target.value)}
                     name="manualCandidateInput"
                     aria-label="手动候选名单"
-                    placeholder="每行一位用户，支持 CSV、TSV、JSON；也可以选择文件导入。"
+                    placeholder="每行一个昵称；CSV 建议使用 uid,screenName 表头。"
                   />
                   <div className="v3-action-row">
                     <label className="v3-file-action">
@@ -1162,7 +1405,7 @@ function AppleNavigationV3({ controller: c }) {
                       placeholder="输入官方访问令牌"
                     />
                   </label>
-                  <button className="v3-solid-action v3-primary-action" type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false })} disabled={c.isLoading}>
+                  <button className="v3-solid-action v3-primary-action" type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: c.shouldForceCandidateRefresh(c.statusUrl) })} disabled={c.isLoading}>
                     {I.download}
                     通过官方接口载入
                   </button>
@@ -1193,8 +1436,7 @@ function AppleNavigationV3({ controller: c }) {
 
             <section className="content-section candidate-section">
               <SectionTitle
-                eyebrow={c.hasCandidates ? '按载入顺序' : '尚未载入'}
-                title="候选用户"
+                title={query ? `搜索结果 · ${matchingCandidates.length.toLocaleString()}` : '候选用户'}
                 action={c.hasCandidates ? '导出' : ''}
                 onAction={() => download('eligible-candidates.csv', toCsv(c.eligible.map((item) => ({ tier: '', ...item }))))}
               />
@@ -1214,8 +1456,8 @@ function AppleNavigationV3({ controller: c }) {
                         <strong>{candidate.screenName || candidate.uid || `候选用户 ${index + 1}`}</strong>
                         <small>{candidate.uid ? `UID ${candidate.uid}` : friendlyProviderText(candidate.source) || '候选名单'}</small>
                       </span>
-                      <span className={eligibleIds.has(identityOf(candidate)) ? 'status-badge' : 'status-badge is-excluded'}>
-                        {eligibleIds.has(identityOf(candidate)) ? '符合' : '排除'}
+                      <span className={eligibleIds.has(candidateIdentity(candidate)) ? 'status-badge' : 'status-badge is-excluded'}>
+                        {eligibleIds.has(candidateIdentity(candidate)) ? '符合' : '排除'}
                       </span>
                     </button>
                   ))}
@@ -1224,6 +1466,17 @@ function AppleNavigationV3({ controller: c }) {
                 <div className="v3-section-empty v3-candidate-empty">
                   <span>{I.users}</span>
                   <div><strong>{c.hasCandidates ? '没有匹配的候选用户' : '候选名单为空'}</strong><small>{c.hasCandidates ? '调整搜索或筛选条件后再查看' : '载入名单后，候选用户会显示在这里'}</small></div>
+                </div>
+              )}
+              {remainingCandidates > 0 && (
+                <div className="candidate-load-more">
+                  <span>已显示 {visibleCandidates.length.toLocaleString()} / {matchingCandidates.length.toLocaleString()}</span>
+                  <button
+                    type="button"
+                    onClick={() => setCandidateLimit((current) => current + CANDIDATE_BATCH_SIZE)}
+                  >
+                    继续显示 {Math.min(CANDIDATE_BATCH_SIZE, remainingCandidates).toLocaleString()} 人
+                  </button>
                 </div>
               )}
             </section>
@@ -1246,7 +1499,7 @@ function AppleNavigationV3({ controller: c }) {
             </section>
 
             <section className="content-section">
-              <SectionTitle eyebrow="最近在前" title="全部记录" />
+              <SectionTitle title="全部记录" />
               {visibleHistory.length ? (
                 <>
                   <div className="history-list">
@@ -1293,14 +1546,14 @@ function AppleNavigationV3({ controller: c }) {
             </header>
 
             <button className="app-summary" type="button" onClick={() => c.openLegalDocument('about')}>
-              <img src={publicAsset('avatar.jpg')} alt="" />
+              <img src={publicAsset('avatar.jpg')} alt="" width="72" height="72" />
               <span><strong>微博转发抽奖</strong><small>版本 {APP_VERSION} · by.sameko</small></span>
               <em>关于</em>
               {I.chevron}
             </button>
 
             <section className="content-section">
-              <SectionTitle eyebrow="当前状态" title="数据与连接" />
+              <SectionTitle title="数据与连接" />
               <div className="grouped-list">
                 <AppListRow icon={I.clock} tone="coral" title="本机记录" detail="保存在当前浏览器的开奖记录" value={`${c.drawHistory.length} 条`} onClick={() => c.setShowSettings(true)} />
                 <AppListRow icon={I.shield} title="微博 Cookie" detail="本次填写优先，未填写时使用服务器" value={c.accountStatusText} onClick={() => c.setShowSettings(true)} />
@@ -1309,7 +1562,7 @@ function AppleNavigationV3({ controller: c }) {
             </section>
 
             <section className="content-section">
-              <SectionTitle eyebrow="应用" title="偏好与帮助" />
+              <SectionTitle title="偏好与帮助" />
               <div className="grouped-list">
                 <AppListRow icon={I.settings} tone="gray" title="数据设置" detail="清理本机数据或修改后端地址" onClick={() => c.setShowSettings(true)} />
                 <AppListRow icon={I.book} tone="coral" title="使用教程" detail="从候选载入到保存结果" onClick={() => c.setShowGuide(true)} />
@@ -1319,7 +1572,7 @@ function AppleNavigationV3({ controller: c }) {
             </section>
 
             <section className="content-section">
-              <SectionTitle eyebrow="文档" title="法律与许可" />
+              <SectionTitle title="法律与许可" />
               <div className="grouped-list">
                 <AppListRow icon={I.alert} tone="coral" title="免责声明" detail="服务边界与使用责任" onClick={() => c.openLegalDocument('disclaimer')} />
                 <AppListRow icon={I.shield} title="隐私政策" detail="Cookie、候选与记录如何处理" onClick={() => c.openLegalDocument('privacy')} />
@@ -1352,9 +1605,19 @@ function AppleNavigationV3({ controller: c }) {
       {c.showGuide && <GuideSheet onClose={() => c.setShowGuide(false)} />}
       {c.showFeedback && <FeedbackSheet onClose={() => c.setShowFeedback(false)} onSubmit={c.submitFeedback} />}
       {c.legalDocument && <LegalSheet document={c.legalDocument} onClose={() => c.setLegalDocument(null)} onOpenUpdates={() => c.openLegalDocument('updates')} />}
+      {c.showDrawConfirm && (
+        <DrawConfirmSheet
+          controller={c}
+          onClose={() => c.setShowDrawConfirm(false)}
+          onConfirm={confirmDraw}
+          onRefresh={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: true })}
+        />
+      )}
 
       {c.showSourceEditor && (
         <SheetFrame title="候选来源" subtitle={sourceDetail} icon={I.link} onClose={() => c.setShowSourceEditor(false)} className="v3-editor-sheet v3-source-sheet">
+          {(close) => (
+            <>
           <div className="segmented-control v3-source-control">
             {SOURCE_OPTIONS.map(({ value, label }) => (
               <button
@@ -1382,10 +1645,7 @@ function AppleNavigationV3({ controller: c }) {
                 <input
                   ref={c.statusInputRef}
                   value={c.statusUrl}
-                  onChange={(event) => {
-                    c.setStatusUrl(event.target.value);
-                    c.setCurrentStatusUrl(event.target.value);
-                  }}
+                  onChange={(event) => c.updateStatusInput(event.target.value)}
                   onPaste={c.handleStatusPaste}
                   name="sourceSheetStatusUrl"
                   inputMode="url"
@@ -1427,7 +1687,7 @@ function AppleNavigationV3({ controller: c }) {
             <div className="v3-source-form v3-sheet-source-form">
               <div className="v3-sheet-callout">
                 <span className="row-icon coral">{I.users}</span>
-                <div><strong>手动名单</strong><small>直接填写，也可以导入 CSV、TSV 或 JSON</small></div>
+                <div><strong>手动名单</strong><small>每行一个昵称，也可导入带表头的 CSV、TSV 或 JSON</small></div>
               </div>
               <textarea
                 className="v3-textarea v3-list-input"
@@ -1435,7 +1695,7 @@ function AppleNavigationV3({ controller: c }) {
                 onChange={(event) => c.setManualInput(event.target.value)}
                 name="sourceSheetManualCandidates"
                 aria-label="弹窗手动候选名单"
-                placeholder="每行一位用户，支持 CSV、TSV、JSON。"
+                placeholder="每行一个昵称；CSV 建议使用 uid,screenName 表头。"
               />
               <div className="v3-action-row">
                 <label className="v3-file-action">
@@ -1465,7 +1725,7 @@ function AppleNavigationV3({ controller: c }) {
                   placeholder="输入官方访问令牌"
                 />
               </label>
-              <button className="v3-pearl-action v3-primary-action" type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false })} disabled={c.isLoading}>
+              <button className="v3-pearl-action v3-primary-action" type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: c.shouldForceCandidateRefresh(c.statusUrl) })} disabled={c.isLoading}>
                 <span className="v3-pearl-icon">{c.isLoading ? I.refresh : I.download}</span>
                 <span className="v3-pearl-copy"><strong>{c.isLoading ? '正在载入候选' : '通过官方接口载入'}</strong><small>令牌仅用于当前页面请求</small></span>
                 <span className="v3-pearl-arrow">{I.chevron}</span>
@@ -1473,12 +1733,16 @@ function AppleNavigationV3({ controller: c }) {
             </div>
           )}
 
-          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => c.setShowSourceEditor(false)}>完成</button>
+          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
+            </>
+          )}
         </SheetFrame>
       )}
 
       {c.showPrizeEditor && (
         <SheetFrame title="奖项设置" subtitle={`${c.normalizedPrizes.length} 个奖项 · ${c.totalSlots} 个名额`} icon={I.gift} onClose={() => c.setShowPrizeEditor(false)} className="v3-editor-sheet">
+          {(close) => (
+            <>
           <div className="v3-sheet-toolbar">
             <span>按顺序依次抽取</span>
             <button type="button" onClick={c.addPrize}>{I.plus} 添加奖项</button>
@@ -1532,12 +1796,30 @@ function AppleNavigationV3({ controller: c }) {
               </section>
             ))}
           </div>
-          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => c.setShowPrizeEditor(false)}>完成</button>
+          <div className="v3-prize-confirm-summary">
+            <span>{I.users}<small>可抽候选</small><strong>{c.eligible.length.toLocaleString()} 人</strong></span>
+            <span>{I.gift}<small>中奖名额</small><strong>{c.totalSlots} 人</strong></span>
+          </div>
+          <button
+            type="button"
+            className="flow-sheet-primary v3-primary-action v3-prize-confirm-button"
+            onClick={() => {
+              if (c.confirmDrawSetup()) close();
+            }}
+            disabled={!c.hasCandidates || !c.candidateSourceReady}
+          >
+            {I.check}
+            <span>{!c.hasCandidates ? '载入候选后确认' : c.candidateSourceReady ? '确认奖项设置' : '载入当前来源后确认'}</span>
+          </button>
+            </>
+          )}
         </SheetFrame>
       )}
 
       {c.showFilters && (
         <SheetFrame title="筛选规则" subtitle="调整本轮可抽候选" icon={I.listChecks} onClose={() => c.setShowFilters(false)} className="v3-editor-sheet">
+          {(close) => (
+            <>
           <div className="v3-filter-presets">
             <button
               type="button"
@@ -1578,17 +1860,21 @@ function AppleNavigationV3({ controller: c }) {
             <label><span>排除名单</span><textarea value={c.blocklist} onChange={(event) => { c.setBlocklist(event.target.value); c.clearResult('筛选规则已更新，请重新开奖。'); }} placeholder="每行一个 UID 或昵称" /></label>
           </div>
           <div className="v3-toggle-list">
-            <label><span><strong>候选去重</strong><small>同一用户只保留一次</small></span><input type="checkbox" checked={c.uniqueByUser} onChange={(event) => c.setUniqueByUser(event.target.checked)} /></label>
-             <label><span><strong>排除已中奖用户</strong><small>仅限当前浏览器的当前任务</small></span><input type="checkbox" checked={c.excludePrevious} onChange={(event) => c.setExcludePrevious(event.target.checked)} /></label>
+            <label><span><strong>候选去重</strong><small>同一用户只保留一次</small></span><input type="checkbox" checked={c.uniqueByUser} onChange={(event) => { c.setUniqueByUser(event.target.checked); c.clearResult('筛选规则已更新，请重新开奖。'); }} /></label>
+            <label><span><strong>排除已中奖用户</strong><small>仅限当前浏览器的当前任务</small></span><input type="checkbox" checked={c.excludePrevious} onChange={(event) => { c.setExcludePrevious(event.target.checked); c.clearResult('筛选规则已更新，请重新开奖。'); }} /></label>
           </div>
-          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => c.setShowFilters(false)}>应用筛选</button>
+          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>应用筛选</button>
+            </>
+          )}
         </SheetFrame>
       )}
 
       {c.showSettings && (
         <SheetFrame title="设置" subtitle="显示、数据与后端连接" icon={I.settings} onClose={() => c.setShowSettings(false)} className="v3-editor-sheet">
+          {(close) => (
+            <>
           <div className="flow-app-summary">
-            <img src={publicAsset('avatar.jpg')} alt="" />
+            <img src={publicAsset('avatar.jpg')} alt="" width="72" height="72" />
             <div><strong>微博转发抽奖</strong><p>版本 {APP_VERSION} · by.sameko</p></div>
             <span>{c.accountStatusText}</span>
           </div>
@@ -1617,18 +1903,26 @@ function AppleNavigationV3({ controller: c }) {
           </div>
           <h3 className="flow-settings-caption">当前设备</h3>
           <div className="flow-settings-list">
-            <button type="button" onClick={() => { c.setCandidates([]); c.setResults([]); c.setLastPool(null); c.setShowSettings(false); c.showStatus('已清空候选和结果。', 'success', { popup: true, title: '已清空' }); }}>
-              <span>{I.trash}</span><div><strong>清空当前抽奖</strong><small>移除当前候选与结果，不影响服务器记录</small></div>{I.chevron}
+            <button type="button" onClick={() => close(() => c.setConfirmAction({
+              kind: 'current-draw',
+              title: '清空当前抽奖？',
+              message: '当前候选和尚未保存的结果会被移除，服务器开奖记录不受影响。',
+            }))}>
+              <span>{I.trash}</span><div><strong>清空当前抽奖</strong><small>移除当前候选与结果，不影响服务器记录</small></div><em className="flow-settings-action-label">清空</em>
             </button>
             <button type="button" onClick={() => { c.setMobileCookie(''); c.showStatus('已清空当前输入的 Cookie。', 'success', { popup: true, title: '已清空' }); }}>
-              <span>{I.shield}</span><div><strong>清除本次 Cookie</strong><small>不会修改服务器 Cookie</small></div>{I.chevron}
+              <span>{I.shield}</span><div><strong>清除本次 Cookie</strong><small>不会修改服务器 Cookie</small></div><em className="flow-settings-action-label">清除</em>
             </button>
-            <button type="button" onClick={() => { c.setDrawHistory([]); c.showStatus('已清空本机开奖记录。', 'success', { popup: true, title: '已清空' }); }}>
-              <span>{I.clock}</span><div><strong>清空本机记录</strong><small>仅移除当前浏览器中的开奖记录</small></div>{I.chevron}
+            <button type="button" onClick={() => close(() => c.setConfirmAction({
+              kind: 'local-history',
+              title: '清空本机记录？',
+              message: '当前浏览器保存的开奖记录会被移除，服务器中的记录不会删除。',
+            }))}>
+              <span>{I.clock}</span><div><strong>清空本机记录</strong><small>仅移除当前浏览器中的开奖记录</small></div><em className="flow-settings-action-label">清空</em>
             </button>
           </div>
           <details className="flow-connection-details">
-            <summary>后端连接</summary>
+            <summary><span><strong>后端连接</strong><small>{c.serviceStatusText}</small></span>{I.chevron}</summary>
             <div className="flow-settings-form">
               <label className="flow-field-block"><span>后端接口地址</span><input value={c.apiBase} onChange={(event) => c.setApiBase(cleanApiBase(event.target.value))} placeholder="https://111.228.11.206" /></label>
               <label className="flow-field-block"><span>访问密钥（可选）</span><input value={c.apiKey} onChange={(event) => c.setApiKey(event.target.value)} type="password" placeholder="公开模式不用填写" /></label>
@@ -1638,11 +1932,14 @@ function AppleNavigationV3({ controller: c }) {
               </div>
             </div>
           </details>
-          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => c.setShowSettings(false)}>完成</button>
+          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
+            </>
+          )}
         </SheetFrame>
       )}
 
       <DrawResultSheet
+        key={c.selectedReceipt?.drawnAt || 'no-result'}
         receipt={c.selectedReceipt}
         apiBase={c.apiBase}
         isCapturing={c.isCapturing}
@@ -1674,6 +1971,8 @@ function App() {
   const [lastPool, setLastPool] = useState(null);
   const [lastAudit, setLastAudit] = useState(null);
   const [sourceMeta, setSourceMeta] = useState(null);
+  const [loadedSource, setLoadedSource] = useState('');
+  const [sourceInputDirty, setSourceInputDirty] = useState(false);
   const [currentStatusId, setCurrentStatusId] = useState('');
   const [currentStatusUrl, setCurrentStatusUrl] = useState('');
   const [drawCount, setDrawCount] = useState(null);
@@ -1693,9 +1992,12 @@ function App() {
   const [showFeedback, setShowFeedback] = useState(false);
   const [legalDocument, setLegalDocument] = useState(null);
   const [notice, setNotice] = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null);
   const [activeTab, setActiveTab] = useState('home');
   const [showSourceEditor, setShowSourceEditor] = useState(false);
   const [showPrizeEditor, setShowPrizeEditor] = useState(false);
+  const [showDrawConfirm, setShowDrawConfirm] = useState(false);
+  const [confirmedSetup, setConfirmedSetup] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
   const [candidateQuery, setCandidateQuery] = useState('');
   const [candidateSegment, setCandidateSegment] = useState('eligible');
@@ -1708,6 +2010,12 @@ function App() {
   const [apiHealth, setApiHealth] = useState('checking');
   const firstPrizeNameRef = useRef(null);
   const statusInputRef = useRef(null);
+  const drawGuardRef = useRef(null);
+
+  useEffect(() => () => {
+    const guard = drawGuardRef.current;
+    if (guard) releaseDrawGuard(window.localStorage, guard.scope, guard.token);
+  }, []);
 
   const normalizedPrizes = useMemo(() => prizes
     .map((prize, index) => ({
@@ -1751,6 +2059,26 @@ function App() {
 
   const displayPool = lastPool || eligible;
   const winners = results.flatMap((item) => item.winners);
+  const candidateSourceReady = Boolean(
+    candidates.length
+    && loadedSource === source
+    && (source === 'manual' || !sourceInputDirty),
+  );
+  const drawSetupConfirmed = Boolean(
+    candidateSourceReady
+    && confirmedSetup
+    && confirmedSetup.candidates === candidates
+    && confirmedSetup.prizes === prizes
+    && confirmedSetup.source === source
+    && confirmedSetup.statusId === currentStatusId
+    && confirmedSetup.statusUrl === currentStatusUrl
+    && confirmedSetup.keyword === keyword
+    && confirmedSetup.mentionMin === mentionMin
+    && confirmedSetup.blocklist === blocklist
+    && confirmedSetup.uniqueByUser === uniqueByUser
+    && confirmedSetup.excludePrevious === excludePrevious
+    && confirmedSetup.eligibleCount === eligible.length,
+  );
 
   function apiPath(path) {
     const cleanPath = path.startsWith('/') ? path : `/${path}`;
@@ -1793,7 +2121,7 @@ function App() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(normalizeFeedbackSubmission(payload)),
       });
-      const data = await response.json().catch(() => ({}));
+      const data = await readApiResponse(response, '反馈服务');
       if (!response.ok || data.ok === false) {
         throw new Error(data.error || `提交失败：${response.status}`);
       }
@@ -1810,6 +2138,22 @@ function App() {
     clearResult();
     setShowSourceEditor(true);
   }
+  function updateStatusInput(value) {
+    setStatusUrl(value);
+    setSourceInputDirty(true);
+    setConfirmedSetup(null);
+  }
+  function shouldForceCandidateRefresh(value) {
+    const target = String(value || '').trim();
+    const loadedUrl = String(sourceMeta?.statusUrl || '').trim();
+    const loadedId = String(sourceMeta?.statusId || '').trim();
+    return Boolean(
+      candidates.length
+      && loadedSource === source
+      && !sourceInputDirty
+      && (target === loadedUrl || target === loadedId || (loadedId && target.includes(loadedId))),
+    );
+  }
   function safeLoadCandidates(options) {
     loadCandidates(options).catch(() => {});
   }
@@ -1822,6 +2166,7 @@ function App() {
         jumpAfterLoad: false,
         sourceOverride: 'mobile',
         statusUrlOverride: existingValue,
+        forceRefresh: shouldForceCandidateRefresh(existingValue),
       });
       return;
     }
@@ -1830,12 +2175,14 @@ function App() {
       const pastedValue = (await navigator.clipboard.readText()).trim();
       if (!pastedValue) throw new Error('clipboard-empty');
       setStatusUrl(pastedValue);
-      setCurrentStatusUrl(pastedValue);
+      setSourceInputDirty(true);
+      setConfirmedSetup(null);
       setSource('mobile');
       safeLoadCandidates({
         jumpAfterLoad: false,
         sourceOverride: 'mobile',
         statusUrlOverride: pastedValue,
+        forceRefresh: shouldForceCandidateRefresh(pastedValue),
       });
     } catch {
       statusInputRef.current?.focus();
@@ -1850,12 +2197,14 @@ function App() {
     if (!pastedValue || isLoading || isDrawing) return;
     event.preventDefault();
     setStatusUrl(pastedValue);
-    setCurrentStatusUrl(pastedValue);
+    setSourceInputDirty(true);
+    setConfirmedSetup(null);
     setSource('mobile');
     safeLoadCandidates({
       jumpAfterLoad: false,
       sourceOverride: 'mobile',
       statusUrlOverride: pastedValue,
+      forceRefresh: shouldForceCandidateRefresh(pastedValue),
     });
   }
   function clearResult(message) {
@@ -1864,6 +2213,22 @@ function App() {
     setLastPool(null);
     setLastAudit(null);
     setSelectedReceipt(null);
+  }
+  function applySettingsAction(kind) {
+    if (kind === 'current-draw') {
+      setCandidates([]);
+      setHistoryUids(new Set());
+      setConfirmedSetup(null);
+      clearResult();
+      showStatus('已清空当前候选和结果。', 'success', { popup: true, title: '已清空' });
+      return;
+    }
+    if (kind === 'local-history') {
+      setDrawHistory([]);
+      setHistoryUids(new Set());
+      setConfirmedSetup(null);
+      showStatus('已清空本机开奖记录。', 'success', { popup: true, title: '已清空' });
+    }
   }
   function jumpToPrizeSettings() {
     setShowPrizeEditor(true);
@@ -1878,6 +2243,76 @@ function App() {
       return false;
     }
     return true;
+  }
+  function confirmDrawSetup() {
+    if (!ensurePrizeSettingsReady()) return false;
+    if (!candidateSourceReady) {
+      setShowSourceEditor(true);
+      showStatus('来源或链接已更改，请先重新载入候选。', 'error');
+      return false;
+    }
+    if (!eligible.length) {
+      showStatus('当前没有可抽候选，请先载入名单或调整筛选规则。', 'error');
+      return false;
+    }
+    if (totalSlots > eligible.length) {
+      showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${eligible.length}。`, 'error');
+      return false;
+    }
+    setConfirmedSetup({
+      candidates,
+      prizes,
+      source,
+      statusId: currentStatusId,
+      statusUrl: currentStatusUrl,
+      keyword,
+      mentionMin,
+      blocklist,
+      uniqueByUser,
+      excludePrevious,
+      eligibleCount: eligible.length,
+    });
+    showStatus('抽奖设置已确认，请核对本轮信息后开奖。', 'success');
+    return true;
+  }
+  function requestDraw() {
+    if (candidates.length && !candidateSourceReady) {
+      setShowSourceEditor(true);
+      showStatus('来源或链接已更改，请先重新载入候选。');
+      return;
+    }
+    if (!eligible.length) {
+      setShowFilters(true);
+      return;
+    }
+    const scope = drawCooldownScope({
+      source,
+      statusId: currentStatusId,
+      statusUrl: currentStatusUrl || statusUrl,
+    });
+    const cooldown = drawCooldownStatus(window.localStorage, scope);
+    if (cooldown.blocked) {
+      const message = cooldown.reason === 'running'
+        ? '本链接正在当前浏览器的另一个页面开奖，请稍后再试。'
+        : `本链接刚刚完成开奖，请 ${Math.max(1, Math.ceil(cooldown.remainingMs / 1000))} 秒后再试。`;
+      showStatus(message, 'error', { title: '请稍后开奖' });
+      return;
+    }
+    if (!drawSetupConfirmed) {
+      setShowPrizeEditor(true);
+      return;
+    }
+    setShowDrawConfirm(true);
+  }
+  function confirmAndDraw() {
+    if (!drawSetupConfirmed) {
+      setShowDrawConfirm(false);
+      setShowPrizeEditor(true);
+      showStatus('抽奖设置已变化，请重新确认。', 'error');
+      return;
+    }
+    setShowDrawConfirm(false);
+    drawAll();
   }
   function updatePrize(index, patch) {
     setPrizes((previous) => previous.map((prize, prizeIndex) => (
@@ -1904,7 +2339,7 @@ function App() {
   async function loadCookieStatus(check = false) {
     try {
       const response = await apiFetch(`/api/weibo/cookie-status${check ? '?check=1' : ''}`);
-      const json = await response.json();
+      const json = await readApiResponse(response, 'Cookie 状态服务');
       if (!json.ok) throw new Error(json.error || '服务器 Cookie 状态读取失败');
       setCookieInfo(json);
       setApiHealth('ok');
@@ -1920,14 +2355,14 @@ function App() {
       }
     } catch (error) {
       setApiHealth('error');
-      if (check && !/Unexpected token|not valid JSON/i.test(error.message || '')) showStatus(error.message, 'error');
+      if (check) showStatus(error.message, 'error');
     }
   }
 
   async function testApiConnection() {
     try {
       const response = await apiFetch('/api/health');
-      const json = await response.json();
+      const json = await readApiResponse(response, '后端服务');
       if (!json.ok) throw new Error(json.error || '后端没有返回 ok');
       setApiHealth('ok');
       showStatus(`后端连接成功：${apiBase || location.origin}`, 'success');
@@ -1944,10 +2379,8 @@ function App() {
     }
     try {
       const response = await apiFetch(`/api/weibo/draw-count?statusUrl=${encodeURIComponent(value)}`);
-      const json = await response.json();
+      const json = await readApiResponse(response, '开奖记录服务');
       if (!json.ok) throw new Error(json.error || '抽奖次数查询失败');
-      setCurrentStatusId(json.statusId || '');
-      setCurrentStatusUrl(json.statusUrl || value);
       setDrawCount(json.drawCount);
     } catch {
       setDrawCount(null);
@@ -1983,7 +2416,7 @@ function App() {
     const timer = window.setTimeout(() => {
       setSelectedReceipt(pendingReceipt);
       setPendingReceipt(null);
-    }, reducedMotion ? 420 : 1040);
+    }, reducedMotion ? 480 : 1200);
     return () => window.clearTimeout(timer);
   }, [pendingReceipt, isDrawing, motionPreference]);
 
@@ -1994,20 +2427,36 @@ function App() {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const started = await startResponse.json();
+    const started = await readApiResponse(startResponse, '候选载入服务');
     if (!started.ok) throw new Error(started.error || '抓取任务创建失败');
     let lastProgress = started.progress || { percent: 3, message: '任务已创建' };
+    if (started.delivery === 'shared-running') {
+      lastProgress = { ...lastProgress, message: `已合并到同一微博的载入任务 · ${lastProgress.message}` };
+    } else if (started.delivery === 'recent-snapshot') {
+      lastProgress = { ...lastProgress, message: '正在读取刚刚载入的候选快照' };
+    }
     const deadline = Date.now() + REPOST_JOB_TIMEOUT_MS;
     setProgress(lastProgress);
+    if (started.status === 'done' && started.result) {
+      return {
+        ...started.result,
+        meta: { ...(started.result.meta || {}), delivery: started.delivery || 'fresh' },
+      };
+    }
     while (true) {
       if (Date.now() > deadline) throw new Error('抓取任务等待时间过长，请稍后重试。');
       await sleep(REPOST_JOB_POLL_MS);
       const response = await apiFetch(`/api/weibo/reposts/jobs/${encodeURIComponent(started.jobId)}`);
-      const json = await response.json();
+      const json = await readApiResponse(response, '候选载入服务');
       if (!json.ok) throw new Error(json.error || '抓取进度读取失败');
       lastProgress = json.progress || lastProgress;
       setProgress(lastProgress);
-      if (json.status === 'done') return json.result;
+      if (json.status === 'done') {
+        return {
+          ...json.result,
+          meta: { ...(json.result?.meta || {}), delivery: started.delivery || json.delivery || 'fresh' },
+        };
+      }
       if (json.status === 'error') throw new Error(json.error || lastProgress.message || '抓取失败');
     }
   }
@@ -2017,6 +2466,7 @@ function App() {
       jumpAfterLoad = true,
       sourceOverride = source,
       statusUrlOverride = statusUrl,
+      forceRefresh = false,
     } = options;
     const effectiveSource = sourceOverride;
     const effectiveStatusUrl = String(statusUrlOverride || '').trim();
@@ -2027,11 +2477,14 @@ function App() {
         const parsed = parseManualInput(manualInput);
         if (!parsed.length) throw new Error('请先粘贴或导入候选名单。');
         const freshHistory = new Set();
+        const manualMeta = { provider: 'manual', loadedAt: new Date().toISOString() };
         setCandidates(parsed);
         setCurrentStatusId('');
         setCurrentStatusUrl('');
         setDrawCount(null);
-        setSourceMeta({ provider: 'manual' });
+        setSourceMeta(manualMeta);
+        setLoadedSource('manual');
+        setSourceInputDirty(false);
         setHistoryUids(freshHistory);
         showStatus(`已导入 ${parsed.length} 位候选用户，请确认奖项设置。`, 'success');
         if (jumpAfterLoad) jumpToPrizeSettings();
@@ -2040,13 +2493,12 @@ function App() {
           eligible: filterEligibleCandidates(parsed, rules, freshHistory),
           statusId: '',
           statusUrl: '',
-          sourceMeta: { provider: 'manual' },
+          sourceMeta: manualMeta,
         };
       }
       if (!effectiveStatusUrl) throw new Error('请先粘贴微博正文链接、mid 或 bid。');
       if (effectiveSource === 'official' && !accessToken.trim()) throw new Error('请先填写微博官方访问令牌。');
       setStatusUrl(effectiveStatusUrl);
-      setCurrentStatusUrl(effectiveStatusUrl);
       showStatus(effectiveSource === 'mobile'
         ? '正在读取微博公开可见的转发；未填写 Cookie 时使用服务器登录态。'
         : '正在通过微博官方接口读取公开可见的转发。');
@@ -2055,6 +2507,7 @@ function App() {
         statusUrl: effectiveStatusUrl,
         accessToken,
         mobileCookie: effectiveSource === 'mobile' ? mobileCookie : '',
+        forceRefresh,
       });
       if (!json.ok) throw new Error(json.error || '微博数据拉取失败');
       const loadedCandidates = json.candidates || [];
@@ -2065,12 +2518,24 @@ function App() {
       setCurrentStatusUrl(json.statusUrl || effectiveStatusUrl);
       setDrawCount(json.drawCount ?? 0);
       setSourceMeta({ ...(json.meta || {}), statusId: json.statusId, statusUrl: json.statusUrl });
+      setLoadedSource(effectiveSource);
+      setSourceInputDirty(false);
       setHistoryUids(freshHistory);
       if (effectiveSource === 'mobile') await loadCookieStatus(false);
       const pageCount = Array.isArray(json.meta?.pages) ? json.meta.pages.length : 0;
       const totalNumber = Number(json.meta?.totalNumber);
       const totalText = Number.isFinite(totalNumber) ? `接口显示总转发约 ${totalNumber} 条。` : '';
-      showStatus(`已载入 ${json.candidates?.length || 0} 条可见转发，扫描 ${pageCount} 页。${totalText ? `${totalText} ` : ''}请确认奖项后开奖。`, 'success');
+      const deliveryText = json.meta?.delivery === 'recent-snapshot'
+        ? '已复用刚刚完成的候选快照。'
+        : json.meta?.delivery === 'shared-running'
+          ? '本次与同一微博的载入任务合并完成。'
+          : '';
+      const headText = Number(json.meta?.headAddedCount || 0) > 0
+        ? `完成前补入 ${Number(json.meta.headAddedCount)} 条新转发。`
+        : json.meta?.headReconciled
+          ? '完成前已复核最新转发。'
+          : '';
+      showStatus(`已载入 ${json.candidates?.length || 0} 条可见转发，扫描 ${pageCount} 页。${totalText ? `${totalText} ` : ''}${deliveryText}${headText}请确认奖项后开奖。`, 'success');
       if (jumpAfterLoad) jumpToPrizeSettings();
       return {
         candidates: loadedCandidates,
@@ -2091,34 +2556,33 @@ function App() {
   async function drawAll() {
     if (isDrawing || isLoading || pendingReceipt) return;
     if (!ensurePrizeSettingsReady()) return;
-    let drawCandidates = candidates;
-    let drawEligible = eligible;
-    let drawContext = { statusId: currentStatusId, statusUrl: currentStatusUrl, sourceMeta };
-
-    if (!drawEligible.length) {
-      showStatus('正在先载入候选名单。');
-      try {
-        const loaded = await loadCandidates({ jumpAfterLoad: false });
-        drawCandidates = loaded?.candidates || [];
-        drawEligible = loaded?.eligible || [];
-        drawContext = {
-          statusId: loaded?.statusId || currentStatusId,
-          statusUrl: loaded?.statusUrl || currentStatusUrl || statusUrl.trim(),
-          sourceMeta: loaded?.sourceMeta || sourceMeta,
-        };
-      } catch {
-        return;
-      }
-    }
-
-    if (!drawEligible.length) {
-      showStatus('没有可抽候选，请检查链接、Cookie 或筛选规则。', 'error');
+    if (!drawSetupConfirmed) {
+      setShowPrizeEditor(true);
+      showStatus('请先确认本轮奖项设置。');
       return;
     }
+    const drawCandidates = candidates;
+    const drawEligible = eligible;
+    const drawContext = { statusId: currentStatusId, statusUrl: currentStatusUrl, sourceMeta };
     if (totalSlots > drawEligible.length) {
       showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${drawEligible.length}。`, 'error');
       return;
     }
+    const scope = drawCooldownScope({
+      source,
+      statusId: drawContext.statusId,
+      statusUrl: drawContext.statusUrl || statusUrl,
+    });
+    const guard = acquireDrawGuard(window.localStorage, scope);
+    if (!guard.ok) {
+      const message = guard.reason === 'running'
+        ? '本链接正在当前浏览器的另一个页面开奖，请稍后再试。'
+        : `本链接刚刚完成开奖，请 ${Math.max(1, Math.ceil(guard.remainingMs / 1000))} 秒后再试。`;
+      showStatus(message, 'error', { title: '请稍后开奖' });
+      return;
+    }
+    drawGuardRef.current = guard;
+    let drawCompleted = false;
     setIsDrawing(true);
     setResults([]);
     setRollingCandidate(null);
@@ -2212,6 +2676,9 @@ function App() {
       });
       setDrawHistory((previous) => upsertDrawReceipt(previous, receipt));
       setPendingReceipt(receipt);
+      setConfirmedSetup(null);
+      completeDrawGuard(window.localStorage, guard.scope, guard.token);
+      drawCompleted = true;
       showStatus(
         saved?.file
           ? `已抽出 ${receipt.total} 位中奖用户，结果已保存。`
@@ -2221,6 +2688,10 @@ function App() {
     } catch (error) {
       showStatus(error.message, 'error');
     } finally {
+      if (!drawCompleted) {
+        releaseDrawGuard(window.localStorage, guard.scope, guard.token);
+      }
+      drawGuardRef.current = null;
       setPhase('');
       setIsDrawing(false);
     }
@@ -2255,7 +2726,7 @@ function App() {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload),
       });
-      const json = await response.json();
+      const json = await readApiResponse(response, '开奖记录服务');
       if (!json.ok) throw new Error(json.error || '保存失败');
       if (json.statusId) setCurrentStatusId(json.statusId);
       if (json.statusUrl) setCurrentStatusUrl(json.statusUrl);
@@ -2444,6 +2915,9 @@ function App() {
         });
         return merged;
       });
+      setSourceMeta({ provider: 'manual', loadedAt: new Date().toISOString() });
+      setLoadedSource('manual');
+      setSourceInputDirty(false);
       setManualInput('');
       showStatus(`已添加 ${parsed.length} 位候选用户。`, 'success');
     } catch (error) {
@@ -2468,6 +2942,12 @@ function App() {
   const manualDrawCount = drawHistory.filter((item) => (
     item.source === 'manual' && item.recordState === 'server'
   )).length;
+  const previousDrawCount = source === 'manual'
+    ? manualDrawCount
+    : Math.max(0, Number(drawCount || 0));
+  const nextDrawText = source === 'manual'
+    ? `本机第 ${previousDrawCount + 1} 次手动开奖`
+    : `本链接第 ${previousDrawCount + 1} 次开奖`;
   const activeReceipt = selectedReceipt?.drawnAt === lastAudit?.drawnAt
     ? selectedReceipt
     : null;
@@ -2510,6 +2990,20 @@ function App() {
     uniqueByUser,
     excludePrevious,
   });
+  const loadedTime = shortLoadedTime(sourceMeta?.loadedAt);
+  const candidateCutoff = candidateCutoffInfo(sourceMeta?.loadedAt);
+  const candidateNeedsRefresh = source !== 'manual' && candidateCutoff.ageMs >= 2 * 60_000;
+  const candidateFreshnessText = candidates.length && !candidateSourceReady
+    ? '来源已修改，等待重新载入'
+    : source === 'manual'
+    ? loadedTime ? `${loadedTime} 更新` : '手动名单'
+    : sourceMeta?.delivery === 'recent-snapshot'
+      ? `复用 ${Math.max(1, Math.round(Number(sourceMeta.snapshotAgeMs || 0) / 1000))} 秒内名单`
+      : sourceMeta?.delivery === 'shared-running'
+        ? '共享载入完成'
+        : loadedTime
+          ? `${loadedTime} 更新`
+          : '本次载入';
   return (
     <AppleNavigationV3
       controller={{
@@ -2543,6 +3037,7 @@ function App() {
         activeTab,
         showSourceEditor,
         showPrizeEditor,
+        showDrawConfirm,
         showFilters,
         candidateQuery,
         candidateSegment,
@@ -2552,6 +3047,7 @@ function App() {
         showFeedback,
         legalDocument,
         notice,
+        confirmAction,
         apiBase,
         apiKey,
         totalSlots,
@@ -2563,7 +3059,14 @@ function App() {
         accountStatusText,
         serviceStatusText,
         drawCountText,
+        previousDrawCount,
+        nextDrawText,
+        drawSetupConfirmed,
+        candidateSourceReady,
         filterSummary,
+        candidateFreshnessText,
+        candidateCutoffLabel: source === 'manual' ? `手动名单 · ${candidateCutoff.label}` : candidateCutoff.label,
+        candidateNeedsRefresh,
         manualCookieOpen,
         isCapturing,
         motionPreference,
@@ -2571,7 +3074,6 @@ function App() {
         firstPrizeNameRef,
         setSource,
         setStatusUrl,
-        setCurrentStatusUrl,
         setAccessToken,
         setMobileCookie,
         setManualInput,
@@ -2589,6 +3091,7 @@ function App() {
         setActiveTab,
         setShowSourceEditor,
         setShowPrizeEditor,
+        setShowDrawConfirm,
         setShowFilters,
         setCandidateQuery,
         setCandidateSegment,
@@ -2597,14 +3100,18 @@ function App() {
         setShowGuide,
         setShowFeedback,
         setLegalDocument,
+        setConfirmAction,
         setApiBase,
         setApiKey,
         setManualCookieOpen,
         setMotionPreference,
         dismissNotice,
+        applySettingsAction,
         openLegalDocument,
         submitFeedback,
         selectCandidateSource,
+        updateStatusInput,
+        shouldForceCandidateRefresh,
         safeLoadCandidates,
         pasteAndLoadCandidates,
         handleStatusPaste,
@@ -2613,6 +3120,9 @@ function App() {
         updatePrizeCount,
         addPrize,
         removePrize,
+        confirmDrawSetup,
+        requestDraw,
+        confirmAndDraw,
         loadCookieStatus,
         testApiConnection,
         drawAll,

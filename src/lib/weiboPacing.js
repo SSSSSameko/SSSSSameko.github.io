@@ -49,3 +49,9 @@ export function pageWaitPlan({
     cooldownMs: cooldown,
   };
 }
+
+export function shouldReconcileRepostHead({ pageCount = 0, elapsedMs = 0, hitCandidateCap = false } = {}) {
+  return !hitCandidateCap
+    && Math.max(0, Number(pageCount) || 0) > 1
+    && Math.max(0, Number(elapsedMs) || 0) >= 5_000;
+}

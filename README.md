@@ -1,6 +1,6 @@
 # 微博转发抽奖助手
 
-当前版本：`3.0.0`
+当前版本：`3.1.0`
 
 用于微博转发抽奖的网页工具，支持候选抓取、名单导入、滚动开奖、开奖记录图和后台管理。
 
@@ -43,7 +43,7 @@ http://127.0.0.1:4173/
 - `ADMIN_PASSWORD_HASH=scrypt 密码哈希`
 - `ADMIN_SESSION_SECRET=随机会话密钥`
 - `COOKIE_WRITE_KEY=仅供服务器 Cookie 池维护使用的独立密钥（通过 x-cookie-write-key 请求头提供）`
-- `SOURCE_FINGERPRINT_SECRET=反馈匿名来源标识密钥（可复用会话密钥）`
+- `SOURCE_FINGERPRINT_SECRET=匿名来源与登录态指纹密钥（可复用会话密钥）`
 - `PLAYWRIGHT_BROWSERS_PATH=/opt/sameko-weibo-lottery/ms-playwright`
 - `MAX_DRAW_SAVE_BODY_BYTES=2097152`
 - `MAX_CANDIDATES=20000`（单次任务的容量上限，不代表微博一定能返回这么多可见转发）
@@ -52,10 +52,12 @@ http://127.0.0.1:4173/
 - `PAGE_COOLDOWN_EVERY=8`
 - `PAGE_COOLDOWN_MS=5000`
 - `WEIBO_THROTTLE_RETRY_MAX=2`
+- `REPOST_SNAPSHOT_TTL_MS=15000`（仅复用刚完成的短时结果）
+- `MAX_REPOST_SNAPSHOTS=2`
 
 生产环境必须使用至少 32 字节的 `ADMIN_SESSION_SECRET`。未配置 `COOKIE_WRITE_KEY` 时，公开抓取请求无法写入或校验服务器 Cookie 池；用户临时填写的 Cookie 仍只用于当前任务。
 
-分页抓取会在每页之间随机等待，并按固定页数进行额外冷却。遇到微博 `418`、`429` 或临时 `503` 时，服务会尊重 `Retry-After` 并退避重试。实际候选数量仍取决于微博接口可见范围、账号权限和接口返回的最大页数。
+分页抓取会在每页之间随机等待，并按固定页数进行额外冷却。较长的任务结束前会补查最新一页，合并抓取期间刚出现的转发；同一微博的并发请求会共享任务。遇到微博 `418`、`429` 或临时 `503` 时，服务会尊重 `Retry-After` 并退避重试。实际候选数量仍取决于微博接口可见范围、账号权限和接口返回的最大页数。
 
 运行数据保存在 `output/`，浏览器登录资料保存在 `output/auth/weibo-login-profile/`。这些目录不提交到 Git。
 

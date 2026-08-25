@@ -224,7 +224,7 @@
               <button class="text-button danger-text" id="stopWeiboLoginBtn" type="button">关闭扫码</button>
             </div>
             <div class="qr-frame hidden" id="qrFrame">
-              <img id="qrImage" alt="微博扫码登录二维码">
+              <img id="qrImage" src="/avatar.jpg" alt="微博扫码登录二维码">
             </div>
             <p class="status-copy" id="weiboLoginText">等待读取微博登录状态。</p>
           </article>
@@ -271,6 +271,21 @@
       </section>
     </main>
   </div>
+  <dialog class="confirm-dialog" id="confirmDialog" aria-labelledby="confirmTitle" aria-describedby="confirmMessage">
+    <div class="confirm-dialog-card">
+      <span class="confirm-dialog-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 10v6M14 10v6"/></svg>
+      </span>
+      <div class="confirm-dialog-copy">
+        <h2 id="confirmTitle">删除开奖记录</h2>
+        <p id="confirmMessage">这条记录会从服务器移除，删除后无法恢复。</p>
+      </div>
+      <div class="confirm-dialog-actions">
+        <button class="secondary-button" id="confirmCancelBtn" type="button">取消</button>
+        <button class="danger-button" id="confirmDeleteBtn" type="button">删除</button>
+      </div>
+    </div>
+  </dialog>
   <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

@@ -12,21 +12,23 @@ const SHUFFLE_DELAY = [0, -260, -520];
 const SHUFFLE_PATHS = [
   [
     { transform: DECK_POSES[0], opacity: 0.92 },
-    { offset: 0.28, transform: 'translate3d(-38px, 1px, -10px) rotate(-8deg) scale(0.985)', opacity: 0.98 },
-    { offset: 0.62, transform: 'translate3d(16px, 10px, -30px) rotate(2deg) scale(0.975)', opacity: 0.82 },
+    { offset: 0.24, transform: 'translate3d(-48px, -1px, -8px) rotate(-9deg) scale(0.99)', opacity: 0.98 },
+    { offset: 0.58, transform: 'translate3d(22px, 9px, -31px) rotate(2.4deg) scale(0.974)', opacity: 0.8 },
+    { offset: 0.82, transform: 'translate3d(-18px, 7px, -22px) rotate(-6deg) scale(0.986)', opacity: 0.9 },
     { transform: DECK_POSES[0], opacity: 0.92 },
   ],
   [
     { transform: DECK_POSES[1], opacity: 0.96 },
-    { offset: 0.3, transform: 'translate3d(38px, 0, 2px) rotate(7deg) scale(1.005)', opacity: 1 },
-    { offset: 0.64, transform: 'translate3d(-15px, 9px, -20px) rotate(-2deg) scale(0.98)', opacity: 0.86 },
+    { offset: 0.27, transform: 'translate3d(48px, -2px, 3px) rotate(8deg) scale(1.008)', opacity: 1 },
+    { offset: 0.61, transform: 'translate3d(-21px, 10px, -22px) rotate(-2.5deg) scale(0.978)', opacity: 0.84 },
+    { offset: 0.84, transform: 'translate3d(18px, 5px, -10px) rotate(5deg) scale(0.992)', opacity: 0.94 },
     { transform: DECK_POSES[1], opacity: 0.96 },
   ],
   [
     { transform: DECK_POSES[2], opacity: 1 },
-    { offset: 0.26, transform: 'translate3d(-8px, -3px, 7px) rotate(-1.2deg) scale(0.994)', opacity: 0.98 },
-    { offset: 0.56, transform: 'translate3d(9px, 2px, 8px) rotate(1.2deg) scale(1.008)', opacity: 1 },
-    { offset: 0.8, transform: 'translate3d(-4px, -2px, 5px) rotate(-0.6deg) scale(0.998)', opacity: 0.99 },
+    { offset: 0.22, transform: 'translate3d(-15px, -5px, 9px) rotate(-1.8deg) scale(0.992)', opacity: 0.97 },
+    { offset: 0.5, transform: 'translate3d(17px, 2px, 11px) rotate(1.8deg) scale(1.012)', opacity: 1 },
+    { offset: 0.76, transform: 'translate3d(-9px, -3px, 7px) rotate(-0.9deg) scale(0.997)', opacity: 0.99 },
     { transform: DECK_POSES[2], opacity: 1 },
   ],
 ];

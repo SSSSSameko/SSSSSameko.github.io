@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  candidateCutoffInfo,
   digestCandidates,
   friendlyProviderText,
   parseManualInput,
@@ -9,6 +10,16 @@ import {
   seededShuffle,
   toCsv,
 } from './appCore.js';
+
+test('candidate cutoff keeps an explicit draw-list boundary', () => {
+  const loadedAt = new Date(2026, 7, 25, 10, 20).toISOString();
+  const now = new Date(2026, 7, 25, 10, 23).getTime();
+  const info = candidateCutoffInfo(loadedAt, now);
+
+  assert.match(info.label, /10:20.*截止/);
+  assert.equal(info.ageMs, 3 * 60_000);
+  assert.deepEqual(candidateCutoffInfo('', now), { label: '本次载入', ageMs: 0 });
+});
 
 test('safeWeiboUrl only keeps links to Weibo', () => {
   assert.equal(safeWeiboUrl('javascript:alert(1)'), '');
@@ -30,6 +41,12 @@ test('parseManualInput reads csv headers and quoted values', () => {
   assert.equal(rows[0].uid, '1001');
   assert.equal(rows[0].screenName, 'sameko,chan');
   assert.equal(rows[0].text, '转发内容');
+});
+
+test('parseManualInput treats two columns without a header as uid then nickname', () => {
+  const rows = parseManualInput('1001,sameko');
+  assert.equal(rows[0].uid, '1001');
+  assert.equal(rows[0].screenName, 'sameko');
 });
 
 test('parseManualInput keeps JSON string names intact', () => {

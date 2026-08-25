@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
@@ -14,6 +14,7 @@ import {
 
 import {
   buildFilterSummary,
+  candidateCutoffInfo,
   DRAW_RANDOM_ALGORITHM,
   friendlyProviderText,
 } from '../lib/appCore.js';
@@ -71,19 +72,40 @@ export default function DrawResultSheet({
 }) {
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
+  const closeTimerRef = useRef(null);
+  const closingRef = useRef(false);
+  const requestCloseRef = useRef(null);
+  const onCloseRef = useRef(onClose);
+  const [isClosing, setIsClosing] = useState(false);
   const receipt = useMemo(
     () => (receiptInput ? normalizeDrawReceipt(receiptInput) : null),
     [receiptInput],
   );
+  onCloseRef.current = onClose;
+
+  function requestClose() {
+    if (closingRef.current) return;
+    closingRef.current = true;
+    setIsClosing(true);
+    const shellMotion = dialogRef.current?.closest('.app-shell')?.dataset.motion;
+    const reduceMotion = shellMotion === 'reduced'
+      || (shellMotion !== 'full' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
+    closeTimerRef.current = window.setTimeout(() => {
+      onCloseRef.current?.();
+    }, reduceMotion ? 1 : 190);
+  }
+  requestCloseRef.current = requestClose;
 
   useEffect(() => {
     if (!receipt) return undefined;
+    closingRef.current = false;
+    setIsClosing(false);
     const previousFocus = document.activeElement;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     closeButtonRef.current?.focus({ preventScroll: true });
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') onClose?.();
+      if (event.key === 'Escape') requestCloseRef.current?.();
       if (event.key !== 'Tab' || !dialogRef.current) return;
       const controls = [...dialogRef.current.querySelectorAll(
         'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
@@ -103,9 +125,10 @@ export default function DrawResultSheet({
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleKeyDown);
+      window.clearTimeout(closeTimerRef.current);
       previousFocus?.focus?.({ preventScroll: true });
     };
-  }, [receipt, onClose]);
+  }, [receipt]);
 
   if (!receipt) return null;
 
@@ -130,10 +153,13 @@ export default function DrawResultSheet({
   const prizeText = receipt.results
     .map((group) => `${group.prize.name} × ${group.winners.length}`)
     .join(' · ') || '未记录';
+  const cutoffText = receipt.source === 'manual'
+    ? `手动名单 · ${candidateCutoffInfo(receipt.sourceMeta?.loadedAt).label}`
+    : candidateCutoffInfo(receipt.sourceMeta?.loadedAt).label;
   const displayedWinners = receipt.results.flatMap((group) => group.winners).slice(0, 4);
 
   return (
-    <div className="receipt-backdrop" onClick={onClose} role="presentation">
+    <div className={`receipt-backdrop ${isClosing ? 'is-closing' : ''}`} onClick={requestClose} role="presentation">
       <section
         ref={dialogRef}
         className="receipt-sheet"
@@ -156,7 +182,7 @@ export default function DrawResultSheet({
             type="button"
             className="receipt-close"
             aria-label="关闭开奖结果"
-            onClick={onClose}
+            onClick={requestClose}
           >
             <X />
           </button>
@@ -274,6 +300,7 @@ export default function DrawResultSheet({
               </summary>
               <dl>
                 <div><dt>开奖时间</dt><dd>{formatReceiptDate(receipt.drawnAt)}</dd></div>
+                <div><dt>名单截止</dt><dd>{cutoffText}</dd></div>
                 <div><dt>排除候选</dt><dd>{receipt.excludedCount} 人</dd></div>
                 <div><dt>奖项快照</dt><dd>{prizeText}</dd></div>
                 <div><dt>筛选规则</dt><dd>{filterText}</dd></div>

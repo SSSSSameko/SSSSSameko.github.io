@@ -5,6 +5,7 @@ import {
   isWeiboThrottleStatus,
   pageWaitPlan,
   parseRetryAfterMs,
+  shouldReconcileRepostHead,
   throttleRetryDelayMs,
 } from './weiboPacing.js';
 
@@ -45,4 +46,11 @@ test('adds jitter to every page and cooldowns at the configured interval', () =>
     cooldownMs: 5_000,
     random: () => 0.5,
   }), { delayMs: 7_500, jitterMs: 500, cooldownMs: 5_000 });
+});
+
+test('rechecks the newest repost page only after a meaningful paginated crawl', () => {
+  assert.equal(shouldReconcileRepostHead({ pageCount: 1, elapsedMs: 20_000 }), false);
+  assert.equal(shouldReconcileRepostHead({ pageCount: 3, elapsedMs: 4_999 }), false);
+  assert.equal(shouldReconcileRepostHead({ pageCount: 3, elapsedMs: 5_000 }), true);
+  assert.equal(shouldReconcileRepostHead({ pageCount: 3, elapsedMs: 20_000, hitCandidateCap: true }), false);
 });

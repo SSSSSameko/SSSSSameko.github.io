@@ -379,6 +379,22 @@ button {
   min-height: 282px;
 }
 
+.v3-intake-scene.has-link .candidate-deck {
+  animation: intake-link-ready 420ms var(--ease-drawer) both;
+}
+
+.v3-intake-scene.has-link .candidate-pass {
+  border-color: rgba(10, 124, 255, 0.11);
+  box-shadow:
+    0 22px 44px rgba(48, 55, 69, 0.14),
+    0 5px 14px rgba(10, 124, 255, 0.055),
+    inset 0 1px 0 #fff;
+}
+
+.v3-intake-scene.has-link .v3-intake-symbol {
+  color: var(--live-blue);
+}
+
 .v3-intake-deck {
   margin-top: -4px;
 }
@@ -631,10 +647,10 @@ button {
 
 .draw-control .primary-button {
   --v3-action-edge:
-    linear-gradient(108deg, #ff79a5, #ba8ff0 52%, #64baf3);
+    linear-gradient(rgba(126, 111, 207, 0.28), rgba(126, 111, 207, 0.28));
   --v3-action-shadow:
-    0 17px 36px rgba(57, 68, 97, 0.17),
-    0 7px 19px rgba(241, 91, 137, 0.1),
+    0 17px 36px rgba(57, 68, 97, 0.16),
+    0 5px 15px rgba(126, 111, 207, 0.1),
     inset 0 1px 0 #fff;
   color: var(--live-ink);
 }
@@ -643,9 +659,9 @@ button {
   border-color: rgba(255, 255, 255, 0.72);
   color: #fff;
   background:
-    linear-gradient(145deg, #ff79a5, #a985f0 58%, #6db9f2);
+    linear-gradient(145deg, #ff84aa, #9688eb);
   box-shadow:
-    0 8px 18px rgba(166, 91, 207, 0.25),
+    0 8px 18px rgba(137, 112, 215, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.48);
 }
 
@@ -656,6 +672,50 @@ button {
 .draw-control .primary-button > svg {
   color: var(--live-lilac);
   opacity: 0.86;
+}
+
+.app-shell[data-setup="unconfirmed"] .draw-control .draw-button-icon {
+  color: #fff;
+  background: linear-gradient(145deg, #ff9bb7, #de91c4);
+  box-shadow:
+    0 8px 18px rgba(220, 111, 158, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.52);
+}
+
+.app-shell[data-setup="confirmed"] .draw-control .primary-button {
+  --v3-action-shadow:
+    0 18px 38px rgba(57, 68, 97, 0.18),
+    0 6px 18px rgba(126, 111, 207, 0.12),
+    inset 0 1px 0 #fff;
+}
+
+.draw-specs button.is-confirmed {
+  border-color: rgba(82, 183, 151, 0.2);
+  background: rgba(247, 255, 252, 0.8);
+  box-shadow:
+    0 9px 22px rgba(48, 126, 102, 0.08),
+    inset 0 1px 0 #fff;
+}
+
+.draw-specs .spec-icon {
+  position: relative;
+}
+
+.draw-specs button[data-state="complete"] .spec-icon::after {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  width: 8px;
+  height: 8px;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: var(--live-mint);
+  box-shadow: 0 2px 5px rgba(45, 151, 118, 0.2);
+  content: "";
+}
+
+.draw-specs button[data-state="pending"] {
+  background: rgba(250, 250, 252, 0.74);
 }
 
 .v3-progress {
@@ -1057,6 +1117,35 @@ button {
   margin-top: 18px;
 }
 
+.candidate-load-more {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 3px 0;
+  color: var(--live-secondary);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.candidate-load-more button {
+  min-height: 38px;
+  padding: 0 14px;
+  border: 0.5px solid rgba(88, 96, 118, 0.11);
+  border-radius: 12px;
+  color: var(--live-blue);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow:
+    0 7px 18px rgba(44, 54, 76, 0.07),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.candidate-load-more button:active {
+  background: rgba(244, 247, 252, 0.96);
+}
+
 .candidate-avatar-list {
   width: 42px;
   height: 42px;
@@ -1189,7 +1278,7 @@ button {
 .flow-notice {
   position: fixed;
   z-index: 100;
-  top: calc(12px + env(safe-area-inset-top));
+  top: calc(82px + env(safe-area-inset-top));
   left: 50%;
   display: grid;
   width: min(calc(100% - 24px), 406px);
@@ -1208,6 +1297,11 @@ button {
   backdrop-filter: blur(30px) saturate(190%);
   transform: translateX(-50%);
   animation: notice-enter 240ms var(--ease-out) both;
+}
+
+.flow-notice.is-closing {
+  pointer-events: none;
+  animation: notice-dismiss 180ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 .flow-notice-icon {
@@ -1320,6 +1414,32 @@ button {
   color: var(--live-blue);
   background: rgba(10, 124, 255, 0.1);
   font-weight: 650;
+}
+
+.v3-confirm-action-dialog {
+  background: rgba(252, 253, 255, 0.97);
+}
+
+.v3-confirm-action-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.v3-confirm-action-buttons button.is-destructive {
+  color: #fff;
+  background: #df5967;
+  box-shadow:
+    0 8px 18px rgba(193, 68, 81, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.24);
+}
+
+.v3-alert-backdrop.is-closing {
+  animation: material-backdrop-out 160ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.v3-alert-backdrop.is-closing .v3-alert-dialog {
+  animation: alert-dismiss 160ms cubic-bezier(0.4, 0, 1, 1) both;
 }
 
 /* Sheets */
@@ -1451,6 +1571,279 @@ button {
   flex: 0 0 auto;
   margin-top: 12px;
   color: var(--live-ink);
+}
+
+.v3-draw-confirm-sheet {
+  gap: 8px;
+}
+
+.v3-confirm-hero {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 5px 3px 14px;
+  border-bottom: 0.5px solid var(--live-line);
+}
+
+.v3-confirm-hero > span {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border: 0.5px solid rgba(255, 255, 255, 0.94);
+  border-radius: 16px;
+  color: #9a72d1;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    0 10px 24px rgba(71, 64, 103, 0.09),
+    inset 0 1px 0 #fff;
+}
+
+.v3-confirm-hero.is-repeat > span {
+  color: #d6608b;
+  background: rgba(255, 246, 250, 0.82);
+}
+
+.v3-confirm-hero small,
+.v3-confirm-hero strong,
+.v3-confirm-hero p {
+  display: block;
+  margin: 0;
+}
+
+.v3-confirm-hero small {
+  color: var(--live-secondary);
+  font-size: 10.5px;
+  font-weight: 590;
+}
+
+.v3-confirm-hero strong {
+  margin-top: 2px;
+  color: var(--live-ink);
+  font-size: 19px;
+  font-weight: 730;
+  line-height: 1.22;
+}
+
+.v3-confirm-hero p {
+  margin-top: 3px;
+  color: var(--live-tertiary);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.v3-confirm-facts {
+  margin: 0;
+  overflow: hidden;
+  border: 0.5px solid rgba(35, 40, 52, 0.09);
+  border-radius: 17px;
+  background: rgba(255, 255, 255, 0.54);
+}
+
+.v3-confirm-facts > div {
+  display: grid;
+  min-height: 46px;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 9px 12px;
+}
+
+.v3-confirm-facts > div + div {
+  border-top: 0.5px solid var(--live-line);
+}
+
+.v3-confirm-facts dt,
+.v3-confirm-facts dd {
+  margin: 0;
+  font-size: 12px;
+}
+
+.v3-confirm-facts dt {
+  color: var(--live-secondary);
+}
+
+.v3-confirm-facts dd {
+  overflow: hidden;
+  color: var(--live-ink);
+  font-weight: 650;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-confirm-facts > div:last-child dd {
+  overflow: visible;
+  line-height: 1.4;
+  white-space: normal;
+}
+
+.v3-confirm-facts > div.is-stale dt::after {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 5px;
+  border-radius: 50%;
+  background: #e982a4;
+  box-shadow: 0 0 0 3px rgba(233, 130, 164, 0.1);
+  content: "";
+  vertical-align: 1px;
+}
+
+.v3-confirm-facts > div.is-stale dd {
+  color: #a94d71;
+}
+
+.v3-confirm-prizes {
+  overflow: hidden;
+  border-top: 0.5px solid var(--live-line);
+  border-bottom: 0.5px solid var(--live-line);
+}
+
+.v3-confirm-prizes > div {
+  display: grid;
+  min-height: 48px;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 4px;
+}
+
+.v3-confirm-prizes > div + div {
+  border-top: 0.5px solid var(--live-line);
+}
+
+.v3-confirm-prizes span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  border-radius: 10px;
+  color: #fff;
+  background: color-mix(in srgb, var(--prize-color, var(--live-pink)) 76%, #fff);
+  box-shadow: 0 5px 13px color-mix(in srgb, var(--prize-color, var(--live-pink)) 17%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.v3-confirm-prizes strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--live-ink);
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-confirm-prizes small {
+  color: var(--live-secondary);
+  font-size: 11px;
+}
+
+.v3-repeat-note {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 13px;
+  color: #9f4567;
+  background: rgba(255, 236, 243, 0.66);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.v3-repeat-note svg {
+  flex: 0 0 auto;
+}
+
+.v3-confirm-draw,
+.v3-prize-confirm-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.v3-confirm-draw svg,
+.v3-prize-confirm-button svg {
+  color: #a46dce;
+}
+
+.v3-confirm-secondary-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(112px, 1fr));
+  gap: 8px;
+}
+
+.v3-confirm-secondary-actions button {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0.5px solid rgba(35, 40, 52, 0.09);
+  border-radius: 13px;
+  color: var(--live-secondary);
+  background: rgba(255, 255, 255, 0.52);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+  font-size: 11.5px;
+  font-weight: 620;
+}
+
+.v3-confirm-secondary-actions button:first-child svg {
+  color: var(--live-blue);
+}
+
+.v3-confirm-secondary-actions button:last-child svg {
+  color: #d47798;
+}
+
+.v3-prize-confirm-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 2px;
+}
+
+.v3-prize-confirm-summary > span {
+  display: grid;
+  min-height: 52px;
+  grid-template-columns: 24px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 7px;
+  align-content: center;
+  padding: 7px 10px;
+  border: 0.5px solid rgba(35, 40, 52, 0.09);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.52);
+}
+
+.v3-prize-confirm-summary svg {
+  grid-row: 1 / 3;
+  align-self: center;
+  color: #9a72d1;
+}
+
+.v3-prize-confirm-summary small,
+.v3-prize-confirm-summary strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.v3-prize-confirm-summary small {
+  color: var(--live-secondary);
+  font-size: 9.5px;
+}
+
+.v3-prize-confirm-summary strong {
+  color: var(--live-ink);
+  font-size: 12px;
+  font-weight: 680;
 }
 
 .flow-guide-list,
@@ -2237,7 +2630,7 @@ button {
   display: grid;
   width: 100%;
   min-height: 59px;
-  grid-template-columns: 34px minmax(0, 1fr) 16px;
+  grid-template-columns: 34px minmax(0, 1fr) 36px;
   gap: 9px;
   align-items: center;
   padding: 8px 11px;
@@ -2283,6 +2676,16 @@ button {
   font-size: 10.5px;
 }
 
+.flow-settings-action-label {
+  color: #c95c68;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1.2;
+  text-align: right;
+  white-space: nowrap;
+}
+
 .flow-connection-details {
   margin-top: 3px;
   border: 0.5px solid rgba(255, 255, 255, 0.9);
@@ -2292,14 +2695,44 @@ button {
 }
 
 .flow-connection-details summary {
-  min-height: 48px;
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 0 13px;
   color: var(--live-secondary);
   cursor: pointer;
   font-size: 12px;
   font-weight: 620;
-  line-height: 48px;
+  line-height: 1;
   list-style: none;
+}
+
+.flow-connection-details summary > span {
+  display: grid;
+  gap: 3px;
+}
+
+.flow-connection-details summary strong {
+  color: var(--live-ink);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.flow-connection-details summary small {
+  color: var(--live-secondary);
+  font-size: 10.5px;
+}
+
+.flow-connection-details summary svg {
+  width: 15px;
+  height: 15px;
+  transition: transform 180ms var(--ease-out);
+}
+
+.flow-connection-details[open] summary svg {
+  transform: rotate(90deg);
 }
 
 .flow-connection-details summary::-webkit-details-marker {
@@ -3008,6 +3441,23 @@ button {
     opacity: 1;
     transform: translate(-50%, 0) scale(1);
   }
+}
+
+@keyframes notice-dismiss {
+  from {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translate(-50%, -8px) scale(0.985);
+  }
+}
+
+@keyframes intake-link-ready {
+  0% { transform: translateY(0) scale(1); }
+  58% { transform: translateY(-4px) scale(1.008); }
+  100% { transform: translateY(-2px) scale(1); }
 }
 
 @keyframes winner-enter {

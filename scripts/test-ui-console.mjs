@@ -1,3 +1,5 @@
+import assert from 'node:assert/strict';
+
 import { chromium } from 'playwright';
 
 const executablePath = process.env.PLAYWRIGHT_CHROME_PATH
@@ -14,8 +16,29 @@ page.on('console', (message) => {
   if (message.type() === 'error') errors.push(`console: ${message.text()}`);
 });
 
-await page.goto(baseUrl, { waitUntil: 'networkidle' });
-await page.waitForTimeout(500);
+await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+await page.waitForTimeout(700);
+
+await page.getByRole('button', { name: '设置', exact: true }).click();
+await page.getByRole('button', { name: /清空当前抽奖/ }).click();
+const clearDialog = page.getByRole('alertdialog', { name: '清空当前抽奖？' });
+await clearDialog.waitFor({ state: 'visible' });
+assert.equal(await clearDialog.isVisible(), true);
+assert.equal(await clearDialog.getByRole('button', { name: '取消', exact: true }).isVisible(), true);
+await clearDialog.getByRole('button', { name: '取消', exact: true }).click();
+await clearDialog.waitFor({ state: 'detached' });
+
+await page.getByRole('button', { name: '设置', exact: true }).click();
+await page.locator('.flow-connection-details summary').click();
+assert.equal(await page.getByPlaceholder('https://111.228.11.206').isVisible(), true);
+const settingsActionLabels = await page.locator('.flow-settings-action-label').evaluateAll((labels) => (
+  labels.map((label) => ({
+    height: label.getBoundingClientRect().height,
+    lineHeight: Number.parseFloat(getComputedStyle(label).lineHeight),
+  }))
+));
+assert.equal(settingsActionLabels.every(({ height, lineHeight }) => height <= lineHeight * 1.5), true);
+
 const layout = await page.evaluate(() => ({
   viewport: window.innerWidth,
   pageWidth: document.documentElement.scrollWidth,

@@ -43,7 +43,18 @@ const summary = {
   winnerCount: 18,
   recentAttempts: [],
   cookie: { accountCount: 1, cookieCount: 1, hasCookie: true },
-  queue: { active: 1, queued: 0, maxActive: 2, maxQueued: 8, sameStatusLocks: 0 },
+  queue: {
+    active: 1,
+    queued: 0,
+    maxActive: 2,
+    maxQueued: 8,
+    sameStatusLocks: 0,
+    sharedTasks: 1,
+    recentSnapshots: 1,
+    snapshotTtlMs: 15_000,
+    maxSnapshots: 2,
+    deliveries: { fresh: 8, sharedRunning: 3, recentSnapshot: 2 },
+  },
   weiboLogin: { status: 'idle', history: [] },
   system: {
     now: new Date().toISOString(),
@@ -191,6 +202,8 @@ try {
   await page.waitForTimeout(360);
   assert.equal(await page.locator('.metric-value').first().innerText(), '35.3%');
   assert.equal(await page.locator('.chart-scale').isVisible(), true);
+  assert.equal(await page.locator('#requestPanel').getByText('1 个共享任务', { exact: true }).isVisible(), true);
+  assert.equal(await page.locator('#requestPanel').getByText(/1 \/ 2 个快照 · 时效 15 秒 · 累计合并 3 次/).isVisible(), true);
   await page.screenshot({ path: fileURLToPath(new URL('admin-overview-desktop.png', outputDir)) });
 
   await page.getByRole('button', { name: '反馈', exact: true }).click();
@@ -225,6 +238,14 @@ try {
   assert.ok(after.listScroll > 0);
   assert.ok(Math.abs(after.pageY - before.pageY) < 3);
   assert.ok(Math.abs(after.detailTop - before.detailTop) < 3);
+  await page.getByRole('button', { name: '删除', exact: true }).click();
+  const deleteDialog = page.getByRole('dialog', { name: '删除开奖记录' });
+  assert.equal(await deleteDialog.isVisible(), true);
+  assert.equal(await deleteDialog.getByText('删除后无法恢复', { exact: false }).isVisible(), true);
+  await page.waitForTimeout(320);
+  await page.screenshot({ path: fileURLToPath(new URL('admin-delete-confirm-desktop.png', outputDir)) });
+  await deleteDialog.getByRole('button', { name: '取消', exact: true }).click();
+  assert.equal(await deleteDialog.isVisible(), false);
   await page.screenshot({ path: fileURLToPath(new URL('admin-records-desktop.png', outputDir)) });
 
   await page.setViewportSize({ width: 390, height: 844 });

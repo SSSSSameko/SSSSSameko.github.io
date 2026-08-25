@@ -204,10 +204,7 @@
 }
 
 .pass-under::before {
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 7px;
-  content: "";
+  display: none;
 }
 
 .pass-under span,
@@ -235,18 +232,10 @@
   transform: translate3d(-12px, 8px, -24px) rotate(-5.5deg);
 }
 
-.pass-coral::before {
-  background: var(--system-coral);
-}
-
 .pass-blue {
   background: #f4f8ff;
   opacity: 0.96;
   transform: translate3d(12px, 5px, -12px) rotate(4deg);
-}
-
-.pass-blue::before {
-  background: var(--system-blue);
 }
 
 .pass-main,

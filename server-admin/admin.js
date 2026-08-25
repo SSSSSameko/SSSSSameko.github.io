@@ -14,6 +14,7 @@ import { listDisplayState } from './admin-list-state.js';
     search: '',
     detailOpen: false,
     attemptsExpanded: false,
+    pendingDeleteFile: '',
     loading: false,
     loginPoller: null,
     summaryPoller: null,
@@ -65,6 +66,9 @@ import { listDisplayState } from './admin-list-state.js';
     qrImage: $('qrImage'),
     keepalivePanel: $('keepalivePanel'),
     systemPanel: $('systemPanel'),
+    confirmDialog: $('confirmDialog'),
+    confirmCancelBtn: $('confirmCancelBtn'),
+    confirmDeleteBtn: $('confirmDeleteBtn'),
     toast: $('toast'),
   };
 
@@ -376,6 +380,7 @@ import { listDisplayState } from './admin-list-state.js';
       quickRow('自动重启', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 回收进程`),
       quickRow('磁盘', `${plain(disk.usedPercent, 0)}%`, `可用 ${plain(disk.availableMb, 0)} MB`),
       quickRow('并发占用', formatPercent(queuePercent), `${formatNumber(queue.active)} 运行 · ${formatNumber(queue.queued)} 排队 · 锁 ${formatNumber(queue.sameStatusLocks)}`),
+      quickRow('抓取复用', `${formatNumber(queue.sharedTasks)} 个共享任务`, `${formatNumber(queue.recentSnapshots)} / ${formatNumber(queue.maxSnapshots)} 个快照 · 时效 ${formatDurationMs(queue.snapshotTtlMs)} · 累计合并 ${formatNumber(queue.deliveries?.sharedRunning)} 次`),
     ].join('');
   }
 
@@ -456,7 +461,7 @@ import { listDisplayState } from './admin-list-state.js';
       els.qrImage.src = image;
       els.qrFrame.classList.remove('hidden');
     } else {
-      els.qrImage.removeAttribute('src');
+      els.qrImage.src = '/avatar.jpg';
       els.qrFrame.classList.add('hidden');
     }
 
@@ -574,6 +579,7 @@ import { listDisplayState } from './admin-list-state.js';
         ${diagnosticRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)} · 最慢 ${plain(requests.slowestMs, 0)} ms`)}
         ${diagnosticRow('Chromium', `${formatNumber(browser.processCount)} 个进程`, browser.operation?.label ? `正在执行 ${browser.operation.label}` : '当前无浏览器任务')}
         ${diagnosticRow('并发占用', formatPercent(queuePercent), `运行 ${formatNumber(queue.active)} / 上限 ${formatNumber(queue.maxActive)} · 排队 ${formatNumber(queue.queued)}`)}
+        ${diagnosticRow('抓取复用', `${formatNumber(queue.sharedTasks)} 个共享任务`, `快照 ${formatNumber(queue.recentSnapshots)} / ${formatNumber(queue.maxSnapshots)} · 时效 ${formatDurationMs(queue.snapshotTtlMs)} · 新抓取 ${formatNumber(queue.deliveries?.fresh)} · 合并 ${formatNumber(queue.deliveries?.sharedRunning)} · 命中 ${formatNumber(queue.deliveries?.recentSnapshot)}`)}
         ${diagnosticRow('内存高水位', formatPercent(highWaterPercent), `${formatMemoryMb(service.memoryHighMb)} / ${formatMemoryMb(memoryLimit)} · 达到后准备回收进程`)}
         ${diagnosticRow('周期回收', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 重启服务进程`)}
         ${diagnosticRow('磁盘空间', disk.available ? `${plain(disk.usedPercent, 0)}%` : '-', disk.available ? `已用 ${plain(disk.usedMb, 0)} MB · 可用 ${plain(disk.availableMb, 0)} MB` : plain(disk.error))}
@@ -891,18 +897,33 @@ import { listDisplayState } from './admin-list-state.js';
 
   async function removeRecord(file) {
     if (!file) return;
-    const ok = window.confirm('确定删除这条开奖记录吗？删除后服务器记录会移除。');
-    if (!ok) return;
+    state.pendingDeleteFile = file;
+    els.confirmDialog.showModal();
+    requestAnimationFrame(() => els.confirmCancelBtn.focus());
+  }
+
+  function closeDeleteConfirm() {
+    state.pendingDeleteFile = '';
+    if (els.confirmDialog.open) els.confirmDialog.close();
+  }
+
+  async function confirmRemoveRecord() {
+    const file = state.pendingDeleteFile;
+    if (!file) return;
+    els.confirmDeleteBtn.disabled = true;
     try {
       await api(`/api/admin/draws/${encodeURIComponent(file)}`, { method: 'DELETE' });
       if (state.selected?.file === file) {
         state.selected = null;
         state.detailOpen = false;
       }
+      closeDeleteConfirm();
       showToast('开奖记录已删除');
       await loadAll();
     } catch (error) {
       showToast(error.message);
+    } finally {
+      els.confirmDeleteBtn.disabled = false;
     }
   }
 
@@ -1118,6 +1139,14 @@ import { listDisplayState } from './admin-list-state.js';
   });
 
   els.detailClose.addEventListener('click', closeRecordDetail);
+  els.confirmCancelBtn.addEventListener('click', closeDeleteConfirm);
+  els.confirmDeleteBtn.addEventListener('click', confirmRemoveRecord);
+  els.confirmDialog.addEventListener('close', () => {
+    state.pendingDeleteFile = '';
+  });
+  els.confirmDialog.addEventListener('click', (event) => {
+    if (event.target === els.confirmDialog) closeDeleteConfirm();
+  });
 
   els.feedbackFilters.addEventListener('click', (event) => {
     const button = event.target.closest('[data-feedback-filter]');

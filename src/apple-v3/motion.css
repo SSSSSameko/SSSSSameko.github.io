@@ -287,6 +287,16 @@ button:disabled {
   transform-origin: center bottom;
 }
 
+.flow-sheet-backdrop.is-closing,
+.receipt-backdrop.is-closing {
+  animation: material-backdrop-out 190ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.flow-sheet-backdrop.is-closing .flow-sheet,
+.receipt-backdrop.is-closing .receipt-sheet {
+  animation: sheet-dismiss 190ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
 .flow-sheet > :nth-child(n + 3) {
   animation: sheet-content-enter 300ms var(--ease-out) both;
   animation-delay: 80ms;
@@ -364,6 +374,10 @@ button:disabled {
   will-change: transform, opacity;
 }
 
+.app-shell[data-draw-state="running"] .candidate-deck {
+  animation: deck-energize 420ms var(--ease-out) both;
+}
+
 .app-shell[data-draw-state="running"] .candidate-deck .pass-main {
   box-shadow:
     0 30px 54px rgba(46, 50, 69, 0.2),
@@ -385,6 +399,25 @@ button:disabled {
 
 .app-shell[data-draw-state="running"] .draw-scene::after {
   animation: stage-shadow-breathe 1.4s var(--ease-in-out) infinite alternate;
+}
+
+.app-shell[data-setup="confirmed"][data-draw-state="ready"] .candidate-deck {
+  animation: draw-ready-settle 420ms var(--ease-drawer) both;
+}
+
+.app-shell[data-setup="confirmed"] .draw-specs button.is-confirmed {
+  animation: setup-confirmed 360ms var(--ease-drawer) both;
+}
+
+.app-shell[data-draw-state="running"] .candidate-deck .pass-main::after {
+  position: absolute;
+  z-index: 1;
+  inset: -26% -60%;
+  background: linear-gradient(112deg, transparent 39%, rgba(255, 255, 255, 0.58) 50%, transparent 61%);
+  content: "";
+  pointer-events: none;
+  transform: translate3d(-54%, 0, 0) rotate(-7deg);
+  animation: card-specular-sweep 1.15s var(--ease-in-out) infinite;
 }
 
 .winner-core {
@@ -523,9 +556,19 @@ button:disabled {
   to { opacity: 1; }
 }
 
+@keyframes material-backdrop-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
 @keyframes sheet-materialize {
   from { opacity: 0; transform: translateY(7%) scale(0.985); }
   to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes sheet-dismiss {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(16px) scale(0.99); }
 }
 
 @keyframes sheet-content-enter {
@@ -536,6 +579,11 @@ button:disabled {
 @keyframes alert-materialize {
   from { opacity: 0; transform: translateY(8px) scale(0.955); }
   to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes alert-dismiss {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(6px) scale(0.98); }
 }
 
 @keyframes notice-materialize {
@@ -572,6 +620,28 @@ button:disabled {
 @keyframes stage-shadow-breathe {
   from { opacity: 0.72; transform: rotateX(66deg) scaleX(0.94); }
   to { opacity: 1; transform: rotateX(66deg) scaleX(1.04); }
+}
+
+@keyframes draw-ready-settle {
+  from { opacity: 0.86; transform: translateY(5px) scale(0.988); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes deck-energize {
+  from { transform: translateY(0) scale(1); }
+  to { transform: translateY(-5px) scale(1.012); }
+}
+
+@keyframes setup-confirmed {
+  0% { transform: scale(0.985); }
+  58% { transform: scale(1.012); }
+  100% { transform: scale(1); }
+}
+
+@keyframes card-specular-sweep {
+  0%, 18% { opacity: 0; transform: translate3d(-54%, 0, 0) rotate(-7deg); }
+  40% { opacity: 0.72; }
+  68%, 100% { opacity: 0; transform: translate3d(54%, 0, 0) rotate(-7deg); }
 }
 
 @keyframes winner-card-arrive {

@@ -1,6 +1,6 @@
 {
   "name": "sameko-weibo-lottery",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "private": true,
   "type": "module",
   "description": "微博转发抽奖助手，支持候选抓取、筛选、滚动开奖和开奖记录导出。",
@@ -12,7 +12,7 @@
     "build": "vite build",
     "preview": "vite preview --host 127.0.0.1",
     "start": "node server.mjs",
-    "test": "node --test src/lib/adminAuth.test.js src/lib/appCore.test.js src/lib/adminStatus.test.js src/lib/avatar.test.js src/lib/cookiePool.test.js src/lib/drawDeckMotion.test.js src/lib/drawReceipts.test.js src/lib/feedback.test.js src/lib/requestTrust.test.js src/lib/resultPoster.test.js src/lib/storageRetention.test.js src/lib/systemMetrics.test.js src/lib/weiboBrowserLifecycle.test.js src/lib/weiboPacing.test.js server-admin/admin-list-state.test.js",
+    "test": "node --test src/lib/adminAuth.test.js src/lib/appCore.test.js src/lib/adminStatus.test.js src/lib/avatar.test.js src/lib/cookiePool.test.js src/lib/drawCooldown.test.js src/lib/drawDeckMotion.test.js src/lib/drawReceipts.test.js src/lib/feedback.test.js src/lib/repostCandidates.test.js src/lib/repostTaskCache.test.js src/lib/requestTrust.test.js src/lib/resultPoster.test.js src/lib/storageRetention.test.js src/lib/systemMetrics.test.js src/lib/weiboBrowserLifecycle.test.js src/lib/weiboPacing.test.js server-admin/admin-list-state.test.js",
     "test:release": "npm audit --audit-level=low && npm test && npm run build && node scripts/test-server-http.mjs && node scripts/test-memory-soak.mjs",
     "web": "npm run build && node server.mjs",
     "start:windows": "powershell -ExecutionPolicy Bypass -File scripts/windows-start.ps1"

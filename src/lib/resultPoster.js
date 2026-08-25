@@ -371,15 +371,26 @@ function drawHero(ctx, model, y, avatarImages) {
   });
 
   const visibleWinners = model.groups.flatMap((group) => group.winners).slice(0, 5);
+  const remaining = model.winnerCount - visibleWinners.length;
   const avatarSize = 68;
   const overlap = 18;
-  const stackWidth = visibleWinners.length
-    ? avatarSize + (visibleWinners.length - 1) * (avatarSize - overlap)
+  const stackItems = visibleWinners.length + (remaining > 0 ? 1 : 0);
+  const stackWidth = stackItems
+    ? avatarSize + (stackItems - 1) * (avatarSize - overlap)
     : 0;
   const stackX = POSTER_WIDTH - POSTER_PADDING - 30 - stackWidth;
   visibleWinners.forEach((winner, index) => {
     drawAvatar(ctx, winner, avatarImages, stackX + index * (avatarSize - overlap), y + 92, avatarSize);
   });
+  if (remaining > 0) {
+    const moreX = stackX + visibleWinners.length * (avatarSize - overlap);
+    roundedRect(ctx, moreX, y + 92, avatarSize, avatarSize, 23, '#f3efff', '#ffffff');
+    fillText(ctx, `+${remaining}`, moreX + avatarSize / 2, y + 113, {
+      color: '#7560d8',
+      font: `700 22px ${FONT_STACK}`,
+      align: 'center',
+    });
+  }
 }
 
 function drawSource(ctx, model, y) {
