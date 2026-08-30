@@ -1,4 +1,4 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -15,7 +15,7 @@
   <div class="page-shell">
     <header class="topbar">
       <a class="brand" href="/admin" aria-label="微博转发抽奖助手后台">
-        <span class="brand-avatar"><img src="/avatar.jpg" alt=""></span>
+        <span class="brand-avatar"><img src="/avatar-96.webp" alt="" width="42" height="42"></span>
         <span class="brand-copy">
           <strong>抽奖助手后台</strong>
           <span>Sameko Control</span>
@@ -37,7 +37,7 @@
 
     <section class="login-stage" id="loginPanel">
       <div class="login-window">
-        <div class="login-mark"><img src="/avatar.jpg" alt=""></div>
+        <div class="login-mark"><img src="/avatar-96.webp" alt="" width="58" height="58"></div>
         <div class="login-heading">
           <p class="eyebrow">管理后台</p>
           <h1>欢迎回来</h1>
@@ -46,37 +46,42 @@
         <form class="login-form" id="loginForm">
           <label class="field">
             <span>账号</span>
-            <input id="usernameInput" type="text" autocomplete="username" spellcheck="false" placeholder="请输入账号">
+            <input id="usernameInput" name="username" type="text" autocomplete="username" spellcheck="false" placeholder="请输入账号…">
           </label>
-          <label class="field">
-            <span>密码</span>
+          <div class="field">
+            <label for="passwordInput">密码</label>
             <span class="password-field">
-              <input id="passwordInput" type="password" autocomplete="current-password" placeholder="请输入密码">
+              <input id="passwordInput" name="password" type="password" autocomplete="current-password" placeholder="请输入密码…">
               <button class="field-icon" id="passwordToggle" type="button" aria-label="显示密码" title="显示密码">
                 <svg class="eye-open" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/><circle cx="12" cy="12" r="2.5"/></svg>
               </button>
             </span>
-          </label>
+          </div>
           <button class="primary-button login-submit" id="loginBtn" type="submit">
             <span>进入后台</span>
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg>
           </button>
         </form>
-        <p class="message" id="loginMessage" role="alert"></p>
+        <p class="message" id="loginMessage" role="alert" aria-live="assertive" aria-atomic="true"></p>
       </div>
     </section>
 
     <main class="dashboard hidden" id="dashboard">
-      <nav class="tabbar" aria-label="后台导航">
-        <button class="tab-button active" type="button" data-tab="overview">总览</button>
-        <button class="tab-button" type="button" data-tab="records">记录</button>
-        <button class="tab-button" type="button" data-tab="feedback">反馈</button>
-        <button class="tab-button" type="button" data-tab="cookie">Cookie</button>
-        <button class="tab-button" type="button" data-tab="system">系统</button>
+      <div class="admin-alert hidden" id="adminAlert" role="alert" aria-live="assertive">
+        <span class="admin-alert-mark" aria-hidden="true">!</span>
+        <span class="admin-alert-message" id="adminAlertMessage"></span>
+        <button class="admin-alert-close" id="adminAlertClose" type="button" aria-label="关闭提示" title="关闭提示">关闭</button>
+      </div>
+      <nav class="tabbar" aria-label="后台导航" role="tablist" aria-orientation="horizontal">
+        <button class="tab-button active" id="tab-overview" type="button" role="tab" aria-selected="true" aria-controls="view-overview" data-tab="overview">总览</button>
+        <button class="tab-button" id="tab-records" type="button" role="tab" aria-selected="false" aria-controls="view-records" tabindex="-1" data-tab="records">记录</button>
+        <button class="tab-button" id="tab-feedback" type="button" role="tab" aria-selected="false" aria-controls="view-feedback" tabindex="-1" data-tab="feedback">反馈</button>
+        <button class="tab-button" id="tab-cookie" type="button" role="tab" aria-selected="false" aria-controls="view-cookie" tabindex="-1" data-tab="cookie">Cookie</button>
+        <button class="tab-button" id="tab-system" type="button" role="tab" aria-selected="false" aria-controls="view-system" tabindex="-1" data-tab="system">系统</button>
         <span class="tab-indicator" aria-hidden="true"></span>
       </nav>
 
-      <section class="view active" data-view="overview">
+      <section class="view active" id="view-overview" role="tabpanel" aria-labelledby="tab-overview" data-view="overview">
         <div class="overview-head">
           <div>
             <p class="eyebrow">运行总览</p>
@@ -129,7 +134,7 @@
           <article class="panel">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">审计</p>
+                <p class="eyebrow">日志</p>
                 <h2>运行事件</h2>
               </div>
               <button class="link-button" type="button" data-go-tab="system">完整状态</button>
@@ -139,7 +144,7 @@
         </section>
       </section>
 
-      <section class="view" data-view="records">
+      <section class="view" id="view-records" role="tabpanel" aria-labelledby="tab-records" data-view="records" hidden>
         <div class="section-head">
           <div>
             <p class="eyebrow">开奖数据</p>
@@ -148,22 +153,25 @@
           <div class="toolbar">
             <label class="search-field">
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
-              <input id="searchInput" type="search" placeholder="搜索链接、奖项、中奖人">
+              <input id="searchInput" name="drawSearch" type="search" aria-label="搜索开奖记录" autocomplete="off" placeholder="搜索链接、奖项、中奖人…">
             </label>
-            <button class="secondary-button" id="exportAllBtn" type="button">导出 CSV</button>
+            <button class="secondary-button" id="exportAllBtn" type="button">导出当前列表</button>
           </div>
         </div>
         <section class="workbench">
           <div class="records-panel">
             <div class="records-panel-head">
               <strong>全部记录</strong>
-              <span id="recordCount">0 条</span>
+              <span class="records-head-meta">
+                <span id="recordCount">0 条</span>
+                <span class="export-status" id="exportStatus" role="status" aria-live="polite"></span>
+              </span>
             </div>
             <div class="record-list-scroll">
               <div class="record-list" id="recordList"></div>
             </div>
           </div>
-          <aside class="detail-panel" id="detailPanel">
+          <section class="detail-panel" id="detailPanel">
             <div class="detail-panel-head">
               <strong>记录详情</strong>
               <button class="detail-close" id="detailClose" type="button" aria-label="关闭开奖记录详情">
@@ -177,11 +185,11 @@
                 <p>查看中奖人、奖项、候选哈希和导出选项。</p>
               </div>
             </div>
-          </aside>
+          </section>
         </section>
       </section>
 
-      <section class="view" data-view="feedback">
+      <section class="view" id="view-feedback" role="tabpanel" aria-labelledby="tab-feedback" data-view="feedback" hidden>
         <div class="section-head feedback-section-head">
           <div>
             <p class="eyebrow">来自前台</p>
@@ -190,8 +198,11 @@
           <span class="badge neutral" id="feedbackCount">0 条</span>
         </div>
         <section class="panel feedback-panel">
-          <div class="feedback-toolbar" id="feedbackFilters" aria-label="反馈分类">
+          <div class="feedback-toolbar" id="feedbackFilters" role="group" aria-label="反馈分类">
             <button class="active" type="button" data-feedback-filter="all">全部</button>
+            <button type="button" data-feedback-filter="open">待处理</button>
+            <button type="button" data-feedback-filter="handled">已处理</button>
+            <button type="button" data-feedback-filter="privacy">隐私与数据</button>
             <button type="button" data-feedback-filter="suggestion">建议</button>
             <button type="button" data-feedback-filter="problem">问题</button>
             <button type="button" data-feedback-filter="experience">体验</button>
@@ -201,7 +212,7 @@
         </section>
       </section>
 
-      <section class="view" data-view="cookie">
+      <section class="view" id="view-cookie" role="tabpanel" aria-labelledby="tab-cookie" data-view="cookie" hidden>
         <div class="section-head">
           <div>
             <p class="eyebrow">微博连接</p>
@@ -224,9 +235,9 @@
               <button class="text-button danger-text" id="stopWeiboLoginBtn" type="button">关闭扫码</button>
             </div>
             <div class="qr-frame hidden" id="qrFrame">
-              <img id="qrImage" src="/avatar.jpg" alt="微博扫码登录二维码">
+              <img id="qrImage" src="/avatar-96.webp" alt="微博扫码登录二维码">
             </div>
-            <p class="status-copy" id="weiboLoginText">等待读取微博登录状态。</p>
+            <p class="status-copy" id="weiboLoginText" role="status" aria-live="polite" aria-atomic="true">等待读取微博登录状态。</p>
           </article>
           <article class="panel">
             <div class="panel-head">
@@ -240,7 +251,7 @@
         </section>
       </section>
 
-      <section class="view" data-view="system">
+      <section class="view" id="view-system" role="tabpanel" aria-labelledby="tab-system" data-view="system" hidden>
         <div class="section-head">
           <div>
             <p class="eyebrow">服务器诊断</p>

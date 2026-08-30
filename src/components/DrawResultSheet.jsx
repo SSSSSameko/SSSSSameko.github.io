@@ -1,14 +1,14 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
   Copy,
+  Download,
   Image,
   Link2,
   RefreshCw,
   ShieldCheck,
   Sparkles,
-  Users,
   X,
 } from 'lucide-react';
 
@@ -18,7 +18,13 @@ import {
   DRAW_RANDOM_ALGORITHM,
   friendlyProviderText,
 } from '../lib/appCore.js';
+import {
+  buildAnnouncementText,
+  DRAW_ANNOUNCEMENT_TEMPLATES,
+} from '../lib/drawAnnouncements.js';
 import { drawCountCopy, normalizeDrawReceipt } from '../lib/drawReceipts.js';
+import useSheetDrag from '../hooks/useSheetDrag.js';
+import useDialogStack from '../hooks/useDialogStack.js';
 import CandidateAvatar from './CandidateAvatar.jsx';
 
 function formatReceiptDate(value) {
@@ -43,7 +49,7 @@ function compactHash(value) {
 
 function sourceScope(receipt) {
   if (receipt.source === 'manual') return '手动名单';
-  if (receipt.sourceMeta?.complete === false) return '公开可见转发';
+  if (receipt.sourceMeta?.complete === false) return '当前可见转发';
   const visible = Number(receipt.sourceMeta?.visibleNumber);
   const total = Number(receipt.sourceMeta?.totalNumber);
   if (Number.isFinite(visible) && Number.isFinite(total) && visible < total) {
@@ -64,28 +70,50 @@ export default function DrawResultSheet({
   receipt: receiptInput,
   apiBase = '',
   isCapturing = false,
+  isSyncing = false,
+  historyStorageAvailable = true,
   onClose,
   onSaveImage,
   onCopyPost,
   onCopyFairness,
+  onCopyWinners,
+  onExportWinners,
   onRetrySave,
 }) {
+  const backdropRef = useRef(null);
   const dialogRef = useRef(null);
   const closeButtonRef = useRef(null);
   const closeTimerRef = useRef(null);
   const closingRef = useRef(false);
+  const retryingRef = useRef(false);
   const requestCloseRef = useRef(null);
   const onCloseRef = useRef(onClose);
   const [isClosing, setIsClosing] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [announcementTemplate, setAnnouncementTemplate] = useState('concise');
   const receipt = useMemo(
     () => (receiptInput ? normalizeDrawReceipt(receiptInput) : null),
     [receiptInput],
   );
+  const isTopDialog = useDialogStack(Boolean(receipt));
   onCloseRef.current = onClose;
 
-  function requestClose() {
+  useEffect(() => {
+    setAnnouncementTemplate('concise');
+  }, [receipt?.id]);
+
+  const announcementText = useMemo(
+    () => (receipt ? buildAnnouncementText(receipt, announcementTemplate) : ''),
+    [announcementTemplate, receipt],
+  );
+
+  function requestClose({ immediate = false } = {}) {
     if (closingRef.current) return;
     closingRef.current = true;
+    if (immediate) {
+      onCloseRef.current?.();
+      return;
+    }
     setIsClosing(true);
     const shellMotion = dialogRef.current?.closest('.app-shell')?.dataset.motion;
     const reduceMotion = shellMotion === 'reduced'
@@ -95,20 +123,32 @@ export default function DrawResultSheet({
     }, reduceMotion ? 1 : 190);
   }
   requestCloseRef.current = requestClose;
+  const sheetDrag = useSheetDrag({
+    sheetRef: dialogRef,
+    backdropRef,
+    onDismiss: () => requestCloseRef.current?.({ immediate: true }),
+  });
 
   useEffect(() => {
     if (!receipt) return undefined;
     closingRef.current = false;
     setIsClosing(false);
+    setIsRetrying(false);
+    retryingRef.current = false;
     const previousFocus = document.activeElement;
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     closeButtonRef.current?.focus({ preventScroll: true });
     const handleKeyDown = (event) => {
-      if (event.key === 'Escape') requestCloseRef.current?.();
+      if (!isTopDialog()) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        requestCloseRef.current?.();
+      }
       if (event.key !== 'Tab' || !dialogRef.current) return;
       const controls = [...dialogRef.current.querySelectorAll(
-        'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        'a[href], summary, button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
       )].filter((element) => !element.hidden && element.getClientRects().length);
       if (!controls.length) return;
       const first = controls[0];
@@ -128,7 +168,7 @@ export default function DrawResultSheet({
       window.clearTimeout(closeTimerRef.current);
       previousFocus?.focus?.({ preventScroll: true });
     };
-  }, [receipt]);
+  }, [isTopDialog, receipt?.id]);
 
   if (!receipt) return null;
 
@@ -136,17 +176,20 @@ export default function DrawResultSheet({
     (sum, group) => sum + group.winners.length,
     0,
   );
+  const isPractice = receipt.recordState === 'practice';
   const prizeCount = receipt.results.filter((group) => group.winners.length).length;
   const manualCount = receipt.drawNumber || 1;
-  const drawLabel = receipt.recordState === 'server' && receipt.drawNumber
-    ? drawCountCopy({
-      source: receipt.source,
-      count: receipt.drawNumber,
-      completed: true,
-    })
-    : receipt.source === 'manual' && receipt.drawNumber
-      ? drawCountCopy({ source: 'manual', count: manualCount, completed: true })
-      : '未计入开奖次数';
+  const drawLabel = isPractice
+    ? '本地演练 · 不计入开奖次数'
+    : receipt.recordState === 'server' && receipt.drawNumber
+      ? drawCountCopy({
+        source: receipt.source,
+        count: receipt.drawNumber,
+        completed: true,
+      })
+      : receipt.source === 'manual' && receipt.drawNumber
+        ? drawCountCopy({ source: 'manual', count: manualCount, completed: true })
+        : '未计入开奖次数';
   const filterText = receipt.rules?.filters
     ? buildFilterSummary(receipt.rules.filters)
     : '未记录';
@@ -157,9 +200,23 @@ export default function DrawResultSheet({
     ? `手动名单 · ${candidateCutoffInfo(receipt.sourceMeta?.loadedAt).label}`
     : candidateCutoffInfo(receipt.sourceMeta?.loadedAt).label;
   const displayedWinners = receipt.results.flatMap((group) => group.winners).slice(0, 4);
+  const singleWinner = winnerCount === 1 ? displayedWinners[0] : null;
+  let winnerMotionIndex = 0;
+
+  async function retrySave() {
+    if (retryingRef.current) return;
+    retryingRef.current = true;
+    setIsRetrying(true);
+    try {
+      await onRetrySave?.();
+    } finally {
+      retryingRef.current = false;
+      setIsRetrying(false);
+    }
+  }
 
   return (
-    <div className={`receipt-backdrop ${isClosing ? 'is-closing' : ''}`} onClick={requestClose} role="presentation">
+    <div ref={backdropRef} className={`receipt-backdrop ${isClosing ? 'is-closing' : ''}`} onClick={() => requestClose()} role="presentation">
       <section
         ref={dialogRef}
         className="receipt-sheet"
@@ -168,13 +225,13 @@ export default function DrawResultSheet({
         aria-labelledby="receipt-title"
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="receipt-grabber" aria-hidden="true" />
+        <div className="receipt-grabber" aria-hidden="true" {...sheetDrag} />
         <header className="receipt-header">
           <span className="receipt-title-icon" aria-hidden="true">
             <Sparkles />
           </span>
           <div>
-            <h2 id="receipt-title">开奖结果</h2>
+            <h2 id="receipt-title">{isPractice ? '本地演练结果' : '开奖结果'}</h2>
             <p>{formatReceiptDate(receipt.drawnAt)}</p>
           </div>
           <button
@@ -191,24 +248,42 @@ export default function DrawResultSheet({
         <div className="receipt-content">
           <section className="receipt-summary">
             <div className="receipt-summary-copy">
-              <span><CheckCircle2 /> 开奖完成</span>
+              <span><CheckCircle2 /> {isPractice ? '演练完成' : '开奖完成'}</span>
               <strong>{winnerCount} 位中奖用户</strong>
               <p>{drawLabel} · {prizeCount} 个奖项</p>
             </div>
-            <div className="receipt-avatar-stack" aria-label="中奖用户头像">
+            <div
+              className={`receipt-avatar-stack ${singleWinner ? 'is-single' : ''}`}
+              aria-label="中奖用户摘要"
+            >
               {displayedWinners.map((winner, index) => (
                 <CandidateAvatar
                   key={winner.id || winner.uid || winner.screenName || index}
                   candidate={winner}
                   className="receipt-stack-avatar"
                   apiBase={apiBase}
+                  decorative
+                  priority
                 />
               ))}
+              {singleWinner && (
+                <span className="receipt-single-winner">
+                  <strong>{singleWinner.screenName || singleWinner.uid || '中奖用户'}</strong>
+                  <small>{winnerIdentity(singleWinner)}</small>
+                </span>
+              )}
               {winnerCount > displayedWinners.length && (
                 <span className="receipt-stack-more">+{winnerCount - displayedWinners.length}</span>
               )}
             </div>
           </section>
+
+          {receipt.sourceMeta?.complete === false && (
+            <div className="receipt-scope-warning" role="note">
+              <span><ShieldCheck /></span>
+              <p><strong>本次名单为当前可见范围</strong><small>微博接口或登录态可能隐藏部分转发，公示前请按活动规则核对。</small></p>
+            </div>
+          )}
 
           <div className="receipt-section-heading">
             <div>
@@ -225,7 +300,7 @@ export default function DrawResultSheet({
                 key={`${group.prize.name}-${groupIndex}`}
                 style={{
                   '--receipt-accent': group.prize.color || '#ee8fa1',
-                  '--receipt-group': groupIndex,
+                  '--receipt-group-delay': `${130 + Math.min(groupIndex, 6) * 55}ms`,
                 }}
               >
                 <header>
@@ -236,20 +311,24 @@ export default function DrawResultSheet({
                   </div>
                 </header>
                 <div className="receipt-winner-list">
-                  {group.winners.map((winner, winnerIndex) => (
-                    <div
-                      className="receipt-winner"
-                      key={winner.id || winner.uid || winner.screenName || winnerIndex}
-                      style={{ '--receipt-index': winnerIndex }}
-                    >
-                      <CandidateAvatar candidate={winner} className="receipt-winner-avatar" apiBase={apiBase} />
-                      <span>
-                        <strong>{winner.screenName || winner.uid || `中奖用户 ${winnerIndex + 1}`}</strong>
-                        <small>{winnerIdentity(winner)}</small>
-                      </span>
-                      <em>{String(winnerIndex + 1).padStart(2, '0')}</em>
-                    </div>
-                  ))}
+                  {group.winners.map((winner, winnerIndex) => {
+                    const motionIndex = winnerMotionIndex;
+                    winnerMotionIndex += 1;
+                    return (
+                      <div
+                        className={`receipt-winner ${motionIndex < 8 ? 'is-animated' : ''}`.trim()}
+                        key={winner.id || winner.uid || winner.screenName || winnerIndex}
+                        style={motionIndex < 8 ? { '--receipt-delay': `${motionIndex * 36}ms` } : undefined}
+                      >
+                        <CandidateAvatar candidate={winner} className="receipt-winner-avatar" apiBase={apiBase} decorative />
+                        <span>
+                          <strong>{winner.screenName || winner.uid || `中奖用户 ${winnerIndex + 1}`}</strong>
+                          <small>{winnerIdentity(winner)}</small>
+                        </span>
+                        <em>{String(winnerIndex + 1).padStart(2, '0')}</em>
+                      </div>
+                    );
+                  })}
                 </div>
               </section>
             ))}
@@ -258,10 +337,10 @@ export default function DrawResultSheet({
           <section className="receipt-audit">
             <header>
               <div>
-                <span><ShieldCheck /> 公平记录</span>
+                <span><ShieldCheck /> 随机过程记录</span>
                 <p>{drawLabel}</p>
               </div>
-              <button type="button" onClick={onCopyFairness} aria-label="复制公平摘要">
+              <button type="button" onClick={onCopyFairness} aria-label="复制随机过程摘要">
                 <Copy />
                 复制
               </button>
@@ -282,14 +361,31 @@ export default function DrawResultSheet({
               <span><small>候选范围</small><strong>{receipt.eligibleCount} / {receipt.candidateCount} 人</strong></span>
               <span><small>数据来源</small><strong>{sourceScope(receipt)}</strong></span>
               <span className="receipt-audit-code"><small>名单指纹</small><strong title={receipt.candidateDigest}>{compactHash(receipt.candidateDigest)}</strong></span>
-              <span className="receipt-audit-code"><small>审计哈希</small><strong title={receipt.auditHash}>{compactHash(receipt.auditHash)}</strong></span>
+              <span className="receipt-audit-code"><small>过程哈希</small><strong title={receipt.auditHash}>{compactHash(receipt.auditHash)}</strong></span>
             </div>
 
-            {receipt.recordState !== 'server' && (
-              <div className="receipt-local-note">
+            {isPractice ? (
+              <div className="receipt-local-note is-practice" role="status">
+                <Sparkles />
+                <span>
+                  <strong>本地演练结果</strong>
+                  <small>仅用于核对动画与设置，不保存记录，也不计入本链接开奖次数。</small>
+                </span>
+              </div>
+            ) : receipt.recordState !== 'server' && (
+              <div className={`receipt-local-note ${isSyncing ? 'is-syncing' : ''}`} role="status" aria-live="polite">
                 <RefreshCw />
-                <span><strong>未计入开奖次数</strong><small>重新保存成功后才会计入本链接开奖次数</small></span>
-                <button type="button" onClick={onRetrySave}>重新保存</button>
+                <span>
+                  <strong>{isSyncing ? '正在同步开奖记录' : '未计入开奖次数'}</strong>
+                  <small>{isSyncing
+                    ? '结果已生成，可以先查看或保存；同步完成后会自动更新开奖次数'
+                    : historyStorageAvailable
+                      ? '当前浏览器已保留结果；重新保存成功后才会计入次数'
+                      : '本机存储不可用；关闭页面前请保存结果图或导出名单'}</small>
+                </span>
+                {isSyncing
+                  ? <em className="receipt-sync-state">同步中</em>
+                  : <button type="button" onClick={retrySave} disabled={isRetrying}>{isRetrying ? '正在保存' : '重新保存'}</button>}
               </div>
             )}
 
@@ -307,7 +403,7 @@ export default function DrawResultSheet({
                 <div><dt>随机规则</dt><dd>{DRAW_RANDOM_ALGORITHM}</dd></div>
                 <div><dt>随机种子</dt><dd title={receipt.seed}>{compactHash(receipt.seed)}</dd></div>
                 <div><dt>名单指纹</dt><dd title={receipt.candidateDigest}>{compactHash(receipt.candidateDigest)}</dd></div>
-                <div><dt>审计哈希</dt><dd title={receipt.auditHash}>{compactHash(receipt.auditHash)}</dd></div>
+                <div><dt>过程哈希</dt><dd title={receipt.auditHash}>{compactHash(receipt.auditHash)}</dd></div>
                 <div><dt>数据来源</dt><dd>{sourceScope(receipt)}</dd></div>
               </dl>
               {receipt.statusUrl && (
@@ -317,6 +413,28 @@ export default function DrawResultSheet({
                 </a>
               )}
             </details>
+          </section>
+
+          <section className="receipt-copy-details">
+            <header>
+              <div>
+                <span>公示文案</span>
+                <strong>选择格式并复制</strong>
+              </div>
+              <select
+                value={announcementTemplate}
+                onChange={(event) => setAnnouncementTemplate(event.target.value)}
+                aria-label="公示文案格式"
+              >
+                {DRAW_ANNOUNCEMENT_TEMPLATES.map((template) => (
+                  <option key={template.value} value={template.value}>{template.label}</option>
+                ))}
+              </select>
+            </header>
+            <p className="receipt-copy-hint">
+              {DRAW_ANNOUNCEMENT_TEMPLATES.find((template) => template.value === announcementTemplate)?.hint}
+            </p>
+            <pre>{announcementText}</pre>
           </section>
         </div>
 
@@ -330,9 +448,17 @@ export default function DrawResultSheet({
             <Image />
             {isCapturing ? '正在生成' : '保存结果图'}
           </button>
-          <button type="button" className="receipt-action-secondary" onClick={onCopyPost}>
+          <button type="button" className="receipt-action-secondary" onClick={() => onCopyPost?.(announcementTemplate)}>
             <Copy />
             复制文案
+          </button>
+          <button type="button" className="receipt-action-secondary" onClick={onCopyWinners}>
+            <Copy />
+            复制名单
+          </button>
+          <button type="button" className="receipt-action-secondary" onClick={onExportWinners}>
+            <Download />
+            导出 CSV
           </button>
         </div>
       </section>

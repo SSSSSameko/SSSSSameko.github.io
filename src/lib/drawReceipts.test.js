@@ -4,9 +4,16 @@ import test from 'node:test';
 import {
   buildFairnessSummary,
   completedDrawStats,
+  DRAW_HISTORY_KEY,
+  DRAW_HISTORY_VERSION,
   drawCountCopy,
+  mergeDrawHistory,
   normalizeDrawReceipt,
+  receiptWinnerRows,
+  receiptWinnerText,
+  parseDrawHistoryBackup,
   readDrawHistory,
+  serializeDrawHistoryBackup,
   upsertDrawReceipt,
   winnerIdsForStatus,
   writeDrawHistory,
@@ -36,11 +43,63 @@ test('completedDrawStats ignores records without a persisted audit hash', () => 
   assert.equal(completedDrawStats(records, '100').count, 1);
 });
 
+test('completedDrawStats keeps persisted order when client clocks disagree', () => {
+  const records = [
+    {
+      statusId: '100',
+      auditHash: 'first',
+      drawNumber: 1,
+      drawnAt: '2026-07-25T02:00:00.000Z',
+      savedAt: '2026-07-24T01:00:00.000Z',
+    },
+    {
+      statusId: '100',
+      auditHash: 'second',
+      drawNumber: 2,
+      drawnAt: '2026-07-23T02:00:00.000Z',
+      savedAt: '2026-07-24T02:00:00.000Z',
+    },
+  ];
+
+  assert.deepEqual(completedDrawStats(records, '100', 'second'), {
+    count: 2,
+    drawNumber: 2,
+    lastDrawnAt: '2026-07-23T02:00:00.000Z',
+  });
+});
+
+test('completedDrawStats ignores unsafe or fractional persisted sequence values', () => {
+  const records = [
+    { statusId: '100', auditHash: 'first', drawNumber: 1.5, savedAt: '2026-07-24T01:00:00.000Z' },
+    { statusId: '100', auditHash: 'second', drawNumber: Number.MAX_SAFE_INTEGER + 1, savedAt: '2026-07-24T02:00:00.000Z' },
+  ];
+
+  assert.equal(completedDrawStats(records, '100', 'second').drawNumber, 2);
+});
+
 test('drawCountCopy uses completed draw wording', () => {
   assert.equal(drawCountCopy({ source: 'mobile', count: 0, completed: false }), '本链接尚无开奖记录');
   assert.equal(drawCountCopy({ source: 'mobile', count: 3, completed: false }), '此前已完成 3 次');
   assert.equal(drawCountCopy({ source: 'mobile', count: 3, completed: true }), '本链接第 3 次开奖');
   assert.equal(drawCountCopy({ source: 'manual', count: 2, completed: true }), '手动名单 · 本机第 2 次开奖');
+});
+
+test('winner exports keep prize order, rank and identity', () => {
+  const receipt = {
+    results: [{
+      prize: { name: '一等奖' },
+      winners: [
+        { uid: '100', screenName: '小花' },
+        { uid: '', screenName: '小蓝' },
+      ],
+    }],
+  };
+
+  assert.deepEqual(receiptWinnerRows(receipt), [
+    { prize: '一等奖', rank: 1, uid: '100', screenName: '小花' },
+    { prize: '一等奖', rank: 2, uid: '', screenName: '小蓝' },
+  ]);
+  assert.equal(receiptWinnerText(receipt), '一等奖\n1. 小花（UID 100）\n2. 小蓝');
 });
 
 test('normalizeDrawReceipt preserves complete prize groups and audit fields', () => {
@@ -64,6 +123,9 @@ test('normalizeDrawReceipt preserves complete prize groups and audit fields', ()
 
 test('normalizeDrawReceipt discards an invalid draw number', () => {
   assert.equal(normalizeDrawReceipt({ drawNumber: 'invalid' }).drawNumber, null);
+  assert.equal(normalizeDrawReceipt({ drawNumber: -1 }).drawNumber, null);
+  assert.equal(normalizeDrawReceipt({ drawNumber: 1.5 }).drawNumber, null);
+  assert.equal(normalizeDrawReceipt({ drawNumber: Number.MAX_SAFE_INTEGER + 1 }).drawNumber, null);
 });
 
 test('history storage rejects malformed data and caps records at 50', () => {
@@ -87,6 +149,99 @@ test('history storage rejects malformed data and caps records at 50', () => {
   assert.equal(readDrawHistory(storage).length, 50);
 });
 
+test('history storage trims oldest records to stay below the byte budget', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  const list = Array.from({ length: 8 }, (_, index) => normalizeDrawReceipt({
+    id: `large-${index}`,
+    drawnAt: new Date(2026, 7, 27, 0, index).toISOString(),
+    results: [{
+      prize: { name: '奖项' },
+      winners: [{ uid: `${index}-${'x'.repeat(900)}` }],
+    }],
+  }));
+  const result = writeDrawHistory(storage, list, { maxBytes: 700 });
+
+  assert.equal(result.ok, true);
+  assert.ok(result.dropped > 0);
+  assert.equal(readDrawHistory(storage)[0].id, 'large-0');
+  assert.equal(readDrawHistory(storage).length, result.stored);
+});
+
+test('a successful history write calls setItem once and verifies the stored payload', () => {
+  const values = new Map();
+  let writes = 0;
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem(key, value) {
+      writes += 1;
+      values.set(key, String(value));
+    },
+  };
+  const result = writeDrawHistory(storage, [{ id: 'single-write' }]);
+
+  assert.equal(result.ok, true);
+  assert.equal(result.attempts, 1);
+  assert.equal(writes, 1);
+  assert.equal(JSON.parse(values.get(DRAW_HISTORY_KEY)).version, DRAW_HISTORY_VERSION);
+});
+
+test('history writes retry trimming only for quota errors', () => {
+  const values = new Map();
+  let quotaWrites = 0;
+  const quotaStorage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem(key, value) {
+      quotaWrites += 1;
+      if (JSON.parse(value).items.length > 1) {
+        const error = new Error('Quota exceeded');
+        error.name = 'QuotaExceededError';
+        throw error;
+      }
+      values.set(key, String(value));
+    },
+  };
+  const history = [{ id: 'newest' }, { id: 'middle' }, { id: 'oldest' }];
+  const degraded = writeDrawHistory(quotaStorage, history);
+
+  assert.equal(degraded.ok, true);
+  assert.equal(degraded.stored, 1);
+  assert.equal(degraded.dropped, 2);
+  assert.equal(degraded.attempts, 3);
+  assert.equal(quotaWrites, 3);
+  assert.equal(degraded.items[0].id, 'newest');
+
+  let deniedWrites = 0;
+  const denied = writeDrawHistory({
+    getItem: () => null,
+    setItem() {
+      deniedWrites += 1;
+      throw new Error('storage denied');
+    },
+  }, history);
+  assert.equal(denied.ok, false);
+  assert.equal(denied.reason, 'unavailable');
+  assert.equal(denied.attempts, 1);
+  assert.equal(deniedWrites, 1);
+});
+
+test('history backup records when older records were omitted for the byte limit', () => {
+  const history = Array.from({ length: 3 }, (_, index) => normalizeDrawReceipt({
+    id: `backup-large-${index}`,
+    drawnAt: new Date(2026, 7, 27, 0, index).toISOString(),
+    results: [{ prize: { name: '奖项' }, winners: [{ uid: 'x'.repeat(400) }] }],
+  }));
+  const backup = serializeDrawHistoryBackup(history, '2026-08-27T03:00:00.000Z', { maxBytes: 1500 });
+  const parsed = JSON.parse(backup);
+
+  assert.equal(parsed.truncated, true);
+  assert.ok(parsed.omittedCount > 0);
+  assert.ok(parsed.items.length >= 1);
+});
+
 test('upsertDrawReceipt replaces the same audit record', () => {
   const first = normalizeDrawReceipt({ id: 'same', recordState: 'local', results: [] });
   const saved = normalizeDrawReceipt({
@@ -99,6 +254,47 @@ test('upsertDrawReceipt replaces the same audit record', () => {
 
   assert.equal(result.length, 1);
   assert.equal(result[0].recordState, 'server');
+});
+
+test('history backup round-trips valid records', () => {
+  const history = [normalizeDrawReceipt({
+    id: 'backup-1',
+    drawnAt: '2026-08-27T02:00:00.000Z',
+    results: [{
+      prize: { name: '幸运奖', count: 1 },
+      winners: [{ uid: '100', screenName: 'sameko' }],
+    }],
+  })];
+  const backup = serializeDrawHistoryBackup(history, '2026-08-27T03:00:00.000Z');
+  const restored = parseDrawHistoryBackup(backup);
+
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].results[0].winners[0].screenName, 'sameko');
+  assert.match(backup, /sameko-weibo-draw-history/);
+});
+
+test('history backup rejects unrelated json', () => {
+  assert.throws(
+    () => parseDrawHistoryBackup('{"items":[]}'),
+    /请选择由本应用导出的开奖记录备份/,
+  );
+});
+
+test('history merge deduplicates records and keeps server state', () => {
+  const local = normalizeDrawReceipt({
+    id: 'same',
+    drawnAt: '2026-08-27T02:00:00.000Z',
+    results: [{ prize: { name: '奖项' }, winners: [{ uid: '1' }] }],
+  });
+  const server = normalizeDrawReceipt({
+    ...local,
+    auditHash: 'same',
+    recordState: 'server',
+  });
+  const merged = mergeDrawHistory([local], [server]);
+
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].recordState, 'server');
 });
 
 test('buildFairnessSummary includes the filters and actual random method', () => {
@@ -127,7 +323,7 @@ test('buildFairnessSummary includes the filters and actual random method', () =>
   assert.match(text, /筛选规则：同一用户只保留一次 \/ 排除当前任务已中奖用户/);
   assert.match(text, /随机规则：SHA-256 · Fisher–Yates/);
   assert.match(text, /随机种子：seed-1/);
-  assert.match(text, /审计哈希：audit-1/);
+  assert.match(text, /过程哈希：audit-1/);
   assert.match(text, /名单指纹：digest-1/);
 });
 

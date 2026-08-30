@@ -5,15 +5,20 @@
   "type": "module",
   "description": "微博转发抽奖助手，支持候选抓取、筛选、滚动开奖和开奖记录导出。",
   "engines": {
-    "node": ">=20"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
+    "licenses": "node scripts/generate-third-party-notices.mjs",
+    "licenses:check": "node scripts/generate-third-party-notices.mjs --check",
     "preview": "vite preview --host 127.0.0.1",
     "start": "node server.mjs",
-    "test": "node --test src/lib/adminAuth.test.js src/lib/appCore.test.js src/lib/adminStatus.test.js src/lib/avatar.test.js src/lib/cookiePool.test.js src/lib/drawCooldown.test.js src/lib/drawDeckMotion.test.js src/lib/drawReceipts.test.js src/lib/feedback.test.js src/lib/repostCandidates.test.js src/lib/repostTaskCache.test.js src/lib/requestTrust.test.js src/lib/resultPoster.test.js src/lib/storageRetention.test.js src/lib/systemMetrics.test.js src/lib/weiboBrowserLifecycle.test.js src/lib/weiboPacing.test.js server-admin/admin-list-state.test.js",
-    "test:release": "npm audit --audit-level=low && npm test && npm run build && node scripts/test-server-http.mjs && node scripts/test-memory-soak.mjs",
+    "test": "node --test src/hooks/useSheetDrag.test.js src/lib/adminAuth.test.js src/lib/appCore.test.js src/lib/adminStatus.test.js src/lib/asyncGate.test.js src/lib/avatar.test.js src/lib/candidateEligibility.test.js src/lib/cookieHeaders.test.js src/lib/cookiePool.test.js src/lib/drawAnnouncements.test.js src/lib/drawCooldown.test.js src/lib/drawDeckMotion.test.js src/lib/drawReceipts.test.js src/lib/feedback.test.js src/lib/latestWriteQueue.test.js src/lib/repostCandidates.test.js src/lib/repostTaskCache.test.js src/lib/requestTrust.test.js src/lib/resultPoster.test.js src/lib/storageRetention.test.js src/lib/systemMetrics.test.js src/lib/weiboBrowserLifecycle.test.js src/lib/weiboPacing.test.js src/lib/weiboStatus.test.js server-admin/admin-list-state.test.js",
+    "test:release": "npm audit --audit-level=low && npm run licenses:check && npm test && npm run build && node scripts/test-server-http.mjs && node scripts/test-draw-retention-recovery.mjs && node scripts/test-server-lifecycle.mjs && node scripts/test-weibo-provider-fallback.mjs && npm run test:browser-lifecycle && node scripts/test-memory-soak.mjs && npm run test:ui:built",
+    "test:browser-lifecycle": "node --expose-gc scripts/test-browser-lifecycle-soak.mjs",
+    "test:ui": "npm run build && npm run test:ui:built",
+    "test:ui:built": "node scripts/test-ui-release.mjs",
     "web": "npm run build && node server.mjs",
     "start:windows": "powershell -ExecutionPolicy Bypass -File scripts/windows-start.ps1"
   },

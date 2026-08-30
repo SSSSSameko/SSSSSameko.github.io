@@ -46,3 +46,35 @@ export function mergeRepostHead(candidates, latestCandidates, maxEntries = Numbe
     truncatedCount: additions.length - accepted.length,
   };
 }
+
+export function createRepeatedPageGuard(limit = 3) {
+  const threshold = Math.max(1, Math.floor(Number(limit) || 1));
+  let repeated = 0;
+
+  return {
+    observe(itemCount, addedCount) {
+      if (Number(itemCount) > 0 && Number(addedCount) === 0) repeated += 1;
+      else repeated = 0;
+      return repeated >= threshold;
+    },
+    get count() {
+      return repeated;
+    },
+  };
+}
+
+export function createEmptyPageGuard(limit = 3) {
+  const threshold = Math.max(1, Math.floor(Number(limit) || 1));
+  let empty = 0;
+
+  return {
+    observe(itemCount) {
+      if (Number(itemCount) === 0) empty += 1;
+      else empty = 0;
+      return empty >= threshold;
+    },
+    get count() {
+      return empty;
+    },
+  };
+}

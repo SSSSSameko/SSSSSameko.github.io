@@ -1,8 +1,8 @@
 :root {
   --motion-press: 140ms;
   --motion-control: 220ms;
-  --motion-page: 300ms;
-  --motion-sheet: 420ms;
+  --motion-page: 240ms;
+  --motion-sheet: 360ms;
 }
 
 /* Controls */
@@ -12,14 +12,11 @@
 .root-tabbar button,
 .primary-button,
 .v3-primary-action,
-.page-primary,
-.page-secondary,
 .list-row,
 .compact-records button,
 .people-list button,
 .history-list button,
 .app-summary,
-.settings-navigation,
 .show-more-button,
 .result-buttons button,
 .flow-sheet button,
@@ -35,8 +32,7 @@
     color var(--motion-control) var(--ease-out),
     background-color var(--motion-control) var(--ease-out),
     border-color var(--motion-control) var(--ease-out),
-    box-shadow var(--motion-control) var(--ease-out),
-    filter var(--motion-control) var(--ease-out);
+    box-shadow var(--motion-control) var(--ease-out);
 }
 
 .brand-button svg,
@@ -57,8 +53,6 @@
 .navbar-actions button:active,
 .primary-button:active,
 .v3-primary-action:active,
-.page-primary:active,
-.page-secondary:active,
 .list-row:active,
 .compact-records button:active,
 .people-list button:active,
@@ -88,14 +82,64 @@ button:disabled {
   transform: none;
 }
 
+.v3-primary-action {
+  transition:
+    transform var(--motion-press) var(--ease-out),
+    opacity var(--motion-press) var(--ease-out),
+    color var(--motion-control) var(--ease-out),
+    background-color var(--motion-control) var(--ease-out),
+    border-color var(--motion-control) var(--ease-out),
+    box-shadow var(--motion-control) var(--ease-out),
+    filter var(--motion-control) var(--ease-out);
+}
+
 .v3-disclosure[aria-expanded="true"] svg {
   transform: rotate(90deg);
 }
 
-.segmented-control button.is-active,
-.page-segment button.is-active,
 .v3-filter-presets button.is-active {
   animation: selection-settle 220ms var(--ease-drawer) both;
+}
+
+.segmented-control {
+  --segment-index: 0;
+  position: relative;
+  isolation: isolate;
+  border: 0.5px solid rgba(53, 58, 70, 0.07);
+  background: rgba(229, 231, 237, 0.72);
+  box-shadow:
+    inset 0 1px 2px rgba(48, 52, 63, 0.055),
+    0 1px 0 rgba(255, 255, 255, 0.84);
+}
+
+.segmented-control .segmented-highlight {
+  position: absolute;
+  z-index: 0;
+  top: 3px;
+  bottom: 3px;
+  left: 3px;
+  width: calc((100% - 6px) / 3);
+  border: 0.5px solid rgba(255, 255, 255, 0.96);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 2px 7px rgba(31, 35, 45, 0.11),
+    inset 0 1px 0 #fff;
+  pointer-events: none;
+  transform: translateX(calc(var(--segment-index) * 100%));
+  transition:
+    transform 280ms var(--ease-drawer),
+    box-shadow 180ms var(--ease-out);
+}
+
+.segmented-control button {
+  position: relative;
+  z-index: 1;
+}
+
+.segmented-control button.is-active {
+  background: transparent;
+  box-shadow: none;
 }
 
 .v3-toggle-list > label input {
@@ -119,6 +163,7 @@ button:disabled {
 .v3-form-group input,
 .v3-form-group textarea,
 .flow-field-block input,
+.flow-field-block textarea,
 .search-field {
   transition:
     border-color 180ms var(--ease-out),
@@ -179,10 +224,9 @@ button:disabled {
 
 .root-tabbar .tab-highlight {
   transition:
-    transform 400ms var(--ease-drawer),
+    transform 290ms var(--ease-drawer),
     box-shadow 220ms var(--ease-out),
     background-color 220ms var(--ease-out);
-  will-change: transform;
 }
 
 .root-tabbar button svg,
@@ -194,7 +238,7 @@ button:disabled {
 }
 
 .root-tabbar button.is-active svg {
-  transform: translateY(-1px) scale(1.07);
+  transform: translateY(-1px) scale(1.035);
 }
 
 .root-tabbar button.is-active span {
@@ -202,12 +246,7 @@ button:disabled {
 }
 
 .root-view.is-active .root-scroll {
-  --page-enter-x: 14px;
-  animation: root-page-enter var(--motion-page) var(--ease-out) both;
-}
-
-.app-shell[data-tab-direction="backward"] .root-view.is-active .root-scroll {
-  --page-enter-x: -14px;
+  animation: root-page-enter 140ms var(--ease-out) both;
 }
 
 .title-status.is-busy i,
@@ -216,8 +255,8 @@ button:disabled {
 }
 
 .app-shell.stack-open .root-navbar {
-  opacity: 0.72;
-  transform: translateX(-12%) scale(0.985);
+  opacity: 0.78;
+  transform: translateY(-7px) scale(0.97);
 }
 
 .app-shell.stack-open .root-tabbar {
@@ -227,46 +266,38 @@ button:disabled {
 }
 
 .app-shell.stack-open .root-pages {
-  opacity: 0.84;
-  transform: translateX(-16%) scale(0.985);
+  border-radius: 30px 30px 0 0;
+  opacity: 0.86;
+  transform: translateY(-10px) scale(0.965);
 }
 
 .root-pages {
+  border-radius: 0;
+  transform-origin: center top;
   transition:
-    transform 420ms var(--ease-drawer),
-    opacity 260ms var(--ease-out);
+    transform 360ms var(--ease-drawer),
+    opacity 220ms var(--ease-out),
+    border-radius 360ms var(--ease-drawer);
 }
 
-.people-list > button:nth-child(-n + 8),
-.history-list > button:nth-child(-n + 8),
-.compact-records > button:nth-child(-n + 4),
 .flow-guide-row,
 .flow-legal-sections section,
 .v3-prize-item {
   animation: list-item-enter 260ms var(--ease-out) both;
 }
 
-.people-list > button:nth-child(2),
-.history-list > button:nth-child(2),
-.compact-records > button:nth-child(2),
 .flow-guide-row:nth-child(2),
 .flow-legal-sections section:nth-child(2),
 .v3-prize-item:nth-child(2) {
   animation-delay: 35ms;
 }
 
-.people-list > button:nth-child(3),
-.history-list > button:nth-child(3),
-.compact-records > button:nth-child(3),
 .flow-guide-row:nth-child(3),
 .flow-legal-sections section:nth-child(3),
 .v3-prize-item:nth-child(3) {
   animation-delay: 70ms;
 }
 
-.people-list > button:nth-child(4),
-.history-list > button:nth-child(4),
-.compact-records > button:nth-child(4),
 .flow-guide-row:nth-child(4),
 .flow-legal-sections section:nth-child(4),
 .v3-prize-item:nth-child(4) {
@@ -276,37 +307,105 @@ button:disabled {
 /* Sheets and notices */
 
 .flow-sheet-backdrop,
-.receipt-backdrop,
-.v3-alert-backdrop {
-  animation: material-backdrop-in 240ms var(--ease-out) both;
+.receipt-backdrop {
+  --sheet-scrim: 0.24;
+  background: rgb(24 25 29 / var(--sheet-scrim));
+  opacity: 1;
+  animation: none;
+  transition:
+    opacity var(--sheet-exit-duration, 220ms) var(--ease-out),
+    background-color 120ms linear;
 }
 
 .flow-sheet,
 .receipt-sheet {
-  animation: sheet-materialize var(--motion-sheet) var(--ease-drawer) both;
+  opacity: 1;
+  animation: none;
+  transform: translate3d(0, var(--sheet-drag-y, 0px), 0) scale(var(--sheet-drag-scale, 1));
   transform-origin: center bottom;
+  transition:
+    transform var(--motion-sheet) var(--ease-drawer),
+    opacity 220ms var(--ease-out),
+    border-radius var(--motion-sheet) var(--ease-drawer);
+}
+
+@starting-style {
+  .flow-sheet-backdrop,
+  .receipt-backdrop {
+    opacity: 0;
+  }
+
+  .flow-sheet,
+  .receipt-sheet {
+    opacity: 0;
+    transform: translate3d(0, 28px, 0) scale(0.975);
+  }
 }
 
 .flow-sheet-backdrop.is-closing,
 .receipt-backdrop.is-closing {
-  animation: material-backdrop-out 190ms cubic-bezier(0.4, 0, 1, 1) both;
+  opacity: 0;
+  animation: none;
+  transition-duration: var(--sheet-exit-duration, 190ms);
 }
 
 .flow-sheet-backdrop.is-closing .flow-sheet,
 .receipt-backdrop.is-closing .receipt-sheet {
-  animation: sheet-dismiss 190ms cubic-bezier(0.4, 0, 1, 1) both;
+  opacity: 0;
+  animation: none;
+  transform: translate3d(0, 22px, 0) scale(0.986);
+  transition-duration: 190ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 1, 1);
 }
 
-.flow-sheet > :nth-child(n + 3) {
+.flow-sheet.is-dragging,
+.receipt-sheet.is-dragging {
+  cursor: grabbing;
+  transition: none;
+  will-change: transform;
+}
+
+.flow-sheet.is-drag-dismissing,
+.receipt-sheet.is-drag-dismissing {
+  pointer-events: none;
+  transition-duration: var(--sheet-exit-duration, 180ms);
+  transition-timing-function: cubic-bezier(0.4, 0, 1, 1);
+}
+
+.flow-sheet-grabber,
+.receipt-grabber {
+  position: relative;
+  width: 58px;
+  height: 22px;
+  margin: -4px auto 1px;
+  border-radius: 12px;
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+}
+
+.flow-sheet-grabber::before,
+.receipt-grabber::before {
+  position: absolute;
+  top: 8px;
+  left: 11px;
+  width: 36px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(60, 60, 67, 0.22);
+  content: "";
+}
+
+.flow-sheet-body > :nth-child(n + 1) {
   animation: sheet-content-enter 300ms var(--ease-out) both;
   animation-delay: 80ms;
 }
 
-.flow-sheet > :nth-child(n + 4) {
+.flow-sheet-body > :nth-child(n + 2) {
   animation-delay: 115ms;
 }
 
-.flow-sheet > :nth-child(n + 5) {
+.flow-sheet-body > :nth-child(n + 3) {
   animation-delay: 150ms;
 }
 
@@ -336,7 +435,7 @@ button:disabled {
   animation-duration: 340ms;
 }
 
-.receipt-winner {
+.receipt-winner.is-animated {
   animation-duration: 280ms;
 }
 
@@ -346,6 +445,160 @@ button:disabled {
 }
 
 /* Draw */
+
+.draw-studio {
+  transform-origin: center top;
+  transition:
+    border-color 260ms var(--ease-out),
+    box-shadow 360ms var(--ease-out),
+    background-color 260ms var(--ease-out);
+}
+
+.draw-studio:focus-within {
+  box-shadow:
+    0 22px 52px rgba(45, 52, 66, 0.105),
+    0 3px 10px rgba(45, 52, 66, 0.04),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98);
+}
+
+.app-shell[data-intake-state="loading"] .draw-studio {
+  border-color: rgba(10, 124, 255, 0.12);
+  box-shadow:
+    0 24px 58px rgba(45, 52, 66, 0.12),
+    0 4px 14px rgba(10, 124, 255, 0.055),
+    inset 0 1px 0 rgba(255, 255, 255, 0.98);
+}
+
+.app-shell[data-intake-state="ready"] .draw-studio {
+  animation: studio-resolve 380ms var(--ease-drawer) both;
+}
+
+.draw-scene,
+.draw-scene::before,
+.draw-scene::after,
+.candidate-deck,
+.v3-intake-controls,
+.draw-specs,
+.v3-draw-count,
+.draw-control {
+  transition:
+    transform 360ms var(--ease-drawer),
+    opacity 220ms var(--ease-out),
+    background-color 260ms var(--ease-out),
+    border-color 260ms var(--ease-out),
+    box-shadow 300ms var(--ease-out);
+}
+
+.v3-intake-scene.has-link .candidate-deck {
+  animation: none;
+  transform: translateY(-3px) scale(1.006);
+}
+
+.app-shell[data-intake-state="loading"] .v3-intake-deck {
+  animation: intake-working 1.18s var(--ease-in-out) infinite alternate;
+}
+
+.app-shell[data-intake-state="loading"] .v3-intake-deck .pass-main {
+  border-color: rgba(10, 124, 255, 0.14);
+  box-shadow:
+    0 26px 48px rgba(48, 55, 69, 0.15),
+    0 6px 18px rgba(10, 124, 255, 0.07),
+    inset 0 1px 0 #fff;
+}
+
+.app-shell[data-intake-state="loading"] .v3-intake-symbol {
+  animation: intake-symbol-work 860ms var(--ease-in-out) infinite alternate;
+}
+
+.app-shell[data-intake-state="loading"] .v3-progress-track > i {
+  box-shadow: 0 0 12px rgba(10, 124, 255, 0.22);
+}
+
+.v3-progress-track > i {
+  background: var(--live-blue);
+}
+
+.v3-progress {
+  animation: progress-container-in 240ms var(--ease-out) both;
+}
+
+.navbar-actions button.is-presenting,
+.studio-header button.is-presenting,
+.draw-specs button.is-presenting {
+  opacity: 0.9;
+  transform: scale(0.96);
+}
+
+.navbar-actions button.is-presenting,
+.studio-header button.is-presenting {
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    inset 0 1px 3px rgba(47, 55, 70, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.draw-specs .spec-icon {
+  transition: transform 220ms var(--ease-drawer);
+}
+
+.draw-specs button.is-presenting .spec-icon {
+  transform: scale(1.06);
+}
+
+.draw-specs {
+  position: relative;
+  gap: 0;
+  padding: 4px;
+  overflow: hidden;
+  border: 0.5px solid rgba(44, 49, 61, 0.075);
+  border-radius: 19px;
+  background: rgba(247, 248, 251, 0.82);
+  box-shadow:
+    inset 0 1px 2px rgba(38, 43, 54, 0.045),
+    0 6px 18px rgba(48, 55, 69, 0.045);
+}
+
+.draw-specs button {
+  position: relative;
+  z-index: 1;
+  min-height: 54px;
+  border: 0;
+  border-radius: 15px;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+.draw-specs button + button::before {
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 0;
+  width: 0.5px;
+  background: rgba(48, 53, 65, 0.09);
+  content: "";
+  transition: opacity 160ms var(--ease-out);
+}
+
+.draw-specs button.is-confirmed {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.38);
+  box-shadow: none;
+}
+
+.draw-specs button.is-presenting {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow:
+    0 5px 14px rgba(48, 55, 69, 0.1),
+    inset 0 1px 0 #fff;
+}
+
+.draw-specs button.is-presenting::before,
+.draw-specs button.is-presenting + button::before {
+  opacity: 0;
+}
 
 .app-shell[data-draw-state="running"] .draw-ready,
 .app-shell[data-draw-state="finished"] .draw-ready,
@@ -366,8 +619,7 @@ button:disabled {
   transition:
     transform 460ms var(--ease-drawer),
     opacity 260ms var(--ease-out),
-    box-shadow 260ms var(--ease-out),
-    filter 260ms var(--ease-out);
+    box-shadow 260ms var(--ease-out);
 }
 
 .app-shell[data-draw-state="running"] [data-deck-card] {
@@ -389,16 +641,13 @@ button:disabled {
   animation: candidate-readout-enter 120ms var(--ease-out) both;
 }
 
-.app-shell[data-draw-state="running"] .scene-glint {
-  animation: draw-glint-drift 1.55s var(--ease-in-out) infinite;
-}
-
-.app-shell[data-draw-state="running"] .scene-geometry {
-  animation: draw-scene-breathe 1.6s var(--ease-in-out) infinite alternate;
-}
-
-.app-shell[data-draw-state="running"] .draw-scene::after {
-  animation: stage-shadow-breathe 1.4s var(--ease-in-out) infinite alternate;
+.app-shell[data-draw-state="running"] .draw-scene::before {
+  border-color: rgba(123, 108, 239, 0.1);
+  box-shadow:
+    inset 0 1px 0 #fff,
+    inset 0 -34px 64px rgba(95, 106, 134, 0.045),
+    0 14px 32px rgba(50, 58, 73, 0.065);
+  transform: scale(0.988);
 }
 
 .app-shell[data-setup="confirmed"][data-draw-state="ready"] .candidate-deck {
@@ -407,17 +656,6 @@ button:disabled {
 
 .app-shell[data-setup="confirmed"] .draw-specs button.is-confirmed {
   animation: setup-confirmed 360ms var(--ease-drawer) both;
-}
-
-.app-shell[data-draw-state="running"] .candidate-deck .pass-main::after {
-  position: absolute;
-  z-index: 1;
-  inset: -26% -60%;
-  background: linear-gradient(112deg, transparent 39%, rgba(255, 255, 255, 0.58) 50%, transparent 61%);
-  content: "";
-  pointer-events: none;
-  transform: translate3d(-54%, 0, 0) rotate(-7deg);
-  animation: card-specular-sweep 1.15s var(--ease-in-out) infinite;
 }
 
 .winner-core {
@@ -466,22 +704,26 @@ button:disabled {
 
 .result-rail {
   transition:
-    transform 500ms var(--ease-drawer) 180ms,
-    opacity 280ms var(--ease-out) 180ms;
+    transform 380ms var(--ease-drawer) 100ms,
+    opacity 220ms var(--ease-out) 100ms,
+    clip-path 380ms var(--ease-drawer) 100ms;
+  clip-path: inset(100% 0 0 round 18px);
+  transform: translateY(18px) scale(0.985);
 }
 
 .app-shell[data-draw-state="finished"] .result-rail {
+  clip-path: inset(0 0 0 round 18px);
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(0);
+  transform: translateY(0) scale(1);
 }
 
 .winner-list button {
   opacity: 0;
   transform: translateY(8px) scale(0.985);
   transition:
-    transform 360ms var(--ease-drawer),
-    opacity 240ms var(--ease-out);
+    transform 300ms var(--ease-drawer),
+    opacity 200ms var(--ease-out);
 }
 
 .app-shell[data-draw-state="finished"] .winner-list button {
@@ -489,22 +731,25 @@ button:disabled {
   transform: translateY(0) scale(1);
 }
 
-.app-shell[data-draw-state="finished"] .winner-list button:nth-child(1) { transition-delay: 260ms; }
-.app-shell[data-draw-state="finished"] .winner-list button:nth-child(2) { transition-delay: 305ms; }
-.app-shell[data-draw-state="finished"] .winner-list button:nth-child(3) { transition-delay: 350ms; }
-.app-shell[data-draw-state="finished"] .winner-list button:nth-child(4) { transition-delay: 395ms; }
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(1) { transition-delay: 180ms; }
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(2) { transition-delay: 220ms; }
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(3) { transition-delay: 260ms; }
+.app-shell[data-draw-state="finished"] .winner-list button:nth-child(4) { transition-delay: 300ms; }
 
 .progress-indicator {
   animation: spin 680ms linear infinite;
+}
+
+.receipt-local-note.is-syncing > svg {
+  animation: spin 900ms linear infinite;
 }
 
 .v3-progress {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
-.v3-progress > i {
+.v3-progress-track > i {
   position: relative;
-  grid-column: 1 / -1;
   width: 100%;
   overflow: hidden;
   transform: scaleX(var(--progress-scale, 0));
@@ -512,7 +757,7 @@ button:disabled {
   transition: transform 360ms var(--ease-out);
 }
 
-.v3-progress > i::after {
+.v3-progress-track > i::after {
   position: absolute;
   inset: 0;
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.72), transparent);
@@ -527,8 +772,8 @@ button:disabled {
 }
 
 @keyframes root-page-enter {
-  from { opacity: 0; transform: translate3d(var(--page-enter-x), 0, 0); }
-  to { opacity: 1; transform: translate3d(0, 0, 0); }
+  from { opacity: 0.72; }
+  to { opacity: 1; }
 }
 
 @keyframes list-item-enter {
@@ -546,6 +791,26 @@ button:disabled {
   to { opacity: 1; transform: translateY(0); }
 }
 
+@keyframes intake-working {
+  from { transform: translateY(-2px) scale(1.004) rotate(-0.18deg); }
+  to { transform: translateY(-5px) scale(1.009) rotate(0.18deg); }
+}
+
+@keyframes studio-resolve {
+  from { opacity: 0.92; transform: translateY(5px) scale(0.988); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes progress-container-in {
+  from { opacity: 0; transform: translateY(-5px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes intake-symbol-work {
+  from { transform: scale(0.96); }
+  to { transform: scale(1.04); }
+}
+
 @keyframes status-pulse {
   from { opacity: 0.55; transform: scale(0.82); }
   to { opacity: 1; transform: scale(1.12); }
@@ -559,16 +824,6 @@ button:disabled {
 @keyframes material-backdrop-out {
   from { opacity: 1; }
   to { opacity: 0; }
-}
-
-@keyframes sheet-materialize {
-  from { opacity: 0; transform: translateY(7%) scale(0.985); }
-  to { opacity: 1; transform: translateY(0) scale(1); }
-}
-
-@keyframes sheet-dismiss {
-  from { opacity: 1; transform: translateY(0) scale(1); }
-  to { opacity: 0; transform: translateY(16px) scale(0.99); }
 }
 
 @keyframes sheet-content-enter {
@@ -602,24 +857,8 @@ button:disabled {
 }
 
 @keyframes candidate-readout-enter {
-  from { opacity: 0.42; transform: translateY(4px); filter: blur(1.5px); }
-  to { opacity: 1; transform: translateY(0); filter: blur(0); }
-}
-
-@keyframes draw-glint-drift {
-  0% { opacity: 0.36; transform: translate3d(-2px, 4px, 0) scale(0.86); }
-  48% { opacity: 0.9; transform: translate3d(224px, 126px, 0) scale(1.04); }
-  100% { opacity: 0.38; transform: translate3d(8px, 224px, 0) scale(0.9); }
-}
-
-@keyframes draw-scene-breathe {
-  from { opacity: 0.78; transform: scale(0.994); }
-  to { opacity: 1; transform: scale(1.006); }
-}
-
-@keyframes stage-shadow-breathe {
-  from { opacity: 0.72; transform: rotateX(66deg) scaleX(0.94); }
-  to { opacity: 1; transform: rotateX(66deg) scaleX(1.04); }
+  from { opacity: 0.42; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 @keyframes draw-ready-settle {
@@ -636,12 +875,6 @@ button:disabled {
   0% { transform: scale(0.985); }
   58% { transform: scale(1.012); }
   100% { transform: scale(1); }
-}
-
-@keyframes card-specular-sweep {
-  0%, 18% { opacity: 0; transform: translate3d(-54%, 0, 0) rotate(-7deg); }
-  40% { opacity: 0.72; }
-  68%, 100% { opacity: 0; transform: translate3d(54%, 0, 0) rotate(-7deg); }
 }
 
 @keyframes winner-card-arrive {
@@ -673,15 +906,66 @@ button:disabled {
   to { transform: rotate(360deg); }
 }
 
+.v3-alert-backdrop {
+  animation: material-backdrop-in 240ms var(--ease-out) both;
+}
+
 .app-shell[data-motion="reduced"],
 .app-shell[data-motion="reduced"] *,
 .app-shell[data-motion="reduced"] *::before,
 .app-shell[data-motion="reduced"] *::after {
   scroll-behavior: auto !important;
+  animation-delay: 0ms !important;
   animation-duration: 1ms !important;
   animation-iteration-count: 1 !important;
   transition-delay: 0ms !important;
-  transition-duration: 1ms !important;
+  transition-duration: 120ms !important;
+}
+
+.app-shell[data-motion="reduced"] .root-view.is-active .root-scroll,
+.app-shell[data-motion="reduced"] .flow-guide-row,
+.app-shell[data-motion="reduced"] .flow-legal-sections section,
+.app-shell[data-motion="reduced"] .v3-prize-item,
+.app-shell[data-motion="reduced"] .v3-textarea,
+.app-shell[data-motion="reduced"] .v3-source-form,
+.app-shell[data-motion="reduced"] .v3-section-empty,
+.app-shell[data-motion="reduced"] .v3-alert-dialog,
+.app-shell[data-motion="reduced"] .flow-notice,
+.app-shell[data-motion="reduced"] .receipt-summary,
+.app-shell[data-motion="reduced"] .receipt-stack-avatar,
+.app-shell[data-motion="reduced"] .receipt-stack-more,
+.app-shell[data-motion="reduced"] .receipt-prize,
+.app-shell[data-motion="reduced"] .receipt-winner {
+  animation-name: none !important;
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+.app-shell[data-motion="reduced"] .flow-sheet,
+.app-shell[data-motion="reduced"] .receipt-sheet {
+  animation: none !important;
+  transform: translate3d(0, var(--sheet-drag-y, 0px), 0) !important;
+  transition-property: opacity, border-radius !important;
+}
+
+.app-shell[data-motion="reduced"].stack-open .root-navbar,
+.app-shell[data-motion="reduced"].stack-open .root-tabbar,
+.app-shell[data-motion="reduced"].stack-open .root-pages {
+  transform: none !important;
+}
+
+.app-shell[data-motion="reduced"] .title-status.is-busy i,
+.app-shell[data-motion="reduced"] .scene-caption i,
+.app-shell[data-motion="reduced"] .progress-indicator,
+.app-shell[data-motion="reduced"] .receipt-local-note.is-syncing > svg,
+.app-shell[data-motion="reduced"] .v3-progress-track > i::after,
+.app-shell[data-motion="reduced"] .scene-glint,
+.app-shell[data-motion="reduced"] .scene-geometry,
+.app-shell[data-motion="reduced"] .draw-scene::after,
+.app-shell[data-motion="reduced"] .candidate-deck,
+.app-shell[data-motion="reduced"] .v3-intake-symbol,
+.app-shell[data-motion="reduced"] .candidate-deck .pass-main::after {
+  animation: none !important;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -690,9 +974,55 @@ button:disabled {
   .app-shell:not([data-motion="full"]) *::before,
   .app-shell:not([data-motion="full"]) *::after {
     scroll-behavior: auto !important;
+    animation-delay: 0ms !important;
     animation-duration: 1ms !important;
     animation-iteration-count: 1 !important;
     transition-delay: 0ms !important;
-    transition-duration: 1ms !important;
+    transition-duration: 120ms !important;
+  }
+
+  .app-shell:not([data-motion="full"]) .root-view.is-active .root-scroll,
+  .app-shell:not([data-motion="full"]) .flow-guide-row,
+  .app-shell:not([data-motion="full"]) .flow-legal-sections section,
+  .app-shell:not([data-motion="full"]) .v3-prize-item,
+  .app-shell:not([data-motion="full"]) .v3-textarea,
+  .app-shell:not([data-motion="full"]) .v3-source-form,
+  .app-shell:not([data-motion="full"]) .v3-section-empty,
+  .app-shell:not([data-motion="full"]) .v3-alert-dialog,
+  .app-shell:not([data-motion="full"]) .flow-notice,
+  .app-shell:not([data-motion="full"]) .receipt-summary,
+  .app-shell:not([data-motion="full"]) .receipt-stack-avatar,
+  .app-shell:not([data-motion="full"]) .receipt-stack-more,
+  .app-shell:not([data-motion="full"]) .receipt-prize,
+  .app-shell:not([data-motion="full"]) .receipt-winner {
+    animation-name: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .app-shell:not([data-motion="full"]) .flow-sheet,
+  .app-shell:not([data-motion="full"]) .receipt-sheet {
+    animation: none !important;
+    transform: translate3d(0, var(--sheet-drag-y, 0px), 0) !important;
+    transition-property: opacity, border-radius !important;
+  }
+
+  .app-shell:not([data-motion="full"]).stack-open .root-navbar,
+  .app-shell:not([data-motion="full"]).stack-open .root-tabbar,
+  .app-shell:not([data-motion="full"]).stack-open .root-pages {
+    transform: none !important;
+  }
+
+  .app-shell:not([data-motion="full"]) .title-status.is-busy i,
+  .app-shell:not([data-motion="full"]) .scene-caption i,
+  .app-shell:not([data-motion="full"]) .progress-indicator,
+  .app-shell:not([data-motion="full"]) .v3-progress-track > i::after,
+  .app-shell:not([data-motion="full"]) .scene-glint,
+  .app-shell:not([data-motion="full"]) .scene-geometry,
+  .app-shell:not([data-motion="full"]) .draw-scene::after,
+  .app-shell:not([data-motion="full"]) .candidate-deck,
+  .app-shell:not([data-motion="full"]) .v3-intake-symbol,
+  .app-shell:not([data-motion="full"]) .candidate-deck .pass-main::after {
+    animation: none !important;
   }
 }

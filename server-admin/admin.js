@@ -2,6 +2,9 @@ import { listDisplayState } from './admin-list-state.js';
 
 (() => {
   const ATTEMPT_VISIBLE_LIMIT = 5;
+  const REQUEST_TIMEOUT_MS = 20_000;
+  const LOGIN_POLL_INTERVAL_MS = 2_600;
+  const DETAIL_CACHE_LIMIT = 2;
   const state = {
     username: '',
     csrfToken: '',
@@ -15,9 +18,30 @@ import { listDisplayState } from './admin-list-state.js';
     detailOpen: false,
     attemptsExpanded: false,
     pendingDeleteFile: '',
+    pendingDeleteFeedbackId: '',
+    confirmOpener: null,
+    confirmFocusFallback: 'records',
     loading: false,
+    loadingGeneration: 0,
+    sessionGeneration: 0,
+    summaryRequestId: 0,
+    drawsRequestId: 0,
+    feedbackRequestId: 0,
+    detailRequestId: 0,
     loginPoller: null,
+    loginPollInFlight: false,
+    loginPollGeneration: 0,
+    loginActive: false,
+    loginPollingWanted: false,
     summaryPoller: null,
+    exporting: false,
+    detailLoading: false,
+    detailError: '',
+    detailFile: '',
+    detailOpener: null,
+    detailCache: new Map(),
+    requestControllers: new Set(),
+    logoutPending: false,
   };
 
   const $ = (id) => document.getElementById(id);
@@ -67,8 +91,14 @@ import { listDisplayState } from './admin-list-state.js';
     keepalivePanel: $('keepalivePanel'),
     systemPanel: $('systemPanel'),
     confirmDialog: $('confirmDialog'),
+    confirmTitle: $('confirmTitle'),
+    confirmMessage: $('confirmMessage'),
     confirmCancelBtn: $('confirmCancelBtn'),
     confirmDeleteBtn: $('confirmDeleteBtn'),
+    adminAlert: $('adminAlert'),
+    adminAlertMessage: $('adminAlertMessage'),
+    adminAlertClose: $('adminAlertClose'),
+    exportStatus: $('exportStatus'),
     toast: $('toast'),
   };
 
@@ -87,6 +117,7 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   function formatNumber(value) {
+    if (value === null || value === undefined || value === '') return '-';
     const number = Number(value);
     return Number.isFinite(number) ? number.toLocaleString('zh-CN') : '-';
   }
@@ -125,6 +156,7 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   function formatMemoryMb(value) {
+    if (value === null || value === undefined || value === '') return '-';
     const mb = Number(value);
     if (!Number.isFinite(mb)) return '-';
     if (mb >= 1024) return `${Math.round((mb / 1024) * 10) / 10} GB`;
@@ -143,6 +175,22 @@ import { listDisplayState } from './admin-list-state.js';
     const percent = Number(value);
     if (!Number.isFinite(percent)) return '-';
     return `${percent.toLocaleString('zh-CN', { maximumFractionDigits: 1 })}%`;
+  }
+
+  function numericValue(value) {
+    if (value === null || value === undefined || String(value).trim() === '') return null;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function errorText(error, fallback = '请求失败，请稍后重试') {
+    const message = String(error?.message || fallback).trim() || fallback;
+    const retryAfter = numericValue(error?.retryAfter);
+    if (error?.status === 429 && retryAfter !== null) {
+      return `${message}，约 ${Math.max(1, Math.ceil(retryAfter))} 秒后再试`;
+    }
+    if (error?.name === 'AbortError') return '请求已取消，请稍后重试';
+    return message;
   }
 
   function reasonLabel(value) {
@@ -192,6 +240,79 @@ import { listDisplayState } from './admin-list-state.js';
     showToast.timer = setTimeout(() => els.toast.classList.remove('show'), 2300);
   }
 
+  function showAlert(message, source = 'general') {
+    const text = String(message || '').trim();
+    if (!text) return;
+    els.adminAlertMessage.textContent = text;
+    els.adminAlert.dataset.source = source;
+    els.adminAlert.classList.remove('hidden');
+  }
+
+  function clearAlert(source = '') {
+    if (source && els.adminAlert.dataset.source !== source) return;
+    els.adminAlert.classList.add('hidden');
+    els.adminAlertMessage.textContent = '';
+    delete els.adminAlert.dataset.source;
+  }
+
+  function presentError(error, source = 'general') {
+    const message = errorText(error);
+    showAlert(message, source);
+    showToast(message);
+  }
+
+  function setExportStatus(message = '') {
+    els.exportStatus.textContent = message;
+    els.exportStatus.classList.toggle('visible', Boolean(message));
+  }
+
+  function cacheDetail(item) {
+    if (!item?.file) return;
+    state.detailCache.delete(item.file);
+    state.detailCache.set(item.file, item);
+    while (state.detailCache.size > DETAIL_CACHE_LIMIT) {
+      state.detailCache.delete(state.detailCache.keys().next().value);
+    }
+  }
+
+  function cancelSessionRequests() {
+    state.sessionGeneration += 1;
+    state.summaryRequestId += 1;
+    state.drawsRequestId += 1;
+    state.feedbackRequestId += 1;
+    state.detailRequestId += 1;
+    for (const controller of state.requestControllers) controller.abort();
+    state.requestControllers.clear();
+  }
+
+  function isCurrentSession(generation) {
+    return generation === state.sessionGeneration && Boolean(state.username);
+  }
+
+  function clearSessionState() {
+    state.username = '';
+    state.csrfToken = '';
+    state.sessionExpiresAt = '';
+    state.summary = null;
+    state.draws = [];
+    state.feedback = [];
+    state.feedbackFilter = 'all';
+    state.selected = null;
+    state.detailOpen = false;
+    state.detailLoading = false;
+    state.detailError = '';
+    state.detailFile = '';
+    state.detailOpener = null;
+    state.attemptsExpanded = false;
+    state.pendingDeleteFeedbackId = '';
+    state.loading = false;
+    state.loginActive = false;
+    state.loginPollInFlight = false;
+    document.body.classList.remove('record-detail-open');
+    syncRecordDetailModal(false);
+    stopLoginPolling();
+  }
+
   function setAuthed(authed) {
     els.loginPanel.classList.toggle('hidden', authed);
     els.dashboard.classList.toggle('hidden', !authed);
@@ -204,6 +325,7 @@ import { listDisplayState } from './admin-list-state.js';
       els.accountLabel.textContent = state.username;
       startSummaryPolling();
     } else {
+      stopLoginPolling();
       stopSummaryPolling();
       setTimeout(() => els.usernameInput.focus(), 50);
     }
@@ -216,7 +338,7 @@ import { listDisplayState } from './admin-list-state.js';
     if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && state.csrfToken) {
       headers.set('x-admin-csrf', state.csrfToken);
     }
-    const response = await fetch(path, {
+    const response = await fetchWithTimeout(path, {
       ...options,
       method,
       headers,
@@ -224,13 +346,50 @@ import { listDisplayState } from './admin-list-state.js';
     });
     const data = await response.json().catch(() => ({}));
     if (response.status === 401) {
-      state.username = '';
-      state.csrfToken = '';
+      cancelSessionRequests();
+      clearSessionState();
       setAuthed(false);
       throw new Error(data.error || '登录已失效，请重新登录');
     }
-    if (!response.ok || data.ok === false) throw new Error(data.error || `请求失败：${response.status}`);
+    if (!response.ok || data.ok === false) {
+      const error = new Error(data.error || `请求失败：${response.status}`);
+      error.status = response.status;
+      error.retryAfter = response.headers.get('retry-after') || '';
+      throw error;
+    }
     return data;
+  }
+
+  async function fetchWithTimeout(path, options = {}) {
+    const timeoutMs = Math.max(1000, Number(options.timeoutMs || REQUEST_TIMEOUT_MS));
+    const controller = new AbortController();
+    const {
+      timeoutMs: _timeoutMs,
+      signal,
+      trackSession = true,
+      ...fetchOptions
+    } = options;
+    if (trackSession) state.requestControllers.add(controller);
+    const relayAbort = () => controller.abort(signal?.reason);
+    if (signal) {
+      if (signal.aborted) relayAbort();
+      else signal.addEventListener('abort', relayAbort, { once: true });
+    }
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      return await fetch(path, { ...fetchOptions, signal: controller.signal });
+    } catch (error) {
+      if (timedOut) throw new Error('服务器响应超时，请稍后重试');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', relayAbort);
+      state.requestControllers.delete(controller);
+    }
   }
 
   function metricCard(value, label, note = '', progress = null) {
@@ -270,18 +429,18 @@ import { listDisplayState } from './admin-list-state.js';
     const browser = system.browser || {};
     const queue = summary.queue || {};
     const service = system.service || {};
-    const memoryLimit = Number(service.memoryMaxMb || 0);
+    const memoryLimit = numericValue(service.memoryMaxMb);
     const serviceMemoryPercent = percentOf(memory.cgroupCurrentMb, memoryLimit);
     const anonymousMemoryPercent = percentOf(memory.cgroupAnonMb, memoryLimit);
-    const hostMemoryPercent = Number(memory.hostUsedPercent);
+    const hostMemoryPercent = numericValue(memory.hostUsedPercent);
     const queuePercent = percentOf(queue.active, queue.maxActive);
     els.metricGrid.innerHTML = [
-      metricCard(formatPercent(serviceMemoryPercent), '服务内存', `${formatMemoryMb(memory.cgroupCurrentMb)} / ${formatMemoryMb(memoryLimit)}`, serviceMemoryPercent),
-      metricCard(formatPercent(anonymousMemoryPercent), '匿名内存', `${formatMemoryMb(memory.cgroupAnonMb)} · 排查持续增长`, anonymousMemoryPercent),
+      metricCard(formatPercent(serviceMemoryPercent), '服务内存', `${formatMemoryMb(memory.cgroupCurrentMb)} / ${formatMemoryMb(memoryLimit)} · 占服务上限`, serviceMemoryPercent),
+      metricCard(formatPercent(anonymousMemoryPercent), '匿名内存', `${formatMemoryMb(memory.cgroupAnonMb)} / 服务上限`, anonymousMemoryPercent),
       metricCard(formatPercent(hostMemoryPercent), '主机内存', `可用 ${formatMemoryMb(memory.hostAvailableMb)}`, hostMemoryPercent),
-      metricCard(browser.processCount || 0, 'Chromium', browser.operation?.label || '当前进程'),
-      metricCard(summary.cookie?.accountCount || 0, '可用账号', `Cookie ${summary.cookie?.cookieCount || 0} 条`),
-      metricCard(formatPercent(queuePercent), '并发占用', `${queue.active || 0} 运行 · ${queue.queued || 0} 排队`, queuePercent),
+      metricCard(formatNumber(browser.processCount), 'Chromium', browser.operation?.label || '当前进程'),
+      metricCard(formatNumber(summary.cookie?.availableAccountCount ?? summary.cookie?.accountCount), '可用账号', `已保存 Cookie ${formatNumber(summary.cookie?.cookieCount)}`),
+      metricCard(formatPercent(queuePercent), '并发占用', `${formatNumber(queue.active)} 运行 · ${formatNumber(queue.queued)} 排队`, queuePercent),
     ].join('');
 
     els.heroSubtitle.textContent = `已运行 ${plain(system.uptimeText)}，记录 ${formatNumber(summary.savedDrawCount)} 次开奖、${formatNumber(summary.winnerCount)} 人次中奖。`;
@@ -314,8 +473,9 @@ import { listDisplayState } from './admin-list-state.js';
   function renderMemoryChart(memory, service) {
     const samples = Array.isArray(memory.samples) ? memory.samples : [];
     const trend = memory.trend || {};
-    const memoryLimit = Number(service.memoryMaxMb || 0);
-    const hourlyPercent = percentOf(Math.abs(Number(trend.perHourMb || 0)), memoryLimit);
+    const memoryLimit = numericValue(service.memoryMaxMb);
+    const trendDeltaMb = numericValue(trend.perHourMb);
+    const hourlyPercent = trendDeltaMb === null ? null : percentOf(Math.abs(trendDeltaMb), memoryLimit);
     const trendText = {
       rising: `持续上升 ${formatPercent(hourlyPercent)}/小时`,
       falling: `正在回落 ${formatPercent(hourlyPercent)}/小时`,
@@ -323,8 +483,8 @@ import { listDisplayState } from './admin-list-state.js';
       insufficient: '等待更多采样',
     }[trend.status] || '等待更多采样';
     els.memoryInsight.textContent = trendText;
-    els.memoryInsight.title = Number.isFinite(Number(trend.perHourMb))
-      ? `${Math.abs(Number(trend.perHourMb))} MB/小时`
+    els.memoryInsight.title = trendDeltaMb !== null
+      ? `${Math.abs(trendDeltaMb)} MB/小时`
       : '';
     els.memoryInsight.classList.toggle('rising', trend.status === 'rising');
     if (samples.length < 2 || !memoryLimit) {
@@ -335,9 +495,13 @@ import { listDisplayState } from './admin-list-state.js';
     const height = 190;
     const plot = { left: 72, right: width - 12, top: 14, bottom: height - 24 };
     const percentageSamples = samples.map((sample) => ({
-      servicePercent: percentOf(sample.cgroupCurrentMb, memoryLimit) || 0,
-      anonymousPercent: percentOf(sample.cgroupAnonMb, memoryLimit) || 0,
+      servicePercent: percentOf(sample.cgroupCurrentMb, memoryLimit),
+      anonymousPercent: percentOf(sample.cgroupAnonMb, memoryLimit),
     }));
+    if (percentageSamples.some((sample) => sample.servicePercent === null || sample.anonymousPercent === null)) {
+      els.memoryChart.innerHTML = '<div class="chart-empty">等待有效内存采样</div>';
+      return;
+    }
     const current = chartPoints(percentageSamples, 'servicePercent', plot, 0, 100);
     const anon = chartPoints(percentageSamples, 'anonymousPercent', plot, 0, 100);
     const area = `${plot.left},${plot.bottom} ${current} ${plot.right},${plot.bottom}`;
@@ -371,16 +535,19 @@ import { listDisplayState } from './admin-list-state.js';
     const requests = runtime.requests || {};
     const service = system.service || {};
     const disk = system.disk || {};
-    const requestErrors = Number(requests.clientErrors || 0) + Number(requests.serverErrors || 0);
-    const requestErrorPercent = percentOf(requestErrors, requests.total) ?? 0;
+    const clientErrors = numericValue(requests.clientErrors);
+    const serverErrors = numericValue(requests.serverErrors);
+    const requestErrors = clientErrors === null || serverErrors === null ? null : clientErrors + serverErrors;
+    const requestErrorPercent = requestErrors === null ? null : percentOf(requestErrors, requests.total);
     const queuePercent = percentOf(queue.active, queue.maxActive);
     els.requestPanel.innerHTML = [
-      quickRow('事件循环 P99', `${plain(runtime.eventLoopP99Ms, 0)} ms`, Number(runtime.eventLoopP99Ms || 0) < 100 ? '响应正常' : '存在阻塞'),
+      quickRow('事件循环 P99', numericValue(runtime.eventLoopP99Ms) === null ? '-' : `${runtime.eventLoopP99Ms} ms`, numericValue(runtime.eventLoopP99Ms) !== null && numericValue(runtime.eventLoopP99Ms) < 100 ? '响应正常' : '等待有效采样'),
       quickRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)}`),
       quickRow('自动重启', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 回收进程`),
-      quickRow('磁盘', `${plain(disk.usedPercent, 0)}%`, `可用 ${plain(disk.availableMb, 0)} MB`),
-      quickRow('并发占用', formatPercent(queuePercent), `${formatNumber(queue.active)} 运行 · ${formatNumber(queue.queued)} 排队 · 锁 ${formatNumber(queue.sameStatusLocks)}`),
+      quickRow('磁盘', formatPercent(numericValue(disk.usedPercent)), `可用 ${formatMemoryMb(disk.availableMb)}`),
+      quickRow('并发占用', formatPercent(queuePercent), `${formatNumber(queue.active)} 运行 · ${formatNumber(queue.queued)} 排队 · ${formatNumber(queue.retained)} 暂存`),
       quickRow('抓取复用', `${formatNumber(queue.sharedTasks)} 个共享任务`, `${formatNumber(queue.recentSnapshots)} / ${formatNumber(queue.maxSnapshots)} 个快照 · 时效 ${formatDurationMs(queue.snapshotTtlMs)} · 累计合并 ${formatNumber(queue.deliveries?.sharedRunning)} 次`),
+      quickRow('任务订阅', `${formatNumber(queue.subscribers)} 个页面`, `每个任务最多 ${formatNumber(queue.maxSubscribersPerTask)} 个`),
     ].join('');
   }
 
@@ -427,7 +594,7 @@ import { listDisplayState } from './admin-list-state.js';
   function renderCookie(cookie) {
     const queue = state.summary?.queue || {};
     const cookieCount = Number(cookie.cookieCount || 0);
-    const accountCount = Number(cookie.accountCount || cookieCount);
+    const accountCount = Number(cookie.availableAccountCount ?? cookie.accountCount ?? cookieCount);
     const status = cookie.cookieStoreDisabled
       ? 'Cookie 保存已关闭'
       : cookie.hasCookie
@@ -447,6 +614,7 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   function renderWeiboLogin(login) {
+    state.loginActive = Boolean(login.active);
     els.weiboLoginBadge.textContent = statusLabel(login.status);
     els.weiboLoginText.textContent = [
       plain(login.message, '扫码后 Cookie 会保存到服务器 Cookie 池，普通用户只共享代抓能力。'),
@@ -461,7 +629,7 @@ import { listDisplayState } from './admin-list-state.js';
       els.qrImage.src = image;
       els.qrFrame.classList.remove('hidden');
     } else {
-      els.qrImage.src = '/avatar.jpg';
+      els.qrImage.src = '/avatar-96.webp';
       els.qrFrame.classList.add('hidden');
     }
 
@@ -470,8 +638,8 @@ import { listDisplayState } from './admin-list-state.js';
     els.refreshWeiboCookieBtn.disabled = browserBusy;
     els.stopWeiboLoginBtn.disabled = !login.active;
 
-    if (login.active) startLoginPolling();
-    if (!login.active && state.loginPoller) stopLoginPolling();
+    if (state.loginActive) startLoginPolling();
+    else stopLoginPolling();
   }
 
   function diagnosticRow(label, value, note = '') {
@@ -511,7 +679,7 @@ import { listDisplayState } from './admin-list-state.js';
         ${diagnosticRow('最近尝试', formatDate(login.lastAttemptAt))}
         ${diagnosticRow('最近成功', formatDate(login.lastSuccessAt || login.lastRefreshAt))}
         ${diagnosticRow('最近失败', formatDate(login.lastFailureAt), login.lastError || '')}
-        ${diagnosticRow('Cookie 可用账号', `${formatNumber(cookie.accountCount || cookie.cookieCount || 0)} 个`, `保存 Cookie ${formatNumber(cookie.cookieCount || 0)} 条${cookie.lastValidAt ? ` · 最近有效 ${formatDate(cookie.lastValidAt)}` : ''}`)}
+        ${diagnosticRow('Cookie 可用账号', `${formatNumber(cookie.availableAccountCount ?? cookie.accountCount ?? cookie.cookieCount ?? 0)} 个`, `保存 Cookie ${formatNumber(cookie.cookieCount || 0)} 条${cookie.quarantinedCount ? ` · 暂停尝试 ${formatNumber(cookie.quarantinedCount)} 条` : ''}${cookie.lastValidAt ? ` · 最近有效 ${formatDate(cookie.lastValidAt)}` : ''}`)}
       </div>
       ${login.lastError ? `<div class="status-note danger">最近保活失败原因：${escapeHtml(login.lastError)}</div>` : ''}
       <div class="history-list">${historyHtml}</div>
@@ -522,12 +690,15 @@ import { listDisplayState } from './admin-list-state.js';
     const config = system.config || {};
     const memory = system.memory || {};
     const browser = system.browser || {};
+    const profileCacheCleanup = browser.profileCacheCleanup || {};
     const runtime = system.runtime || {};
+    const runtimeCacheCleanup = runtime.runtimeCacheCleanup || {};
+    const drawRetention = runtime.drawRetention || {};
     const requests = runtime.requests || {};
     const service = system.service || {};
     const disk = system.disk || {};
     const storage = Array.isArray(system.storage) ? system.storage : [];
-    const memoryLimit = Number(service.memoryMaxMb || 0);
+    const memoryLimit = numericValue(service.memoryMaxMb);
     const serviceMemoryPercent = percentOf(memory.cgroupCurrentMb, memoryLimit);
     const peakMemoryPercent = percentOf(memory.cgroupPeakMb, memoryLimit);
     const anonymousMemoryPercent = percentOf(memory.cgroupAnonMb, memoryLimit);
@@ -535,9 +706,24 @@ import { listDisplayState } from './admin-list-state.js';
     const slabPercent = percentOf(memory.hostSlabMb, memory.hostTotalMb);
     const highWaterPercent = percentOf(service.memoryHighMb, memoryLimit);
     const queuePercent = percentOf(queue.active, queue.maxActive);
-    const requestErrors = Number(requests.clientErrors || 0) + Number(requests.serverErrors || 0);
-    const requestErrorPercent = percentOf(requestErrors, requests.total) ?? 0;
-    const trendPercent = percentOf(Math.abs(Number(memory.trend?.perHourMb || 0)), memoryLimit);
+    const clientErrors = numericValue(requests.clientErrors);
+    const serverErrors = numericValue(requests.serverErrors);
+    const requestErrors = clientErrors === null || serverErrors === null ? null : clientErrors + serverErrors;
+    const requestErrorPercent = requestErrors === null ? null : percentOf(requestErrors, requests.total);
+    const trendDeltaMb = numericValue(memory.trend?.perHourMb);
+    const trendPercent = trendDeltaMb === null ? null : percentOf(Math.abs(trendDeltaMb), memoryLimit);
+    const metricsWriteState = runtime.metricsWriteActive
+      ? '写入中'
+      : runtime.metricsWritePending
+        ? '等待写入'
+        : '空闲';
+    const retentionState = drawRetention.running
+      ? '回收中'
+      : drawRetention.lastError
+        ? '上次异常'
+        : drawRetention.lastRunAt
+          ? '已检查'
+          : '等待首次检查';
     const cgroupMemoryText = memory.cgroupAvailable
       ? formatPercent(serviceMemoryPercent)
       : '-';
@@ -551,15 +737,21 @@ import { listDisplayState } from './admin-list-state.js';
       ? `<div class="status-note danger">内核不可回收 Slab 已达到 ${escapeHtml(memory.hostSlabUnreclaimableMb)} MB，需检查网络、驱动或系统代理。</div>`
       : '';
     const storageHtml = storage.length
-      ? storage.map((item) => `
-          <div class="storage-row ${item.exists ? 'ok' : 'missing'}">
-            <span class="status-dot"></span>
-            <div>
-              <strong>${escapeHtml(item.label)}</strong>
-              <small>${escapeHtml(item.exists ? `${item.type || 'item'} · ${formatFileSize(item.size)} · ${formatDate(item.modifiedAt)}` : '未找到')}${item.error ? ` · ${escapeHtml(item.error)}` : ''}</small>
+      ? storage.map((item) => {
+          const details = item.exists
+            ? `${item.type || 'item'} · ${formatFileSize(item.size)}${item.type === 'dir' ? ` · ${formatNumber(item.itemCount)} 项${item.truncated ? '以上' : ''}` : ''} · ${formatDate(item.modifiedAt)}`
+            : '未找到';
+          const note = item.error ? `${details} · ${item.error}` : details;
+          return `
+            <div class="storage-row ${item.exists ? 'ok' : 'missing'}">
+              <span class="status-dot"></span>
+              <div>
+                <strong>${escapeHtml(item.label)}</strong>
+                <small>${escapeHtml(note)}</small>
+              </div>
             </div>
-          </div>
-        `).join('')
+          `;
+        }).join('')
       : '<div class="empty-list compact">暂无存储诊断。</div>';
 
     els.systemPanel.innerHTML = `
@@ -574,18 +766,28 @@ import { listDisplayState } from './admin-list-state.js';
         ${diagnosticRow('主机内存', memory.hostTotalMb ? formatPercent(memory.hostUsedPercent) : '-', `已用 ${formatMemoryMb(memory.hostUsedMb)} / ${formatMemoryMb(memory.hostTotalMb)} · 可用 ${formatMemoryMb(memory.hostAvailableMb)}`)}
         ${diagnosticRow('内核 Slab', formatPercent(slabPercent), `${formatMemoryMb(memory.hostSlabMb)} · 不可回收 ${formatMemoryMb(memory.hostSlabUnreclaimableMb)} · 可回收 ${formatMemoryMb(memory.hostSlabReclaimableMb)}`)}
         ${diagnosticRow('系统负载', Array.isArray(system.loadAverage) ? system.loadAverage.join(' / ') : '-', system.cpus ? `${system.cpus} 核 CPU` : '')}
-        ${diagnosticRow('事件循环', `P99 ${plain(runtime.eventLoopP99Ms, 0)} ms`, `平均 ${plain(runtime.eventLoopMeanMs, 0)} ms`)}
-        ${diagnosticRow('限流缓存', `${formatNumber(Number(runtime.rateLimitBuckets || 0) + Number(runtime.adminLoginBuckets || 0))} 项`, `API ${formatNumber(runtime.rateLimitBuckets)} · 后台登录 ${formatNumber(runtime.adminLoginBuckets)} · 每分钟清理`)}
+        ${diagnosticRow('事件循环', numericValue(runtime.eventLoopP99Ms) === null ? '-' : `P99 ${runtime.eventLoopP99Ms} ms`, numericValue(runtime.eventLoopMeanMs) === null ? '等待有效采样' : `平均 ${runtime.eventLoopMeanMs} ms`)}
+        ${diagnosticRow('限流与会话缓存', `${formatNumber(Number(runtime.rateLimitBuckets || 0) + Number(runtime.adminLoginBuckets || 0) + Number(runtime.revokedAdminSessions || 0))} 项`, `API ${formatNumber(runtime.rateLimitBuckets)} · 后台登录 ${formatNumber(runtime.adminLoginBuckets)} · 已退出会话 ${formatNumber(runtime.revokedAdminSessions)} · 容量回收 ${formatNumber(runtime.rateLimitEvictions)} 次`)}
+        ${diagnosticRow('头像服务', `${formatNumber(runtime.avatarFetches)} 个请求`, `排队 ${formatNumber(runtime.avatarFetchQueue)} · 缓存 ${formatNumber(runtime.avatarCacheEntries)} 张 / ${formatMemoryMb(runtime.avatarCacheMb)} · 并发上限 ${formatNumber(config.avatarFetchConcurrency)}`)}
+        ${diagnosticRow('Cookie 临时隔离', `${formatNumber(runtime.quarantinedCookies)} 条`, runtime.quarantinedCookies ? `认证失败后暂停 ${plain(config.cookieAuthQuarantineText)}，避免重复请求` : '当前没有因认证失败而暂停的 Cookie')}
+        ${diagnosticRow('后台事件写入', `${formatNumber(runtime.adminEventQueue)} 条排队`, `容量 ${formatNumber(config.maxAdminEventQueue)} · 已跳过 ${formatNumber(runtime.adminEventDropped)} 条`)}
+        ${diagnosticRow('指标写入', metricsWriteState, `累计成功 ${formatNumber(runtime.metricsWriteCount)} 次 · 合并 ${formatNumber(runtime.metricsWriteCoalesced)} 次 · 失败 ${formatNumber(runtime.metricsWriteFailures)} 次${runtime.metricsWriteLastFailureAt ? ` · 最近失败 ${formatDate(runtime.metricsWriteLastFailureAt)}` : ''}`)}
         ${diagnosticRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)} · 最慢 ${plain(requests.slowestMs, 0)} ms`)}
         ${diagnosticRow('Chromium', `${formatNumber(browser.processCount)} 个进程`, browser.operation?.label ? `正在执行 ${browser.operation.label}` : '当前无浏览器任务')}
         ${diagnosticRow('并发占用', formatPercent(queuePercent), `运行 ${formatNumber(queue.active)} / 上限 ${formatNumber(queue.maxActive)} · 排队 ${formatNumber(queue.queued)}`)}
+        ${diagnosticRow('任务暂存', `${formatNumber(queue.retained)} / ${formatNumber(queue.maxRetained)} 个`, `订阅页面 ${formatNumber(queue.subscribers)} 个 · 单任务上限 ${formatNumber(queue.maxSubscribersPerTask)} 个`)}
         ${diagnosticRow('抓取复用', `${formatNumber(queue.sharedTasks)} 个共享任务`, `快照 ${formatNumber(queue.recentSnapshots)} / ${formatNumber(queue.maxSnapshots)} · 时效 ${formatDurationMs(queue.snapshotTtlMs)} · 新抓取 ${formatNumber(queue.deliveries?.fresh)} · 合并 ${formatNumber(queue.deliveries?.sharedRunning)} · 命中 ${formatNumber(queue.deliveries?.recentSnapshot)}`)}
-        ${diagnosticRow('内存高水位', formatPercent(highWaterPercent), `${formatMemoryMb(service.memoryHighMb)} / ${formatMemoryMb(memoryLimit)} · 达到后准备回收进程`)}
+        ${diagnosticRow('抓取任务上限', config.jobRunTimeoutText || '-', `排队最多 ${plain(config.jobQueueTimeoutText)} · 结果保留 ${plain(config.completedJobReleaseText)} · 候选最多 ${formatNumber(config.maxCandidates)} 人`)}
+        ${diagnosticRow('开奖记录保留', `${formatNumber(config.maxSavedDraws)} 条`, `序号账本最多 ${formatNumber(config.maxDrawSequences)} 个链接 · 保存 ${formatNumber(config.maxSavedDrawAgeDays)} 天`)}
+        ${diagnosticRow('开奖记录回收', retentionState, `${drawRetention.scanComplete === false ? '扫描达到保护上限' : `扫描 ${formatNumber(drawRetention.scannedEntries)} 项，匹配 ${formatNumber(drawRetention.matchedFiles)} 个文件`}${drawRetention.recoveryScan ? ' · 已执行恢复扫描' : ''} · 保留 ${formatFileSize(drawRetention.retainedBytes)} / ${formatFileSize(drawRetention.totalBytes)} · 最近释放 ${formatFileSize(drawRetention.freedBytes)} · 移除 ${formatNumber(drawRetention.removedCount)} 项${drawRetention.missingCount ? ` · 已不存在 ${formatNumber(drawRetention.missingCount)} 项` : ''}${drawRetention.skippedRecent ? ` · 跳过新文件 ${formatNumber(drawRetention.skippedRecent)} 项` : ''}${drawRetention.cleanupPending ? ' · 仍有待回收项目' : ''}${drawRetention.lastError ? ` · ${drawRetention.lastError}` : ''}`)}
+        ${diagnosticRow('内存高水位', formatPercent(highWaterPercent), `${formatMemoryMb(service.memoryHighMb)} / ${formatMemoryMb(memoryLimit)} · 超过后由系统施加内存回收压力`)}
         ${diagnosticRow('周期回收', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 重启服务进程`)}
-        ${diagnosticRow('磁盘空间', disk.available ? `${plain(disk.usedPercent, 0)}%` : '-', disk.available ? `已用 ${plain(disk.usedMb, 0)} MB · 可用 ${plain(disk.availableMb, 0)} MB` : plain(disk.error))}
+        ${diagnosticRow('磁盘空间', disk.available ? formatPercent(numericValue(disk.usedPercent)) : '-', disk.available ? `已用 ${formatMemoryMb(disk.usedMb)} · 可用 ${formatMemoryMb(disk.availableMb)}` : plain(disk.error))}
         ${diagnosticRow('静态前端', config.frontendBuilt ? 'dist 构建版' : 'public 兜底版', config.staticDir || '')}
         ${diagnosticRow('Playwright', config.playwrightBrowsersPathSet ? '已配置浏览器路径' : '使用默认路径')}
         ${diagnosticRow('浏览器启动上限', config.browserLaunchTimeoutText || '-', '超时后自动清理残留进程与 Profile 锁')}
+        ${diagnosticRow('Profile 缓存迁移', profileCacheCleanup.lastRunAt ? formatDate(profileCacheCleanup.lastRunAt) : '等待首次检查', `最近清理 ${formatNumber(profileCacheCleanup.removedCount)} 个旧缓存目录 · 新缓存上限 ${formatFileSize(config.browserDiskCacheBytes)} + ${formatFileSize(config.browserMediaCacheBytes)}`)}
+        ${diagnosticRow('运行缓存回收', runtimeCacheCleanup.lastSuccessAt ? formatDate(runtimeCacheCleanup.lastSuccessAt) : '等待首次检查', runtimeCacheCleanup.skippedReason || `${runtimeCacheCleanup.reset ? '项目过多，已重建缓存目录' : `最近移除 ${formatNumber(runtimeCacheCleanup.removedCount)} 项 / ${formatFileSize(runtimeCacheCleanup.removedBytes)}`} · 保留 ${formatNumber(config.runtimeCacheMaxFiles)} 项、${formatFileSize(config.runtimeCacheMaxBytes)}、${formatNumber(config.runtimeCacheMaxAgeDays)} 天${runtimeCacheCleanup.retiredPendingCount ? ` · 待清理目录 ${formatNumber(runtimeCacheCleanup.retiredPendingCount)} 个` : ''}`)}
         ${diagnosticRow('后台会话', config.adminAccountEnabled ? '账密登录已启用' : '未配置', config.adminSessionTtlText ? `有效期 ${config.adminSessionTtlText}` : '')}
       </div>
       ${cacheNotice}
@@ -626,7 +828,7 @@ import { listDisplayState } from './admin-list-state.js';
     }
 
     els.recordList.innerHTML = state.draws.map((item, index) => {
-      const active = state.selected?.file === item.file ? ' active' : '';
+      const active = (state.detailFile || state.selected?.file) === item.file ? ' active' : '';
       return `
         <button class="record-row${active}" type="button" data-file="${escapeHtml(item.file)}" data-index="${index}"${active ? ' aria-current="true"' : ''}>
           <span>
@@ -643,12 +845,64 @@ import { listDisplayState } from './admin-list-state.js';
     }).join('');
   }
 
+  function compactRecordDetailOpen() {
+    return state.detailOpen && window.matchMedia('(max-width: 760px)').matches;
+  }
+
+  function syncRecordDetailModal(active = compactRecordDetailOpen()) {
+    if (active) {
+      els.detailPanel.setAttribute('role', 'dialog');
+      els.detailPanel.setAttribute('aria-modal', 'true');
+      els.detailPanel.setAttribute('aria-label', '开奖记录详情');
+    } else {
+      els.detailPanel.removeAttribute('role');
+      els.detailPanel.removeAttribute('aria-modal');
+      els.detailPanel.removeAttribute('aria-label');
+    }
+    document.querySelectorAll('.topbar, #dashboard > .tabbar, #view-records > .section-head, #view-records .records-panel')
+      .forEach((element) => element.toggleAttribute('inert', active));
+  }
+
+  function focusDetailCloseWhenReady(file) {
+    if (!window.matchMedia('(max-width: 760px)').matches) return;
+    const focus = () => {
+      if (state.detailOpen && state.detailFile === file && !els.detailPanel.contains(document.activeElement)) {
+        els.detailClose.focus({ preventScroll: true });
+      }
+    };
+    focus();
+    requestAnimationFrame(focus);
+  }
+
   function renderDetail() {
     const item = state.selected;
-    const detailVisible = Boolean(item && state.detailOpen);
+    const detailVisible = Boolean(state.detailOpen && (item || state.detailLoading || state.detailError));
     els.detailPanel.classList.toggle('has-selection', detailVisible);
-    els.detailClose.hidden = !item;
+    els.detailClose.hidden = !state.detailOpen;
+    els.detailContent.setAttribute('aria-busy', String(state.detailLoading));
     document.body.classList.toggle('record-detail-open', detailVisible);
+    syncRecordDetailModal(detailVisible && window.matchMedia('(max-width: 760px)').matches);
+    if (state.detailLoading) {
+      els.detailContent.innerHTML = `
+        <div class="detail-state" role="status">
+          <span class="detail-spinner" aria-hidden="true"></span>
+          <h2>正在读取开奖记录</h2>
+          <p>中奖名单与校验信息载入后会显示在这里。</p>
+        </div>
+      `;
+      return;
+    }
+    if (state.detailError) {
+      els.detailContent.innerHTML = `
+        <div class="detail-state error" role="alert">
+          <span class="detail-state-symbol" aria-hidden="true">!</span>
+          <h2>记录载入失败</h2>
+          <p>${escapeHtml(state.detailError)}</p>
+          <button class="secondary-button" type="button" data-action="retry" data-file="${escapeHtml(state.detailFile)}">重新加载</button>
+        </div>
+      `;
+      return;
+    }
     if (!item) {
       els.detailContent.innerHTML = `
         <div class="empty-detail">
@@ -676,7 +930,6 @@ import { listDisplayState } from './admin-list-state.js';
             <div class="winner-card">
               <span class="winner-name">${escapeHtml(plain(winner.screenName || winner.uid, '未知用户'))}</span>
               <span class="winner-text">UID：${escapeHtml(plain(winner.uid))}</span>
-              ${winner.text ? `<span class="winner-text">${escapeHtml(winner.text)}</span>` : ''}
             </div>
           `).join('') || '<div class="empty-list">这个奖项暂无中奖人。</div>'}
         </div>
@@ -699,7 +952,7 @@ import { listDisplayState } from './admin-list-state.js';
       <div class="detail-audit">
         <span>候选 ${escapeHtml(formatNumber(item.totalCount))}</span>
         <span>可抽 ${escapeHtml(formatNumber(item.eligibleCount))}</span>
-        <span title="${escapeHtml(auditHash)}">Hash ${escapeHtml(compactHash(auditHash))}</span>
+        <span title="${escapeHtml(auditHash)}">过程哈希 ${escapeHtml(compactHash(auditHash))}</span>
       </div>
       <div class="winner-grid detail-results">${resultHtml || '<div class="empty-list">暂无中奖明细。</div>'}</div>
     `;
@@ -709,6 +962,7 @@ import { listDisplayState } from './admin-list-state.js';
     suggestion: { label: '功能建议', tone: 'suggestion' },
     problem: { label: '遇到问题', tone: 'problem' },
     experience: { label: '使用体验', tone: 'experience' },
+    privacy: { label: '隐私与数据', tone: 'privacy' },
     other: { label: '其他', tone: 'other' },
   };
 
@@ -716,7 +970,9 @@ import { listDisplayState } from './admin-list-state.js';
     const selected = state.feedbackFilter;
     const items = selected === 'all'
       ? state.feedback
-      : state.feedback.filter((item) => item.category === selected);
+      : selected === 'open' || selected === 'handled'
+        ? state.feedback.filter((item) => (item.status || 'open') === selected)
+        : state.feedback.filter((item) => item.category === selected);
 
     els.feedbackCount.textContent = selected === 'all'
       ? `${formatNumber(state.feedback.length)} 条`
@@ -741,33 +997,69 @@ import { listDisplayState } from './admin-list-state.js';
     els.feedbackList.innerHTML = items.map((item) => {
       const category = feedbackCategories[item.category] || feedbackCategories.other;
       return `
-        <article class="feedback-row">
+        <article class="feedback-row ${item.status === 'handled' ? 'is-handled' : ''}">
           <header>
-            <span class="feedback-kind ${escapeHtml(category.tone)}">${escapeHtml(category.label)}</span>
+            <span>
+              <span class="feedback-kind ${escapeHtml(category.tone)}">${escapeHtml(category.label)}</span>
+              <span class="feedback-state">${item.status === 'handled' ? '已处理' : '待处理'}</span>
+            </span>
             <time datetime="${escapeHtml(item.createdAt)}">${escapeHtml(formatDate(item.createdAt))}</time>
           </header>
           <p>${escapeHtml(item.content)}</p>
-          <small>匿名来源 ${escapeHtml(plain(item.source))}</small>
+          <footer>
+            <small>去标识来源 ${escapeHtml(plain(item.source))}${item.handledAt ? ` · 处理于 ${escapeHtml(formatDate(item.handledAt))}` : ''}</small>
+            <span class="feedback-actions">
+              <button type="button" data-feedback-action="toggle" data-feedback-id="${escapeHtml(item.id)}">${item.status === 'handled' ? '重新打开' : '标为已处理'}</button>
+              <button class="danger-text" type="button" data-feedback-action="delete" data-feedback-id="${escapeHtml(item.id)}">删除</button>
+            </span>
+          </footer>
         </article>
       `;
     }).join('');
   }
 
   async function loadSummary() {
+    const generation = state.sessionGeneration;
+    const requestId = ++state.summaryRequestId;
     const data = await api('/api/admin/summary');
+    if (generation !== state.sessionGeneration || requestId !== state.summaryRequestId) return;
     state.summary = data;
     renderSummary();
   }
 
-  function startLoginPolling() {
-    if (state.loginPoller) return;
-    state.loginPoller = setInterval(() => {
-      loadWeiboLoginStatus(false).catch(() => {});
-    }, 2600);
+  function startLoginPolling(delay = LOGIN_POLL_INTERVAL_MS) {
+    state.loginPollingWanted = true;
+    if (!state.loginActive || !state.username || document.hidden || state.loginPoller !== null || state.loginPollInFlight) return;
+    const generation = state.loginPollGeneration;
+    state.loginPoller = setTimeout(async () => {
+      state.loginPoller = null;
+      if (generation !== state.loginPollGeneration || document.hidden || !state.loginActive) return;
+      state.loginPollInFlight = true;
+      try {
+        await loadWeiboLoginStatus(false, generation);
+        if (generation !== state.loginPollGeneration) return;
+        clearAlert('login-poll');
+      } catch (error) {
+        if (generation === state.loginPollGeneration) {
+          showAlert(`微博扫码状态刷新失败：${errorText(error)}`, 'login-poll');
+        }
+      } finally {
+        state.loginPollInFlight = false;
+        if (state.loginPollingWanted && state.loginActive && !document.hidden) startLoginPolling();
+      }
+    }, Math.max(0, delay));
   }
 
   function stopLoginPolling() {
-    clearInterval(state.loginPoller);
+    state.loginPollingWanted = false;
+    state.loginPollGeneration += 1;
+    clearTimeout(state.loginPoller);
+    state.loginPoller = null;
+  }
+
+  function pauseLoginPolling() {
+    state.loginPollGeneration += 1;
+    clearTimeout(state.loginPoller);
     state.loginPoller = null;
   }
 
@@ -775,7 +1067,9 @@ import { listDisplayState } from './admin-list-state.js';
     if (state.summaryPoller) return;
     state.summaryPoller = setInterval(() => {
       if (!document.hidden && state.username && !state.loading) {
-        loadSummary().catch(() => {});
+        loadSummary()
+          .then(() => clearAlert('summary'))
+          .catch((error) => showAlert(`总览数据刷新失败：${errorText(error)}`, 'summary'));
       }
     }, 60_000);
   }
@@ -785,8 +1079,11 @@ import { listDisplayState } from './admin-list-state.js';
     state.summaryPoller = null;
   }
 
-  async function loadWeiboLoginStatus(showMessage = true) {
+  async function loadWeiboLoginStatus(showMessage = true, pollGeneration = null) {
+    const generation = state.sessionGeneration;
     const data = await api('/api/admin/weibo-login/status');
+    if (!isCurrentSession(generation)) return data;
+    if (pollGeneration !== null && pollGeneration !== state.loginPollGeneration) return data;
     renderWeiboLogin(data);
     if (state.summary) {
       state.summary.weiboLogin = data;
@@ -798,59 +1095,84 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   async function startWeiboLogin() {
+    const generation = state.sessionGeneration;
     try {
       els.startWeiboLoginBtn.disabled = true;
       showToast('正在打开微博扫码登录');
-      const data = await api('/api/admin/weibo-login/start', { method: 'POST' });
+      const data = await api('/api/admin/weibo-login/start', { method: 'POST', timeoutMs: 90_000 });
+      if (!isCurrentSession(generation)) return;
       renderWeiboLogin(data);
       if (state.summary) {
         state.summary.weiboLogin = data;
         renderKeepaliveDiagnostics(data, state.summary.cookie || {});
       }
+      clearAlert('weibo');
       startLoginPolling();
     } catch (error) {
-      showToast(error.message);
+      if (!isCurrentSession(generation)) return;
+      presentError(error, 'weibo');
       await loadSummary().catch(() => {});
+    } finally {
+      if (isCurrentSession(generation) && !state.loginActive) els.startWeiboLoginBtn.disabled = false;
     }
   }
 
   async function stopWeiboLogin() {
+    const generation = state.sessionGeneration;
+    stopLoginPolling();
     try {
       const data = await api('/api/admin/weibo-login/stop', { method: 'POST' });
+      if (!isCurrentSession(generation)) return;
       renderWeiboLogin(data);
       if (state.summary) {
         state.summary.weiboLogin = data;
         renderKeepaliveDiagnostics(data, state.summary.cookie || {});
       }
+      clearAlert('weibo');
       showToast(data.message || '扫码窗口已关闭');
     } catch (error) {
-      showToast(error.message);
+      if (!isCurrentSession(generation)) return;
+      presentError(error, 'weibo');
+      if (state.loginActive) startLoginPolling();
     }
   }
 
   async function refreshWeiboCookie() {
+    const generation = state.sessionGeneration;
     try {
       els.refreshWeiboCookieBtn.disabled = true;
       showToast('正在刷新服务器微博 Cookie');
-      const data = await api('/api/admin/weibo-login/refresh', { method: 'POST' });
+      const data = await api('/api/admin/weibo-login/refresh', { method: 'POST', timeoutMs: 90_000 });
+      if (!isCurrentSession(generation)) return;
       renderWeiboLogin(data);
       await loadSummary();
+      if (!isCurrentSession(generation)) return;
+      clearAlert('weibo');
       showToast(data.message || '服务器 Cookie 已刷新');
     } catch (error) {
-      showToast(error.message);
+      if (!isCurrentSession(generation)) return;
+      presentError(error, 'weibo');
       await loadSummary().catch(() => {});
+    } finally {
+      if (isCurrentSession(generation) && !state.loginActive) els.refreshWeiboCookieBtn.disabled = false;
     }
   }
 
   async function loadDraws() {
+    const generation = state.sessionGeneration;
+    const requestId = ++state.drawsRequestId;
     const query = new URLSearchParams({ limit: '200', search: state.search });
     const data = await api(`/api/admin/draws?${query.toString()}`);
+    if (generation !== state.sessionGeneration || requestId !== state.drawsRequestId) return;
     state.draws = data.items || [];
     renderDraws();
   }
 
   async function loadFeedback() {
+    const generation = state.sessionGeneration;
+    const requestId = ++state.feedbackRequestId;
     const data = await api('/api/admin/feedback?limit=500');
+    if (generation !== state.sessionGeneration || requestId !== state.feedbackRequestId) return;
     state.feedback = Array.isArray(data.items) ? data.items : [];
     renderFeedback();
   }
@@ -858,73 +1180,192 @@ import { listDisplayState } from './admin-list-state.js';
   async function loadAll(showMessage = false) {
     if (state.loading) return;
     state.loading = true;
+    const generation = state.sessionGeneration;
+    state.loadingGeneration = generation;
     els.refreshBtn.disabled = true;
     els.loginMessage.textContent = '';
     try {
-      await Promise.all([loadSummary(), loadDraws(), loadFeedback()]);
-      if (state.selected) {
+      const results = await Promise.allSettled([loadSummary(), loadDraws(), loadFeedback()]);
+      if (generation !== state.sessionGeneration) return;
+      const errors = results
+        .filter((result) => result.status === 'rejected')
+        .map((result) => errorText(result.reason));
+      if (results[1].status === 'fulfilled' && state.selected) {
         const found = state.draws.find((item) => item.file === state.selected.file);
         if (!found) {
           state.selected = null;
           state.detailOpen = false;
+          state.detailFile = '';
         }
       }
       renderDetail();
-      if (showMessage) showToast('后台数据已刷新');
-    } catch (error) {
-      els.loginMessage.textContent = error.message;
-      showToast(error.message);
+      if (errors.length) {
+        const message = `部分数据未能刷新：${[...new Set(errors)].join('；')}`;
+        showAlert(message, 'refresh');
+        showToast(message);
+        if (!state.username) els.loginMessage.textContent = message;
+      } else {
+        clearAlert('refresh');
+        if (showMessage) showToast('后台数据已刷新');
+      }
     } finally {
-      state.loading = false;
-      els.refreshBtn.disabled = !state.username;
+      if (state.loadingGeneration === generation) {
+        state.loading = false;
+        els.refreshBtn.disabled = !state.username;
+      }
     }
   }
 
-  async function openRecord(file) {
-    try {
-      const data = await api(`/api/admin/draws/${encodeURIComponent(file)}`);
-      state.selected = data.item;
-      state.detailOpen = true;
+  async function openRecord(file, opener = null) {
+    const generation = state.sessionGeneration;
+    const requestId = ++state.detailRequestId;
+    state.detailFile = file;
+    state.detailOpener = opener || document.activeElement;
+    state.detailOpen = true;
+    state.detailError = '';
+    const cached = state.selected?.file === file ? state.selected : state.detailCache.get(file);
+    if (cached) {
+      state.selected = cached;
+      state.detailLoading = false;
       renderDraws();
       renderDetail();
-      if (window.matchMedia('(max-width: 760px)').matches) {
-        setTimeout(() => els.detailClose.focus({ preventScroll: true }), 260);
-      }
+      els.detailContent.scrollTop = 0;
+      focusDetailCloseWhenReady(file);
+      return;
+    }
+    state.selected = null;
+    state.detailLoading = true;
+    renderDraws();
+    renderDetail();
+    focusDetailCloseWhenReady(file);
+    try {
+      const data = await api(`/api/admin/draws/${encodeURIComponent(file)}`);
+      if (generation !== state.sessionGeneration || requestId !== state.detailRequestId) return;
+      state.selected = data.item;
+      state.detailLoading = false;
+      cacheDetail(data.item);
+      renderDraws();
+      renderDetail();
+      els.detailContent.scrollTop = 0;
+      focusDetailCloseWhenReady(file);
     } catch (error) {
-      showToast(error.message);
+      if (generation !== state.sessionGeneration || requestId !== state.detailRequestId) return;
+      state.detailLoading = false;
+      state.detailError = errorText(error);
+      renderDetail();
+      els.detailContent.scrollTop = 0;
+      showToast(state.detailError);
     }
   }
 
   async function removeRecord(file) {
     if (!file) return;
+    state.confirmOpener = document.activeElement;
+    state.confirmFocusFallback = 'records';
     state.pendingDeleteFile = file;
+    state.pendingDeleteFeedbackId = '';
+    els.confirmTitle.textContent = '删除开奖记录';
+    els.confirmMessage.textContent = '这条记录会从服务器移除，删除后无法恢复。';
     els.confirmDialog.showModal();
     requestAnimationFrame(() => els.confirmCancelBtn.focus());
   }
 
-  function closeDeleteConfirm() {
-    state.pendingDeleteFile = '';
-    if (els.confirmDialog.open) els.confirmDialog.close();
+  function restoreConfirmFocus(opener, fallback = 'records') {
+    requestAnimationFrame(() => {
+      if (opener?.isConnected && !opener.disabled) {
+        opener.focus({ preventScroll: true });
+        return;
+      }
+      if (fallback === 'feedback') {
+        els.feedbackFilters.querySelector('[data-feedback-filter]')?.focus({ preventScroll: true });
+        return;
+      }
+      els.recordList.querySelector('[data-file]')?.focus({ preventScroll: true });
+      if (!document.activeElement || document.activeElement === document.body) {
+        els.searchInput.focus({ preventScroll: true });
+      }
+    });
   }
 
-  async function confirmRemoveRecord() {
+  function closeDeleteConfirm({ restoreFocus = true } = {}) {
+    const opener = state.confirmOpener;
+    const fallback = state.confirmFocusFallback;
+    state.pendingDeleteFile = '';
+    state.pendingDeleteFeedbackId = '';
+    state.confirmOpener = null;
+    state.confirmFocusFallback = 'records';
+    if (els.confirmDialog.open) els.confirmDialog.close();
+    if (restoreFocus) restoreConfirmFocus(opener, fallback);
+    return opener;
+  }
+
+  async function confirmDelete() {
     const file = state.pendingDeleteFile;
-    if (!file) return;
+    const feedbackId = state.pendingDeleteFeedbackId;
+    const fallback = state.confirmFocusFallback;
+    if (!file && !feedbackId) return;
     els.confirmDeleteBtn.disabled = true;
     try {
-      await api(`/api/admin/draws/${encodeURIComponent(file)}`, { method: 'DELETE' });
-      if (state.selected?.file === file) {
-        state.selected = null;
-        state.detailOpen = false;
+      if (feedbackId) {
+        await api(`/api/admin/feedback/${encodeURIComponent(feedbackId)}`, { method: 'DELETE' });
+      } else {
+        await api(`/api/admin/draws/${encodeURIComponent(file)}`, { method: 'DELETE' });
+        if (state.selected?.file === file) {
+          state.selected = null;
+          state.detailOpen = false;
+        }
       }
-      closeDeleteConfirm();
-      showToast('开奖记录已删除');
+      const opener = closeDeleteConfirm({ restoreFocus: false });
+      clearAlert('delete');
+      showToast(feedbackId ? '反馈已删除' : '开奖记录已删除');
       await loadAll();
+      restoreConfirmFocus(opener, fallback);
     } catch (error) {
-      showToast(error.message);
+      presentError(error, 'delete');
     } finally {
       els.confirmDeleteBtn.disabled = false;
     }
+  }
+
+  function feedbackActionButton(id, action = 'toggle') {
+    return [...els.feedbackList.querySelectorAll('[data-feedback-action]')]
+      .find((button) => button.dataset.feedbackId === id && button.dataset.feedbackAction === action);
+  }
+
+  async function toggleFeedback(item, opener) {
+    opener.disabled = true;
+    opener.setAttribute('aria-busy', 'true');
+    try {
+      await api(`/api/admin/feedback/${encodeURIComponent(item.id)}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ handled: item.status !== 'handled' }),
+      });
+      clearAlert('feedback');
+      showToast(item.status === 'handled' ? '反馈已重新打开' : '反馈已标为已处理');
+      await loadFeedback();
+      const nextAction = feedbackActionButton(item.id)
+        || els.feedbackFilters.querySelector('[data-feedback-filter].active');
+      nextAction?.focus({ preventScroll: true });
+    } catch (error) {
+      presentError(error, 'feedback');
+    } finally {
+      if (opener.isConnected) {
+        opener.disabled = false;
+        opener.removeAttribute('aria-busy');
+      }
+    }
+  }
+
+  function removeFeedback(id) {
+    if (!id) return;
+    state.confirmOpener = document.activeElement;
+    state.confirmFocusFallback = 'feedback';
+    state.pendingDeleteFile = '';
+    state.pendingDeleteFeedbackId = id;
+    els.confirmTitle.textContent = '删除用户反馈';
+    els.confirmMessage.textContent = '这条反馈会从服务器移除，删除后无法恢复。';
+    els.confirmDialog.showModal();
+    requestAnimationFrame(() => els.confirmCancelBtn.focus());
   }
 
   function csvCell(value) {
@@ -934,7 +1375,7 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   function rowsFromRecords(records) {
-    const rows = [['开奖时间', '微博链接', '奖项', 'UID', '昵称', '转发内容', '记录文件']];
+    const rows = [['开奖时间', '微博链接', '奖项', 'UID', '昵称', '记录文件']];
     for (const record of records) {
       for (const result of record.results || []) {
         for (const winner of result.winners || []) {
@@ -944,7 +1385,6 @@ import { listDisplayState } from './admin-list-state.js';
             result.prize?.name || '',
             winner.uid || '',
             winner.screenName || '',
-            winner.text || '',
             record.file || '',
           ]);
         }
@@ -962,7 +1402,7 @@ import { listDisplayState } from './admin-list-state.js';
     document.body.appendChild(link);
     link.click();
     link.remove();
-    URL.revokeObjectURL(url);
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
   function exportCsv(records, name) {
@@ -971,23 +1411,48 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   async function exportAll() {
+    if (state.exporting) return;
     if (!state.draws.length) {
       showToast('暂无可导出的开奖记录');
       return;
     }
+    state.exporting = true;
     try {
       els.exportAllBtn.disabled = true;
+      clearAlert('export');
+      const items = state.draws.slice();
       const records = [];
-      for (const item of state.draws) {
-        const data = await api(`/api/admin/draws/${encodeURIComponent(item.file)}`);
-        records.push(data.item);
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index];
+        setExportStatus(`正在准备 ${index + 1} / ${items.length} 条`);
+        let detail = state.selected?.file === item.file ? state.selected : state.detailCache.get(item.file);
+        if (!detail) {
+          try {
+            const data = await api(`/api/admin/draws/${encodeURIComponent(item.file)}`);
+            detail = data.item;
+          } catch (error) {
+            const retryAfter = numericValue(error.retryAfter);
+            if (error.status !== 429 || retryAfter === null || retryAfter > 60) throw error;
+            const delay = Math.max(1, Math.ceil(retryAfter));
+            setExportStatus(`请求较频繁，${delay} 秒后继续 · ${index + 1} / ${items.length}`);
+            await new Promise((resolve) => setTimeout(resolve, delay * 1000));
+            const data = await api(`/api/admin/draws/${encodeURIComponent(item.file)}`);
+            detail = data.item;
+          }
+          cacheDetail(detail);
+        }
+        records.push(detail);
       }
       exportCsv(records, `sameko-draws-${Date.now()}.csv`);
-      showToast('CSV 已生成');
+      setExportStatus(`已导出 ${records.length} 条记录`);
+      showToast(`已导出当前列表的 ${records.length} 条记录`);
     } catch (error) {
-      showToast(error.message);
+      const message = errorText(error);
+      setExportStatus(`导出中断：${message}`);
+      presentError(error, 'export');
     } finally {
-      els.exportAllBtn.disabled = false;
+      state.exporting = false;
+      els.exportAllBtn.disabled = !state.username;
     }
   }
 
@@ -1025,7 +1490,7 @@ import { listDisplayState } from './admin-list-state.js';
     els.loginBtn.querySelector('span').textContent = '正在登录';
     els.loginMessage.textContent = '';
     try {
-      const response = await fetch('/api/admin/login', {
+      const response = await fetchWithTimeout('/api/admin/login', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
@@ -1033,6 +1498,7 @@ import { listDisplayState } from './admin-list-state.js';
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) throw new Error(data.error || '登录失败');
+      cancelSessionRequests();
       state.username = data.username;
       state.csrfToken = data.csrfToken;
       state.sessionExpiresAt = data.expiresAt;
@@ -1048,26 +1514,33 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   async function logout() {
-    await api('/api/admin/logout', { method: 'POST' }).catch(() => {});
-    state.username = '';
-    state.csrfToken = '';
-    state.sessionExpiresAt = '';
-    state.summary = null;
-    state.draws = [];
-    state.feedback = [];
-    state.feedbackFilter = 'all';
-    state.selected = null;
-    state.detailOpen = false;
-    state.attemptsExpanded = false;
-    document.body.classList.remove('record-detail-open');
-    stopLoginPolling();
+    if (state.logoutPending) return;
+    state.logoutPending = true;
+    els.logoutBtn.disabled = true;
+    els.logoutBtn.setAttribute('aria-busy', 'true');
+    const csrfToken = state.csrfToken;
+    cancelSessionRequests();
+    clearSessionState();
     setAuthed(false);
     showToast('已退出后台');
+    try {
+      await fetchWithTimeout('/api/admin/logout', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: csrfToken ? { 'x-admin-csrf': csrfToken } : {},
+        timeoutMs: 5000,
+        trackSession: false,
+      });
+    } catch {
+    } finally {
+      state.logoutPending = false;
+      els.logoutBtn.removeAttribute('aria-busy');
+    }
   }
 
   async function restoreSession() {
     try {
-      const response = await fetch('/api/admin/session', {
+      const response = await fetchWithTimeout('/api/admin/session', {
         credentials: 'same-origin',
         headers: { accept: 'application/json' },
       });
@@ -1076,6 +1549,7 @@ import { listDisplayState } from './admin-list-state.js';
         return;
       }
       const data = await response.json();
+      cancelSessionRequests();
       state.username = data.username;
       state.csrfToken = data.csrfToken;
       state.sessionExpiresAt = data.expiresAt;
@@ -1087,26 +1561,42 @@ import { listDisplayState } from './admin-list-state.js';
     }
   }
 
-  function setTab(name) {
+  function setTab(name, { focus = false } = {}) {
     const buttons = [...document.querySelectorAll('[data-tab]')];
     const index = Math.max(0, buttons.findIndex((button) => button.dataset.tab === name));
-    buttons.forEach((button) => button.classList.toggle('active', button.dataset.tab === name));
+    buttons.forEach((button) => {
+      const active = button.dataset.tab === name;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-selected', String(active));
+      button.tabIndex = active ? 0 : -1;
+    });
     document.querySelectorAll('[data-view]').forEach((view) => {
-      view.classList.toggle('active', view.dataset.view === name);
+      const active = view.dataset.view === name;
+      view.classList.toggle('active', active);
+      view.hidden = !active;
     });
     document.querySelector('.tab-indicator').style.transform = `translateX(${index * 100}%)`;
+    if (focus) buttons[index]?.focus({ preventScroll: true });
     if (name !== 'records' && state.detailOpen) {
-      state.detailOpen = false;
-      renderDetail();
+      closeRecordDetail(false);
     }
   }
 
-  function closeRecordDetail() {
+  function closeRecordDetail(restoreFocus = true) {
+    state.detailRequestId += 1;
+    const detailFile = state.detailFile || state.selected?.file || '';
+    const opener = state.detailOpener;
     state.detailOpen = false;
+    state.detailLoading = false;
+    state.detailError = '';
+    state.detailFile = '';
     renderDetail();
-    const selectedButton = [...els.recordList.querySelectorAll('[data-file]')]
-      .find((button) => button.dataset.file === state.selected?.file);
-    selectedButton?.focus({ preventScroll: true });
+    const selectedButton = opener?.isConnected
+      ? opener
+      : [...els.recordList.querySelectorAll('[data-file]')]
+      .find((button) => button.dataset.file === detailFile);
+    state.detailOpener = null;
+    if (restoreFocus) selectedButton?.focus({ preventScroll: true });
   }
 
   els.loginForm.addEventListener('submit', (event) => {
@@ -1130,19 +1620,30 @@ import { listDisplayState } from './admin-list-state.js';
   els.searchInput.addEventListener('input', () => {
     state.search = els.searchInput.value.trim();
     clearTimeout(searchTimer);
-    searchTimer = setTimeout(loadDraws, 220);
+    searchTimer = setTimeout(() => {
+      loadDraws()
+        .then(() => clearAlert('records'))
+        .catch((error) => presentError(error, 'records'));
+    }, 220);
   });
 
   els.recordList.addEventListener('click', (event) => {
     const button = event.target.closest('[data-file]');
-    if (button) openRecord(button.dataset.file);
+    if (button) openRecord(button.dataset.file, button);
   });
 
-  els.detailClose.addEventListener('click', closeRecordDetail);
+  els.detailClose.addEventListener('click', () => closeRecordDetail());
+  els.adminAlertClose.addEventListener('click', () => clearAlert());
   els.confirmCancelBtn.addEventListener('click', closeDeleteConfirm);
-  els.confirmDeleteBtn.addEventListener('click', confirmRemoveRecord);
+  els.confirmDeleteBtn.addEventListener('click', confirmDelete);
   els.confirmDialog.addEventListener('close', () => {
+    const opener = state.confirmOpener;
+    const fallback = state.confirmFocusFallback;
     state.pendingDeleteFile = '';
+    state.pendingDeleteFeedbackId = '';
+    state.confirmOpener = null;
+    state.confirmFocusFallback = 'records';
+    if (opener) restoreConfirmFocus(opener, fallback);
   });
   els.confirmDialog.addEventListener('click', (event) => {
     if (event.target === els.confirmDialog) closeDeleteConfirm();
@@ -1155,6 +1656,15 @@ import { listDisplayState } from './admin-list-state.js';
     renderFeedback();
   });
 
+  els.feedbackList.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-feedback-action]');
+    if (!button) return;
+    const item = state.feedback.find((entry) => entry.id === button.dataset.feedbackId);
+    if (!item) return;
+    if (button.dataset.feedbackAction === 'toggle') toggleFeedback(item, button);
+    if (button.dataset.feedbackAction === 'delete') removeFeedback(item.id);
+  });
+
   els.attemptList.addEventListener('click', (event) => {
     const toggle = event.target.closest('[data-list-toggle="attempts"]');
     if (!toggle) return;
@@ -1164,8 +1674,13 @@ import { listDisplayState } from './admin-list-state.js';
 
   els.detailPanel.addEventListener('click', (event) => {
     const button = event.target.closest('[data-action]');
-    if (!button || !state.selected) return;
+    if (!button) return;
     const action = button.dataset.action;
+    if (action === 'retry') {
+      openRecord(button.dataset.file || state.detailFile, state.detailOpener);
+      return;
+    }
+    if (!state.selected) return;
     if (action === 'copy') copySelectedNames();
     if (action === 'csv') exportCsv([state.selected], `sameko-draw-${Date.now()}.csv`);
     if (action === 'json') downloadSelectedJson();
@@ -1176,14 +1691,51 @@ import { listDisplayState } from './admin-list-state.js';
     const tab = event.target.closest('[data-tab]');
     const goTab = event.target.closest('[data-go-tab]');
     if (tab) setTab(tab.dataset.tab);
-    if (goTab) setTab(goTab.dataset.goTab);
+    if (goTab) setTab(goTab.dataset.goTab, { focus: true });
   });
 
   document.addEventListener('keydown', (event) => {
+    if (event.key === 'Tab' && compactRecordDetailOpen()) {
+      const controls = [...els.detailPanel.querySelectorAll(
+        'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      )].filter((element) => !element.hidden && element.getClientRects().length);
+      if (controls.length) {
+        const first = controls[0];
+        const last = controls.at(-1);
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+      return;
+    }
+    const currentTab = event.target.closest?.('[role="tab"][data-tab]');
+    if (currentTab && ['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) {
+      const tabs = [...document.querySelectorAll('[role="tab"][data-tab]')];
+      const currentIndex = tabs.indexOf(currentTab);
+      const nextIndex = event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? tabs.length - 1
+          : (currentIndex + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+      event.preventDefault();
+      setTab(tabs[nextIndex].dataset.tab);
+      tabs[nextIndex].focus();
+      return;
+    }
     if (event.key === 'Escape' && state.detailOpen && window.matchMedia('(max-width: 760px)').matches) {
       closeRecordDetail();
     }
   });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) pauseLoginPolling();
+    else if (state.loginActive && state.loginPollingWanted) startLoginPolling(0);
+  });
+  window.addEventListener('resize', () => syncRecordDetailModal());
 
   setAuthed(false);
   restoreSession();

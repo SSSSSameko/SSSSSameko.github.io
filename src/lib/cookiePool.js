@@ -27,3 +27,9 @@ export function cookiePoolCounts(entries) {
     accountCount: accountKeys.size,
   };
 }
+
+export function cookieCandidatesWithFallback(entries, fallback) {
+  const stored = Array.isArray(entries) ? [...entries] : [];
+  if (!fallback?.cookie || stored.some((entry) => entry?.id === fallback.id)) return stored;
+  return [...stored, { ...fallback, transient: true }];
+}

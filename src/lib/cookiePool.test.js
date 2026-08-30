@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   compactCookieEntriesByAccount,
+  cookieCandidatesWithFallback,
   cookiePoolCounts,
 } from './cookiePool.js';
 
@@ -29,4 +30,27 @@ test('cookiePoolCounts separates stored cookies from unique accounts', () => {
     cookieCount: 3,
     accountCount: 2,
   });
+});
+
+test('cookieCandidatesWithFallback always tries stored accounts first', () => {
+  const candidates = cookieCandidatesWithFallback(
+    [{ id: 'server-one', cookie: 'server=1' }, { id: 'server-two', cookie: 'server=2' }],
+    { id: 'user-fallback', cookie: 'user=1' },
+  );
+
+  assert.deepEqual(candidates.map((entry) => entry.id), [
+    'server-one',
+    'server-two',
+    'user-fallback',
+  ]);
+  assert.equal(candidates[2].transient, true);
+});
+
+test('cookieCandidatesWithFallback does not retry the same stored cookie', () => {
+  const candidates = cookieCandidatesWithFallback(
+    [{ id: 'same', cookie: 'server=1' }],
+    { id: 'same', cookie: 'server=1' },
+  );
+
+  assert.equal(candidates.length, 1);
 });

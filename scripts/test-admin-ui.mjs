@@ -2,11 +2,9 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-import { chromium } from 'playwright';
+import { gotoUiPage, launchUiBrowser } from './playwright-browser.mjs';
 
 const baseUrl = process.env.ADMIN_UI_URL || 'http://127.0.0.1:4173/admin';
-const executablePath = process.env.PLAYWRIGHT_CHROME_PATH
-  || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const outputDir = new URL('../output/ui-checks/', import.meta.url);
 
 const draws = Array.from({ length: 18 }, (_, index) => {
@@ -48,6 +46,10 @@ const summary = {
     queued: 0,
     maxActive: 2,
     maxQueued: 8,
+    retained: 3,
+    maxRetained: 24,
+    subscribers: 5,
+    maxSubscribersPerTask: 12,
     sameStatusLocks: 0,
     sharedTasks: 1,
     recentSnapshots: 1,
@@ -86,12 +88,19 @@ const summary = {
       trend: { status: 'stable', perHourMb: 1.5 },
       samples,
     },
-    browser: { processCount: 0 },
+    browser: {
+      processCount: 0,
+      profileCacheCleanup: {
+        lastRunAt: new Date(Date.now() - 7_200_000).toISOString(),
+        removedCount: 4,
+      },
+    },
     runtime: {
       eventLoopP99Ms: 18,
       eventLoopMeanMs: 7,
       rateLimitBuckets: 3,
       adminLoginBuckets: 1,
+      revokedAdminSessions: 2,
       requests: { total: 240, clientErrors: 2, serverErrors: 1, slowestMs: 86 },
     },
     service: {
@@ -101,7 +110,10 @@ const summary = {
       recycleIntervalText: '12 小时',
     },
     disk: { available: true, usedPercent: 38, usedMb: 3800, availableMb: 6200 },
-    config: {},
+    config: {
+      browserDiskCacheBytes: 64 * 1024 * 1024,
+      browserMediaCacheBytes: 16 * 1024 * 1024,
+    },
     events: [],
     storage: [],
   },
@@ -125,7 +137,7 @@ const feedback = [
 ];
 
 await mkdir(outputDir, { recursive: true });
-const browser = await chromium.launch({ headless: true, executablePath });
+const browser = await launchUiBrowser();
 try {
   {
     let authenticated = false;
@@ -173,8 +185,74 @@ try {
     await loginContext.close();
   }
 
+  {
+    const logoutContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const logoutPage = await logoutContext.newPage();
+    let summaryRequests = 0;
+    let releaseLoginStart;
+    const loginStartGate = new Promise((resolve) => {
+      releaseLoginStart = resolve;
+    });
+
+    await logoutPage.route('**/api/admin/**', async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === '/api/admin/session') {
+        await route.fulfill({ json: { username: 'preview', csrfToken: 'preview', expiresAt: new Date(Date.now() + 3_600_000).toISOString() } });
+        return;
+      }
+      if (url.pathname === '/api/admin/summary') {
+        summaryRequests += 1;
+        await route.fulfill({ json: summary });
+        return;
+      }
+      if (url.pathname === '/api/admin/draws') {
+        await route.fulfill({ json: { ok: true, items: draws } });
+        return;
+      }
+      if (url.pathname === '/api/admin/feedback') {
+        await route.fulfill({ json: { ok: true, items: feedback } });
+        return;
+      }
+      if (url.pathname === '/api/admin/weibo-login/start') {
+        await loginStartGate;
+        await route.fulfill({ json: { ok: true, status: 'waiting_scan', active: true } }).catch(() => {});
+        return;
+      }
+      await route.fulfill({ json: { ok: true } });
+    });
+
+    await gotoUiPage(logoutPage, baseUrl);
+    await logoutPage.locator('#dashboard:not(.hidden)').waitFor();
+    await logoutPage.locator('.metric-value').first().getByText('35.3%', { exact: true }).waitFor();
+    const summaryBaseline = summaryRequests;
+    await logoutPage.getByRole('tab', { name: 'Cookie', exact: true }).click();
+    const loginRequest = logoutPage.waitForRequest((request) => (
+      new URL(request.url()).pathname === '/api/admin/weibo-login/start'
+    ));
+    await logoutPage.getByRole('button', { name: '扫码登录微博' }).click();
+    await loginRequest;
+    await logoutPage.locator('#logoutBtn').click();
+    await logoutPage.locator('#loginPanel:not(.hidden)').waitFor();
+    await logoutPage.locator('#toast.show').getByText('已退出后台', { exact: true }).waitFor();
+    await logoutPage.waitForTimeout(250);
+    assert.equal(summaryRequests, summaryBaseline);
+    assert.equal(await logoutPage.locator('#adminAlert').isVisible(), false);
+    releaseLoginStart();
+    await logoutPage.waitForTimeout(80);
+    assert.equal(summaryRequests, summaryBaseline);
+    assert.equal(await logoutPage.locator('#toast').innerText(), '已退出后台');
+    await logoutContext.close();
+  }
+
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
+  let activeDetailRequests = 0;
+  let maxDetailRequests = 0;
+  let activeLoginPolls = 0;
+  let maxLoginPolls = 0;
+  let weiboLoginActive = false;
+  let failingDetailFile = '';
+  let detailDelayMs = 20;
   await page.route('**/api/admin/**', async (route) => {
     const url = new URL(route.request().url());
     if (url.pathname === '/api/admin/session') {
@@ -193,20 +271,81 @@ try {
       await route.fulfill({ json: { ok: true, items: feedback } });
       return;
     }
+    if (url.pathname.startsWith('/api/admin/feedback/')) {
+      const id = decodeURIComponent(url.pathname.replace('/api/admin/feedback/', ''));
+      const item = feedback.find((entry) => entry.id === id);
+      if (route.request().method() === 'PATCH' && item) {
+        const body = route.request().postDataJSON();
+        item.status = body.handled ? 'handled' : 'open';
+        item.handledAt = body.handled ? new Date().toISOString() : '';
+      }
+      await route.fulfill({ json: { ok: true, item } });
+      return;
+    }
+    if (url.pathname === '/api/admin/weibo-login/start') {
+      weiboLoginActive = true;
+      await route.fulfill({ json: { ok: true, status: 'waiting_scan', active: true, message: '等待扫码' } });
+      return;
+    }
+    if (url.pathname === '/api/admin/weibo-login/status') {
+      activeLoginPolls += 1;
+      maxLoginPolls = Math.max(maxLoginPolls, activeLoginPolls);
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      activeLoginPolls -= 1;
+      await route.fulfill({ json: { ok: true, status: weiboLoginActive ? 'waiting_scan' : 'idle', active: weiboLoginActive } });
+      return;
+    }
+    if (url.pathname === '/api/admin/weibo-login/stop') {
+      weiboLoginActive = false;
+      await route.fulfill({ json: { ok: true, status: 'idle', active: false, message: '扫码窗口已关闭' } });
+      return;
+    }
     const file = decodeURIComponent(url.pathname.replace('/api/admin/draws/', ''));
+    activeDetailRequests += 1;
+    maxDetailRequests = Math.max(maxDetailRequests, activeDetailRequests);
+    await new Promise((resolve) => setTimeout(resolve, detailDelayMs));
+    activeDetailRequests -= 1;
+    if (file === failingDetailFile) {
+      await route.fulfill({ status: 503, json: { ok: false, error: '记录服务暂时不可用' } });
+      return;
+    }
     await route.fulfill({ json: { ok: true, item: draws.find((item) => item.file === file) } });
   });
 
-  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await gotoUiPage(page, baseUrl);
   await page.locator('#dashboard:not(.hidden)').waitFor();
   await page.waitForTimeout(360);
+  const cdp = await context.newCDPSession(page);
+  await cdp.send('Emulation.setEmulatedMedia', {
+    media: '',
+    features: [{ name: 'prefers-reduced-transparency', value: 'reduce' }],
+  });
+  await page.getByRole('button', { name: '刷新数据', exact: true }).click();
+  await page.locator('#toast.show').waitFor();
+  const toastStyle = await page.locator('#toast').evaluate((element) => {
+    const style = getComputedStyle(element);
+    return { color: style.color, background: style.backgroundColor };
+  });
+  assert.equal(toastStyle.color, 'rgb(255, 255, 255)');
+  assert.notEqual(toastStyle.background, 'rgb(255, 255, 255)');
+  await cdp.send('Emulation.setEmulatedMedia', { media: '', features: [] });
   assert.equal(await page.locator('.metric-value').first().innerText(), '35.3%');
   assert.equal(await page.locator('.chart-scale').isVisible(), true);
   assert.equal(await page.locator('#requestPanel').getByText('1 个共享任务', { exact: true }).isVisible(), true);
   assert.equal(await page.locator('#requestPanel').getByText(/1 \/ 2 个快照 · 时效 15 秒 · 累计合并 3 次/).isVisible(), true);
+  assert.equal(await page.locator('#requestPanel').getByText(/1 运行 · 0 排队 · 3 暂存/).isVisible(), true);
+  assert.equal(await page.locator('#requestPanel').getByText('5 个页面', { exact: true }).isVisible(), true);
   await page.screenshot({ path: fileURLToPath(new URL('admin-overview-desktop.png', outputDir)) });
 
-  await page.getByRole('button', { name: '反馈', exact: true }).click();
+  const overviewTab = page.getByRole('tab', { name: '总览', exact: true });
+  await overviewTab.focus();
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await page.getByRole('tab', { name: '记录', exact: true }).getAttribute('aria-selected'), 'true');
+  assert.equal(await page.locator('#view-overview').getAttribute('hidden'), '');
+  await page.keyboard.press('Home');
+  assert.equal(await overviewTab.getAttribute('aria-selected'), 'true');
+
+  await page.getByRole('tab', { name: '反馈', exact: true }).click();
   await page.waitForTimeout(320);
   assert.equal(await page.locator('.feedback-row').count(), feedback.length);
   assert.equal(await page.locator('.feedback-row img').count(), 0);
@@ -215,15 +354,39 @@ try {
   assert.equal(await page.locator('.feedback-row').count(), 1);
   assert.equal(await page.getByText('希望增加开奖前的名单确认。', { exact: true }).isVisible(), true);
   await page.getByRole('button', { name: '全部', exact: true }).click();
+  const feedbackToggle = page.locator('[data-feedback-action="toggle"][data-feedback-id="feedback-1"]');
+  await feedbackToggle.click();
+  await page.waitForFunction(() => (
+    document.activeElement?.dataset.feedbackId === 'feedback-1'
+    && document.activeElement?.dataset.feedbackAction === 'toggle'
+  ));
+  assert.match(await page.locator('.feedback-row').filter({ hasText: '点击载入后没有反应。' }).innerText(), /已处理/);
   await page.screenshot({ path: fileURLToPath(new URL('admin-feedback-desktop.png', outputDir)) });
 
-  await page.getByRole('button', { name: '系统', exact: true }).click();
+  await page.getByRole('tab', { name: '系统', exact: true }).click();
   assert.equal(await page.locator('#systemPanel').getByText('35.3%', { exact: true }).isVisible(), true);
-  await page.getByRole('button', { name: 'Cookie', exact: true }).click();
+  assert.equal(await page.locator('#systemPanel').getByText('3 / 24 个', { exact: true }).isVisible(), true);
+  const systemText = await page.locator('#systemPanel').innerText();
+  assert.match(systemText, /API 3 · 后台登录 1 · 已退出会话 2/);
+  assert.match(systemText, /订阅页面 5 个 · 单任务上限 12 个/);
+  assert.match(systemText, /最近清理 4 个旧缓存目录 · 新缓存上限 64 MB \+ 16 MB/);
+  await page.getByRole('tab', { name: 'Cookie', exact: true }).click();
   assert.equal(await page.getByRole('heading', { name: 'Cookie 与保活' }).isVisible(), true);
-  await page.getByRole('button', { name: '记录', exact: true }).click();
+  await page.getByRole('button', { name: '扫码登录微博' }).click();
+  assert.equal(await page.locator('#weiboLoginText').getAttribute('role'), 'status');
+  await page.waitForTimeout(6000);
+  assert.equal(maxLoginPolls, 1);
+  await page.getByRole('button', { name: '关闭扫码' }).click();
+  await page.getByRole('tab', { name: '记录', exact: true }).click();
   await page.waitForTimeout(320);
+  assert.equal(await page.getByRole('searchbox', { name: '搜索开奖记录' }).isVisible(), true);
   assert.equal(await page.locator('.record-row').count(), draws.length);
+  maxDetailRequests = 0;
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: '导出当前列表' }).click();
+  await download;
+  await page.locator('#exportStatus').getByText(`已导出 ${draws.length} 条记录`, { exact: true }).waitFor();
+  assert.equal(maxDetailRequests, 1);
   await page.locator('.record-list-scroll').evaluate((element) => {
     element.scrollTop = element.scrollHeight;
   });
@@ -250,24 +413,56 @@ try {
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: '关闭开奖记录详情' }).click();
+  detailDelayMs = 300;
   await page.locator('.record-row').first().click();
   await page.locator('#detailPanel.has-selection').waitFor({ state: 'visible' });
+  await page.locator('#detailContent .detail-state').waitFor({ state: 'visible' });
+  assert.equal(await page.evaluate(() => document.activeElement?.id), 'detailClose');
+  await page.locator('#detailContent').getByText(draws[0].winners[0].screenName, { exact: true }).waitFor();
+  detailDelayMs = 20;
+  const mobileDetail = page.getByRole('dialog', { name: '开奖记录详情' });
+  assert.equal(await mobileDetail.getAttribute('aria-modal'), 'true');
+  assert.equal(await page.locator('.topbar').evaluate((element) => element.hasAttribute('inert')), true);
   assert.equal(await page.locator('body.record-detail-open').count(), 1);
   assert.equal(await page.locator('#detailContent img').count(), 0);
   assert.equal(await page.locator('#detailContent a[href^="javascript:"]').count(), 0);
   assert.equal(await page.evaluate(() => window.__adminXss), undefined);
+  await mobileDetail.locator('button').last().focus();
+  await page.keyboard.press('Tab');
+  const trappedFocus = await page.evaluate(() => ({
+    id: document.activeElement?.id || '',
+    tag: document.activeElement?.tagName || '',
+    text: document.activeElement?.textContent?.trim() || '',
+  }));
+  assert.equal(trappedFocus.id, 'detailClose', JSON.stringify(trappedFocus));
   await page.waitForTimeout(450);
   await page.screenshot({ path: fileURLToPath(new URL('admin-records-mobile-detail.png', outputDir)) });
   await page.getByRole('button', { name: '关闭开奖记录详情' }).click();
   assert.equal(await page.locator('#detailPanel.has-selection').count(), 0);
   await page.waitForTimeout(450);
   assert.equal(await page.evaluate(() => document.activeElement?.dataset.file), draws[0].file);
-  await page.getByRole('button', { name: '反馈', exact: true }).click();
+  failingDetailFile = draws[1].file;
+  await page.locator('.record-row').nth(1).click();
+  await page.getByRole('alert').getByText('记录载入失败', { exact: true }).waitFor();
+  assert.equal(await page.getByRole('button', { name: '重新加载' }).isVisible(), true);
+  failingDetailFile = '';
+  await page.getByRole('button', { name: '重新加载' }).click();
+  await page.locator('#detailContent').getByText('中奖用户 2', { exact: true }).waitFor();
+  await page.getByRole('button', { name: '关闭开奖记录详情' }).click();
+  await page.getByRole('tab', { name: '反馈', exact: true }).click();
   await page.waitForTimeout(320);
   assert.equal(await page.locator('.feedback-row').count(), feedback.length);
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+  const touchTargets = await page.locator('.tab-button, .feedback-toolbar button, .feedback-actions button, #refreshBtn').evaluateAll((items) => (
+    items.filter((item) => !item.hidden && getComputedStyle(item).display !== 'none').map((item) => {
+      const box = item.getBoundingClientRect();
+      return { width: box.width, height: box.height, text: item.textContent?.trim() || item.id };
+    })
+  ));
+  assert.equal(touchTargets.every((item) => item.width >= 43 && item.height >= 43), true, JSON.stringify(touchTargets));
   await page.screenshot({ path: fileURLToPath(new URL('admin-feedback-mobile.png', outputDir)) });
-  await page.getByRole('button', { name: '记录', exact: true }).click();
+  await page.getByRole('tab', { name: '记录', exact: true }).click();
+  await page.waitForTimeout(320);
   await page.screenshot({ path: fileURLToPath(new URL('admin-records-mobile.png', outputDir)) });
   await context.close();
 } finally {

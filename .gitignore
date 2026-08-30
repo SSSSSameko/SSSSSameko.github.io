@@ -2,6 +2,11 @@ node_modules/
 dist/
 .env
 .env.*
+*.key
+*.pem
 profiles/
 output/
+current
+releases/
 .superpowers/
+.playwright-cli/

@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { mergeRepostHead, repostIdentity, uniqueReposts } from './repostCandidates.js';
+import {
+  createEmptyPageGuard,
+  createRepeatedPageGuard,
+  mergeRepostHead,
+  repostIdentity,
+  uniqueReposts,
+} from './repostCandidates.js';
 
 test('repost identity keeps separate reposts from the same account', () => {
   const first = { uid: '1001', repostId: 'repost-a', text: '第一次转发' };
@@ -41,4 +47,26 @@ test('head reconciliation never drops older candidates when the cap is full', ()
   assert.equal(merged.addedCount, 0);
   assert.equal(merged.truncatedCount, 1);
   assert.deepEqual(merged.candidates, existing);
+});
+
+test('repeated page guard stops only after consecutive non-empty duplicate pages', () => {
+  const guard = createRepeatedPageGuard(3);
+  assert.equal(guard.observe(20, 0), false);
+  assert.equal(guard.observe(20, 0), false);
+  assert.equal(guard.observe(20, 2), false);
+  assert.equal(guard.observe(20, 0), false);
+  assert.equal(guard.observe(20, 0), false);
+  assert.equal(guard.observe(20, 0), true);
+  assert.equal(guard.count, 3);
+});
+
+test('empty page guard resets after data resumes', () => {
+  const guard = createEmptyPageGuard(3);
+  assert.equal(guard.observe(0), false);
+  assert.equal(guard.observe(0), false);
+  assert.equal(guard.observe(1), false);
+  assert.equal(guard.observe(0), false);
+  assert.equal(guard.observe(0), false);
+  assert.equal(guard.observe(0), true);
+  assert.equal(guard.count, 3);
 });

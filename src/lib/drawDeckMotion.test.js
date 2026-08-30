@@ -38,10 +38,10 @@ test('startDrawDeckMotion gives three cards an independent shuffle cycle', () =>
   const animations = startDrawDeckMotion(deck);
 
   assert.equal(animations.length, 3);
-  assert.deepEqual(calls.map(({ options }) => options.duration), [1040, 1120, 1200]);
-  assert.deepEqual(calls.map(({ options }) => options.delay), [0, -260, -520]);
+  assert.deepEqual(calls.map(({ options }) => options.duration), [1180, 1240, 1320]);
+  assert.deepEqual(calls.map(({ options }) => options.delay), [0, -320, -640]);
   assert.ok(calls.every(({ options }) => options.iterations === Infinity));
-  assert.deepEqual(calls.map(({ keyframes }) => keyframes.length), [5, 5, 5]);
+  assert.deepEqual(calls.map(({ keyframes }) => keyframes.length), [6, 6, 6]);
   assert.ok(calls.every(({ keyframes }) => keyframes.every((frame) => 'transform' in frame && 'opacity' in frame)));
 });
 
@@ -51,9 +51,18 @@ test('draw deck motion uses a gentler shuffle when reduced motion is requested',
 
   assert.equal(animations.length, 3);
   assert.equal(calls.length, 3);
-  assert.ok(calls.every(({ options }) => options.duration >= 960));
+  assert.ok(calls.every(({ options }) => options.iterations === 1));
+  assert.ok(calls.every(({ options }) => options.duration < 600));
   assert.ok(calls.every(({ keyframes }) => keyframes.length === 3));
-  assert.ok(calls.every(({ keyframes }) => !String(keyframes[1].transform).includes('rotate(4deg)')));
+  assert.ok(calls.every(({ keyframes }) => keyframes.every((frame) => !('transform' in frame))));
+});
+
+test('settleDrawDeckMotion keeps reduced motion opacity-only', () => {
+  const { deck, calls } = fakeDeck();
+  settleDrawDeckMotion(deck, { reducedMotion: true });
+
+  assert.ok(calls.every(({ keyframes }) => keyframes.every((frame) => !('transform' in frame))));
+  assert.ok(calls.every(({ options }) => options.duration === 160));
 });
 
 test('settleDrawDeckMotion returns the cards to a quiet resting state', () => {

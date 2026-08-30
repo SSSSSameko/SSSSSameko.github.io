@@ -1,19 +1,20 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="description" content="微博转发抽奖助手，支持可见转发抓取、手动名单开奖和开奖记录图导出。" />
-  <meta name="theme-color" content="#f7fbff" />
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; script-src-attr 'none'; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: blob: https:; connect-src 'self' https://111.228.11.206 http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; worker-src 'self' blob:; frame-src 'none'; media-src 'none'; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="description" content="微博转发抽奖助手，支持可见转发抓取、手动名单开奖和开奖记录图导出。">
+  <meta name="theme-color" content="#f5f6f8">
   <title>微博转发抽奖助手 by.sameko</title>
-  <link rel="icon" href="./favicon-32.png" sizes="32x32" type="image/png" />
-  <link rel="icon" href="./favicon-192.png" sizes="192x192" type="image/png" />
-  <link rel="apple-touch-icon" href="./apple-touch-icon.png" />
-  <link rel="shortcut icon" href="./avatar.jpg" type="image/jpeg" />
-  <link rel="manifest" href="./site.webmanifest" />
-  <script vite-ignore src="./config.js"></script>
+  <link rel="icon" href="./favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="icon" href="./favicon-192.png" sizes="192x192" type="image/png">
+  <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+  <link rel="manifest" href="./site.webmanifest">
+  <script vite-ignore defer src="./config.js"></script>
 </head>
-<body class="min-h-screen text-[#1d1d1f] antialiased">
+<body>
   <div id="root"></div>
   <script type="module" src="/src/main.jsx"></script>
 </body>

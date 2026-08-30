@@ -10,6 +10,7 @@ const WINNER_ROW_HEIGHT = 94;
 const GROUP_HEADER_HEIGHT = 88;
 const GROUP_BOTTOM_PADDING = 22;
 const GROUP_GAP = 22;
+const POSTER_WINNER_LIMIT = 60;
 const TONES = [
   { fill: '#fff0f4', strong: '#df6f8d', soft: '#f7a7bc' },
   { fill: '#eef5ff', strong: '#577fd8', soft: '#9bbcf7' },
@@ -56,10 +57,16 @@ function posterDate(value) {
 }
 
 export function buildResultPosterModel(payload = {}) {
-  const groups = (Array.isArray(payload.results) ? payload.results : [])
+  const sourceGroups = (Array.isArray(payload.results) ? payload.results : [])
+    .filter((group) => Array.isArray(group?.winners) && group.winners.length);
+  let remaining = POSTER_WINNER_LIMIT;
+  const groups = sourceGroups
     .map((group, groupIndex) => {
       const tone = TONES[groupIndex % TONES.length];
-      const winners = (Array.isArray(group?.winners) ? group.winners : []).map((winner, winnerIndex) => {
+      const groupsLeft = Math.max(1, sourceGroups.length - groupIndex);
+      const visibleCount = Math.min(group.winners.length, Math.max(1, Math.floor(remaining / groupsLeft)));
+      remaining = Math.max(0, remaining - visibleCount);
+      const winners = group.winners.slice(0, visibleCount).map((winner, winnerIndex) => {
         const name = safeText(winner?.screenName || winner?.uid, `获奖用户 ${winnerIndex + 1}`);
         return {
           name,
@@ -75,11 +82,13 @@ export function buildResultPosterModel(payload = {}) {
         color: safeColor(group?.prize?.color, tone.strong),
         tone,
         winners,
+        totalWinnerCount: group.winners.length,
       };
     })
     .filter((group) => group.winners.length);
 
-  const winnerCount = groups.reduce((total, group) => total + group.winners.length, 0);
+  const winnerCount = sourceGroups.reduce((total, group) => total + group.winners.length, 0);
+  const displayedWinnerCount = groups.reduce((total, group) => total + group.winners.length, 0);
   const provider = friendlyProviderText(payload.providerText) || '可见转发';
 
   return {
@@ -89,6 +98,8 @@ export function buildResultPosterModel(payload = {}) {
     drawnAt: posterDate(payload.drawnAt),
     source: safeText(payload.statusUrl || payload.statusId, '手动导入名单'),
     winnerCount,
+    displayedWinnerCount,
+    omittedWinnerCount: Math.max(0, winnerCount - displayedWinnerCount),
     groups,
     fairness: {
       candidateCount: Number(payload.candidateCount || 0),
@@ -108,7 +119,7 @@ export function measureResultPoster(model) {
     (total, group) => total + GROUP_HEADER_HEIGHT + group.winners.length * WINNER_ROW_HEIGHT + GROUP_BOTTOM_PADDING + GROUP_GAP,
     0,
   );
-  const fixedHeight = 64 + 160 + 252 + 128 + 166 + 58 + 364 + 90;
+  const fixedHeight = 64 + 160 + 252 + 128 + 166 + 58 + 364 + 90 + (model.omittedWinnerCount ? 84 : 0);
   return {
     width: POSTER_WIDTH,
     height: Math.max(POSTER_MIN_HEIGHT, fixedHeight + groupsHeight),
@@ -467,7 +478,7 @@ function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
   fillText(ctx, group.name, POSTER_PADDING + 98, y + 25, {
     font: `680 27px ${FONT_STACK}`,
   });
-  fillText(ctx, `${group.winners.length} 名`, POSTER_WIDTH - POSTER_PADDING - 26, y + 34, {
+  fillText(ctx, `${group.totalWinnerCount} 名`, POSTER_WIDTH - POSTER_PADDING - 26, y + 34, {
     color: '#858a96',
     font: `520 18px ${FONT_STACK}`,
     align: 'right',
@@ -496,11 +507,20 @@ function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
   return height;
 }
 
+function drawOmittedWinners(ctx, count, y) {
+  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 62, 22, 'rgba(255,255,255,0.72)');
+  fillText(ctx, `结果图展示前 ${POSTER_WINNER_LIMIT} 位，另有 ${count} 位请在开奖记录中查看`, POSTER_WIDTH / 2, y + 19, {
+    color: '#737884',
+    font: `520 17px ${FONT_STACK}`,
+    align: 'center',
+  });
+}
+
 function drawFairness(ctx, model, y) {
   glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 330, 36, 'rgba(255,255,255,0.8)');
   roundedRect(ctx, POSTER_PADDING + 24, y + 24, 62, 62, 22, '#eafaf6', '#ffffff');
   drawSparkle(ctx, POSTER_PADDING + 55, y + 55, 17, '#289d87');
-  fillText(ctx, '公平记录', POSTER_PADDING + 106, y + 25, {
+  fillText(ctx, '随机过程记录', POSTER_PADDING + 106, y + 25, {
     font: `700 29px ${FONT_STACK}`,
   });
   fillText(ctx, model.drawLabel, POSTER_PADDING + 106, y + 63, {
@@ -546,7 +566,7 @@ function drawFairness(ctx, model, y) {
     font: `500 14px ${FONT_STACK}`,
     align: 'right',
   });
-  fillText(ctx, `审计哈希 ${model.fairness.auditHash}`, POSTER_PADDING + 24, y + 303, {
+  fillText(ctx, `过程哈希 ${model.fairness.auditHash}`, POSTER_PADDING + 24, y + 303, {
     color: '#737884',
     font: `540 14px ${FONT_STACK}`,
   });
@@ -598,6 +618,10 @@ export async function createResultPoster(payload, {
   model.groups.forEach((group, index) => {
     y += drawWinnerGroup(ctx, group, index, y, avatarImages) + GROUP_GAP;
   });
+  if (model.omittedWinnerCount) {
+    drawOmittedWinners(ctx, model.omittedWinnerCount, y);
+    y += 84;
+  }
   drawFairness(ctx, model, y);
   y += 364;
   drawFooter(ctx, model, y);

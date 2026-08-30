@@ -2,15 +2,13 @@ import assert from 'node:assert/strict';
 import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-import { chromium } from 'playwright';
+import { gotoUiPage, launchUiBrowser } from './playwright-browser.mjs';
 
 const baseUrl = process.env.FEEDBACK_UI_URL || 'http://127.0.0.1:5195/';
-const executablePath = process.env.PLAYWRIGHT_CHROME_PATH
-  || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
 const outputDir = new URL('../output/ui-checks/', import.meta.url);
 
 await mkdir(outputDir, { recursive: true });
-const browser = await chromium.launch({ headless: true, executablePath });
+const browser = await launchUiBrowser();
 try {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
@@ -20,7 +18,7 @@ try {
     await route.fulfill({ status: 201, json: { ok: true, id: 'preview-feedback' } });
   });
 
-  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
+  await gotoUiPage(page, baseUrl);
   await page.getByRole('button', { name: '更多', exact: true }).click();
   assert.equal(await page.getByText('版本 3.1.0 · by.sameko', { exact: true }).first().isVisible(), true);
   await page.locator('.app-summary').click();
@@ -37,7 +35,7 @@ try {
   await dialog.waitFor({ state: 'visible' });
   const submit = dialog.getByRole('button', { name: '提交反馈' });
   assert.equal(await submit.isDisabled(), true);
-  await dialog.getByRole('button', { name: /遇到问题/ }).click();
+  await dialog.getByRole('radio', { name: /遇到问题/ }).click();
   await dialog.getByRole('textbox').fill('载入候选时页面没有反应。');
   await page.screenshot({ path: fileURLToPath(new URL('feedback-sheet-mobile.png', outputDir)) });
   await submit.click();

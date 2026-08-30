@@ -2,25 +2,49 @@ import { buildFilterSummary, DRAW_RANDOM_ALGORITHM, safeWeiboUrl } from './appCo
 
 export const DRAW_HISTORY_KEY = 'weibo-draw-history-v2';
 export const DRAW_HISTORY_LIMIT = 50;
+const DRAW_HISTORY_MAX_BYTES = 1_500_000;
 export const DRAW_HISTORY_VERSION = 2;
+const DRAW_HISTORY_BACKUP_KIND = 'sameko-weibo-draw-history';
+const DRAW_HISTORY_BACKUP_VERSION = 1;
 
 function finiteNonNegative(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? Math.max(0, number) : fallback;
 }
 
+function boundedText(value, maxLength) {
+  return String(value || '').slice(0, maxLength);
+}
+
+function isQuotaError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  return error?.name === 'QuotaExceededError'
+    || error?.code === 22
+    || error?.code === 1014
+    || message.includes('quota');
+}
+
+function positiveLimit(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : fallback;
+}
+
+function utf8ByteLength(value) {
+  const text = String(value || '');
+  if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(text).byteLength;
+  if (typeof Buffer !== 'undefined') return Buffer.byteLength(text, 'utf8');
+  return text.length;
+}
+
 function normalizeWinner(winner = {}) {
   return {
-    id: String(winner.id || winner.repostId || winner.uid || winner.screenName || ''),
-    uid: String(winner.uid || ''),
-    screenName: String(winner.screenName || winner.name || ''),
-    avatar: String(winner.avatar || ''),
-    verified: Boolean(winner.verified),
-    followers: finiteNonNegative(winner.followers),
-    text: String(winner.text || ''),
-    createdAt: String(winner.createdAt || ''),
-    repostId: String(winner.repostId || ''),
-    source: String(winner.source || ''),
+    id: boundedText(winner.id || winner.repostId || winner.uid || winner.screenName, 160),
+    uid: boundedText(winner.uid, 96),
+    screenName: boundedText(winner.screenName || winner.name, 240),
+    avatar: boundedText(winner.avatar, 2048),
+    source: boundedText(winner.source, 80),
   };
 }
 
@@ -72,18 +96,28 @@ export function completedDrawStats(records, statusId, targetAuditHash = '') {
     unique.set(hash, record);
   }
 
-  const ordered = [...unique.values()].sort((left, right) => (
-    String(left.drawnAt || left.savedAt || '').localeCompare(
-      String(right.drawnAt || right.savedAt || ''),
-    )
-  ));
+  const ordered = [...unique.values()].sort((left, right) => {
+    const leftNumber = Number(left.drawNumber);
+    const rightNumber = Number(right.drawNumber);
+    if (Number.isSafeInteger(leftNumber) && leftNumber > 0
+      && Number.isSafeInteger(rightNumber) && rightNumber > 0) {
+      return leftNumber - rightNumber;
+    }
+    return String(left.savedAt || left.drawnAt || '').localeCompare(
+      String(right.savedAt || right.drawnAt || ''),
+    );
+  });
   const targetIndex = ordered.findIndex((record) => (
     String(record.auditHash || '') === String(targetAuditHash || '')
   ));
+  const targetNumber = Number(ordered[targetIndex]?.drawNumber);
+  const persistedTargetNumber = Number.isSafeInteger(targetNumber) && targetNumber > 0
+    ? targetNumber
+    : null;
 
   return {
     count: ordered.length,
-    drawNumber: targetIndex >= 0 ? targetIndex + 1 : null,
+    drawNumber: targetIndex >= 0 ? persistedTargetNumber || targetIndex + 1 : null,
     lastDrawnAt: String(ordered.at(-1)?.drawnAt || ordered.at(-1)?.savedAt || ''),
   };
 }
@@ -106,9 +140,10 @@ export function normalizeDrawReceipt(input = {}) {
   const parsedDrawNumber = Number(input.drawNumber);
   const drawNumber = input.drawNumber === null
     || input.drawNumber === undefined
-    || !Number.isFinite(parsedDrawNumber)
+    || !Number.isSafeInteger(parsedDrawNumber)
+    || parsedDrawNumber < 1
     ? null
-    : Math.max(1, Math.floor(parsedDrawNumber));
+    : parsedDrawNumber;
   const drawnAt = String(input.drawnAt || audit.drawnAt || input.time || '');
   const summary = String(input.summary || receiptSummary(results));
   const auditHash = String(input.auditHash || '');
@@ -143,7 +178,11 @@ export function normalizeDrawReceipt(input = {}) {
     seed: String(input.seed || audit.seed || ''),
     candidateDigest: String(input.candidateDigest || audit.candidateDigest || ''),
     auditHash,
-    recordState: input.recordState === 'server' || auditHash ? 'server' : 'local',
+    recordState: input.recordState === 'practice'
+      ? 'practice'
+      : input.recordState === 'server' || auditHash
+        ? 'server'
+        : 'local',
   };
 }
 
@@ -174,14 +213,141 @@ export function readDrawHistory(storage = globalThis.localStorage) {
   }
 }
 
-export function writeDrawHistory(storage = globalThis.localStorage, history = []) {
-  const items = (Array.isArray(history) ? history : [])
+export function writeDrawHistory(storage = globalThis.localStorage, history = [], options = {}) {
+  const normalized = (Array.isArray(history) ? history : [])
     .map(normalizeDrawReceipt)
     .slice(0, DRAW_HISTORY_LIMIT);
-  storage?.setItem(DRAW_HISTORY_KEY, JSON.stringify({
+  const serialize = (items) => JSON.stringify({
     version: DRAW_HISTORY_VERSION,
     items,
-  }));
+  });
+  const maxBytes = positiveLimit(options.maxBytes, DRAW_HISTORY_MAX_BYTES);
+  let items = normalized;
+  let serialized;
+  try {
+    serialized = serialize(items);
+  } catch {
+    return {
+      ok: false,
+      items: [],
+      stored: 0,
+      dropped: normalized.length,
+      bytes: 0,
+      reason: 'serialize',
+      attempts: 0,
+    };
+  }
+
+  while (items.length > 1 && utf8ByteLength(serialized) > maxBytes) {
+    items = items.slice(0, -1);
+    serialized = serialize(items);
+  }
+
+  const tryStore = () => {
+    if (typeof storage?.setItem !== 'function') {
+      return { ok: false, reason: 'unavailable' };
+    }
+    try {
+      storage.setItem(DRAW_HISTORY_KEY, serialized);
+    } catch (error) {
+      return { ok: false, reason: isQuotaError(error) ? 'quota' : 'unavailable' };
+    }
+    if (typeof storage.getItem === 'function') {
+      try {
+        if (storage.getItem(DRAW_HISTORY_KEY) !== serialized) {
+          return { ok: false, reason: 'verify' };
+        }
+      } catch {
+        return { ok: false, reason: 'unavailable' };
+      }
+    }
+    return { ok: true, reason: '' };
+  };
+
+  let attempts = 0;
+  let attempt = tryStore();
+  attempts += 1;
+  while (!attempt.ok && attempt.reason === 'quota' && items.length > 1) {
+    items = items.slice(0, -1);
+    serialized = serialize(items);
+    attempt = tryStore();
+    attempts += 1;
+  }
+
+  return {
+    ok: attempt.ok,
+    items,
+    stored: attempt.ok ? items.length : 0,
+    dropped: normalized.length - items.length,
+    bytes: utf8ByteLength(serialized),
+    reason: attempt.reason,
+    attempts,
+  };
+}
+
+export function serializeDrawHistoryBackup(history, createdAt = new Date().toISOString(), options = {}) {
+  const normalized = (Array.isArray(history) ? history : [])
+    .map(normalizeDrawReceipt)
+    .filter((item) => item.drawnAt && item.results.some((group) => group.winners.length))
+    .slice(0, DRAW_HISTORY_LIMIT);
+  const maxBytes = Math.max(0, Number(options.maxBytes || 0));
+  let items = normalized;
+  let output = '';
+  const serialize = (list) => JSON.stringify({
+    kind: DRAW_HISTORY_BACKUP_KIND,
+    version: DRAW_HISTORY_BACKUP_VERSION,
+    createdAt,
+    truncated: normalized.length > list.length,
+    omittedCount: Math.max(0, normalized.length - list.length),
+    items: list,
+  }, null, 2);
+  do {
+    output = serialize(items);
+    if (!maxBytes || utf8ByteLength(output) <= maxBytes || items.length <= 1) break;
+    items = items.slice(0, -1);
+  } while (items.length);
+  if (maxBytes && utf8ByteLength(output) > maxBytes) {
+    throw new Error('开奖记录备份超过浏览器可处理的大小，请先清理较早记录');
+  }
+  return output;
+}
+
+export function parseDrawHistoryBackup(content) {
+  let parsed;
+  try {
+    parsed = JSON.parse(String(content || ''));
+  } catch {
+    throw new Error('备份文件不是有效的 JSON');
+  }
+  if (
+    !parsed
+    || parsed.kind !== DRAW_HISTORY_BACKUP_KIND
+    || parsed.version !== DRAW_HISTORY_BACKUP_VERSION
+    || !Array.isArray(parsed.items)
+  ) {
+    throw new Error('请选择由本应用导出的开奖记录备份');
+  }
+  const items = parsed.items
+    .map(normalizeDrawReceipt)
+    .filter((item) => item.drawnAt && item.results.some((group) => group.winners.length))
+    .slice(0, DRAW_HISTORY_LIMIT);
+  if (!items.length) throw new Error('备份中没有可恢复的开奖记录');
+  return items;
+}
+
+export function mergeDrawHistory(currentHistory, importedHistory) {
+  const records = new Map();
+  for (const item of [...(currentHistory || []), ...(importedHistory || [])]) {
+    const normalized = normalizeDrawReceipt(item);
+    if (!normalized.drawnAt || !normalized.results.some((group) => group.winners.length)) continue;
+    const existing = records.get(normalized.id);
+    if (!existing || normalized.recordState === 'server' || existing.recordState !== 'server') {
+      records.set(normalized.id, normalized);
+    }
+  }
+  return [...records.values()]
+    .sort((left, right) => String(right.drawnAt).localeCompare(String(left.drawnAt)))
+    .slice(0, DRAW_HISTORY_LIMIT);
 }
 
 export function buildFairnessSummary(receiptInput) {
@@ -205,9 +371,34 @@ export function buildFairnessSummary(receiptInput) {
   }`);
   lines.push(`随机规则：${DRAW_RANDOM_ALGORITHM}`);
   if (receipt.seed) lines.push(`随机种子：${receipt.seed}`);
-  if (receipt.auditHash) lines.push(`审计哈希：${receipt.auditHash}`);
+  if (receipt.auditHash) lines.push(`过程哈希：${receipt.auditHash}`);
   if (receipt.candidateDigest) lines.push(`名单指纹：${receipt.candidateDigest}`);
   return lines.join('\n');
+}
+
+export function receiptWinnerRows(receiptInput) {
+  const receipt = normalizeDrawReceipt(receiptInput);
+  return receipt.results.flatMap((group) => group.winners.map((winner, index) => ({
+    prize: group.prize.name,
+    rank: index + 1,
+    uid: winner.uid,
+    screenName: winner.screenName,
+  })));
+}
+
+export function receiptWinnerText(receiptInput) {
+  const receipt = normalizeDrawReceipt(receiptInput);
+  return receipt.results
+    .filter((group) => group.winners.length)
+    .map((group) => {
+      const names = group.winners.map((winner, index) => {
+        const name = winner.screenName || winner.uid || `中奖用户 ${index + 1}`;
+        const uid = winner.uid && winner.uid !== name ? `（UID ${winner.uid}）` : '';
+        return `${index + 1}. ${name}${uid}`;
+      });
+      return `${group.prize.name}\n${names.join('\n')}`;
+    })
+    .join('\n\n');
 }
 
 export function winnerIdsForStatus(history, statusId) {

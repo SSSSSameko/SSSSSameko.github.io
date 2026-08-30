@@ -16,6 +16,13 @@ test('normalizes a valid feedback submission', () => {
   });
 });
 
+test('accepts privacy and data requests', () => {
+  assert.deepEqual(
+    normalizeFeedbackSubmission({ category: 'privacy', content: '请删除过程哈希 abc123 对应的开奖记录' }),
+    { category: 'privacy', content: '请删除过程哈希 abc123 对应的开奖记录' },
+  );
+});
+
 test('rejects unknown categories', () => {
   assert.throws(
     () => normalizeFeedbackSubmission({ category: 'contact', content: '测试内容' }),

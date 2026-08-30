@@ -9,7 +9,9 @@ export function safeAvatarUrl(value) {
   try {
     const url = new URL(String(value || '').trim());
     if (!['http:', 'https:'].includes(url.protocol) || !allowedAvatarHost(url.hostname)) return '';
+    if (url.port && !((url.protocol === 'http:' && url.port === '80') || (url.protocol === 'https:' && url.port === '443'))) return '';
     url.protocol = 'https:';
+    url.port = '';
     url.username = '';
     url.password = '';
     url.search = '';

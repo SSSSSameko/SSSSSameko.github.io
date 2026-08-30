@@ -1,6 +1,6 @@
-export const SOURCE_LABELS = { mobile: '微博公开转发', manual: '手动名单', official: '官方接口' };
+const SOURCE_LABELS = { mobile: '微博公开转发', manual: '手动名单', official: '官方接口' };
 
-export const PROVIDER_LABELS = {
+const PROVIDER_LABELS = {
   manual: '手动名单',
   cookie: '服务器登录态',
   mobile: '微博公开转发',
@@ -11,6 +11,21 @@ export const PROVIDER_LABELS = {
 };
 
 export const DRAW_RANDOM_ALGORITHM = 'SHA-256 · Fisher–Yates';
+export const MAX_MANUAL_CANDIDATES = 20_000;
+export const MAX_MANUAL_FILE_BYTES = 5 * 1024 * 1024;
+export const MAX_MENTION_MIN = 10;
+
+export function normalizeMentionMin(value, fallback = 0) {
+  const fallbackNumber = Number(fallback);
+  const safeFallback = Number.isFinite(fallbackNumber)
+    ? Math.min(MAX_MENTION_MIN, Math.max(0, Math.floor(fallbackNumber)))
+    : 0;
+  if (typeof value === 'string' && !value.trim()) return safeFallback;
+  if (typeof value !== 'string' && typeof value !== 'number') return safeFallback;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return safeFallback;
+  return Math.min(MAX_MENTION_MIN, Math.max(0, Math.floor(number)));
+}
 
 export function cleanApiBase(value) {
   return String(value || '').trim().replace(/\/+$/, '');
@@ -63,13 +78,27 @@ export function friendlyProviderText(value) {
   return [...new Set(labels)].join(' / ');
 }
 
-export function buildFilterSummary({ keyword, mentionMin, uniqueByUser, excludePrevious }) {
+export function buildFilterSummary({ keyword, mentionMin, uniqueByUser, excludePrevious, blocklistCount }) {
   const parts = [];
+  const normalizedMentionMin = normalizeMentionMin(mentionMin);
   if (keyword) parts.push(`关键词：${keyword}`);
-  if (Number(mentionMin || 0) > 0) parts.push(`至少 @${Number(mentionMin || 0)}`);
+  if (normalizedMentionMin > 0) parts.push(`至少 @${normalizedMentionMin}`);
+  if (Number(blocklistCount || 0) > 0) parts.push(`排除名单 ${Number(blocklistCount)} 人`);
   if (uniqueByUser) parts.push('同一用户只保留一次');
   if (excludePrevious) parts.push('排除当前任务已中奖用户');
   return parts.length ? parts.join(' / ') : '未启用额外筛选';
+}
+
+export function candidateLoadWarning(meta) {
+  if (!meta || meta.complete !== false) return '';
+  const warnings = Array.isArray(meta.warnings)
+    ? [...new Set(meta.warnings.map((item) => String(item || '').trim()).filter(Boolean))]
+    : [];
+  const important = warnings.filter((message) => (
+    /失败|停止|上限|最多|只拿到|差额|重复|风控|不可见/.test(message)
+  ));
+  return important.slice(-2).join('；')
+    || '微博接口只返回了当前登录态可见的部分转发，请核对名单后再开奖。';
 }
 
 export function candidateCutoffInfo(value, now = Date.now()) {
@@ -92,56 +121,89 @@ export function candidateCutoffInfo(value, now = Date.now()) {
   };
 }
 
-export function parseCsvLine(line, delimiter) {
-  const cells = [];
-  let value = '';
-  let quoted = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const char = line[i];
-    const next = line[i + 1];
-    if (char === '"' && quoted && next === '"') { value += '"'; i += 1; }
-    else if (char === '"') quoted = !quoted;
-    else if (char === delimiter && !quoted) { cells.push(value.trim()); value = ''; }
-    else value += char;
-  }
-  cells.push(value.trim());
-  return cells;
-}
-
-export function normalizeManualItem(raw, index) {
+function normalizeManualItem(raw, index) {
   if (typeof raw === 'string' || typeof raw === 'number') {
     const screenName = String(raw).trim();
     const stable = screenName || String(index);
     return { id: stable, uid: '', screenName: screenName || `候选人 ${index + 1}`, avatar: '', verified: false, followers: 0, text: '', createdAt: '', repostId: '', source: 'manual' };
   }
-  const values = Array.isArray(raw) ? raw : Object.values(raw || {});
-  const singleCell = Array.isArray(raw) && values.length === 1;
-  const uid = String(raw.uid || raw.UID || raw.userId || raw.user_id || (singleCell ? '' : values[0]) || '').trim();
-  const screenName = String(raw.screenName || raw.name || raw.nickname || raw['昵称'] || (singleCell ? values[0] : values[1]) || `候选人 ${index + 1}`).trim();
-  const text = String(raw.text || raw.content || raw['转发内容'] || values[2] || '').trim();
-  const createdAt = String(raw.createdAt || raw.time || raw['时间'] || values[3] || '').trim();
+  const record = raw && typeof raw === 'object' ? raw : {};
+  const values = Array.isArray(record) ? record : [];
+  const singleCell = values.length === 1;
+  const uid = String(record.uid || record.UID || record.userId || record.user_id || (singleCell ? '' : values[0]) || '').trim();
+  const screenName = String(record.screenName || record.name || record.nickname || record['昵称'] || (singleCell ? values[0] : values[1]) || '').trim();
+  if (!uid && !screenName) {
+    throw new Error(`名单第 ${index + 1} 项缺少 uid 或昵称`);
+  }
+  const text = String(record.text || record.content || record['转发内容'] || values[2] || '').trim();
+  const createdAt = String(record.createdAt || record.time || record['时间'] || values[3] || '').trim();
   const stable = [uid, screenName, text, createdAt].filter(Boolean).join('|') || String(index);
-  return { id: stable, uid, screenName, avatar: '', verified: false, followers: 0, text, createdAt, repostId: '', source: 'manual' };
+  return { id: stable, uid, screenName: screenName || `候选人 ${index + 1}`, avatar: '', verified: false, followers: 0, text, createdAt, repostId: '', source: 'manual' };
+}
+
+function parseDelimitedText(text, delimiter) {
+  const rows = [];
+  let row = [];
+  let value = '';
+  let quoted = false;
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (char === '"' && quoted && next === '"') {
+      value += '"';
+      index += 1;
+    } else if (char === '"') {
+      quoted = !quoted;
+    } else if (char === delimiter && !quoted) {
+      row.push(value.trim());
+      value = '';
+    } else if ((char === '\n' || char === '\r') && !quoted) {
+      if (char === '\r' && next === '\n') index += 1;
+      row.push(value.trim());
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
+      value = '';
+    } else {
+      value += char;
+    }
+  }
+
+  row.push(value.trim());
+  if (row.some(Boolean)) rows.push(row);
+  return rows;
 }
 
 export function parseManualInput(text) {
-  const trimmed = String(text || '').trim();
+  const raw = String(text || '');
+  if (new TextEncoder().encode(raw).byteLength > MAX_MANUAL_FILE_BYTES) {
+    throw new Error('手动名单内容不能超过 5 MB');
+  }
+  const trimmed = raw.trim();
   if (!trimmed) return [];
   if (trimmed.startsWith('[')) {
-    const parsed = JSON.parse(trimmed);
+    let parsed;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new Error('名单 JSON 格式不正确，请检查文件内容');
+    }
     if (!Array.isArray(parsed)) throw new Error('JSON 顶层需要是数组');
-    return parsed.map(normalizeManualItem);
+    const items = parsed.filter((item) => item !== null && item !== undefined);
+    if (items.length > MAX_MANUAL_CANDIDATES) throw new Error('手动名单最多支持 20,000 人');
+    return items.map(normalizeManualItem);
   }
-  const lines = trimmed.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  if (!lines.length) return [];
-  const delimiter = lines[0].includes('\t') ? '\t' : lines[0].includes(';') ? ';' : ',';
-  const first = parseCsvLine(lines[0], delimiter);
+  const firstLine = trimmed.split(/\r?\n/, 1)[0];
+  const delimiter = firstLine.includes('\t') ? '\t' : firstLine.includes(';') ? ';' : ',';
+  const rows = parseDelimitedText(trimmed, delimiter);
+  if (!rows.length) return [];
+  const first = rows[0];
   const headerKeys = ['uid', 'UID', '昵称', 'screenName', 'name', 'text', '转发内容', 'time', '时间'];
   const hasHeader = first.some((cell) => headerKeys.includes(cell));
   const headers = hasHeader ? first : [];
-  const dataLines = hasHeader ? lines.slice(1) : lines;
-  return dataLines.map((line, index) => {
-    const cells = parseCsvLine(line, delimiter);
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  if (dataRows.length > MAX_MANUAL_CANDIDATES) throw new Error('手动名单最多支持 20,000 人');
+  return dataRows.map((cells, index) => {
     if (!headers.length) return normalizeManualItem(cells, index);
     const row = {};
     headers.forEach((key, cellIndex) => { row[key] = cells[cellIndex] || ''; });
@@ -198,8 +260,7 @@ export function randomSeedHex() {
   return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function toCsv(rows) {
-  const headers = ['tier', 'uid', 'screenName', 'text', 'createdAt', 'source'];
+export function toCsv(rows, headers = ['tier', 'uid', 'screenName', 'text', 'createdAt', 'source']) {
   const escape = (value) => {
     const raw = String(value ?? '');
     const safe = /^[=+\-@\t\r\n]/.test(raw.trimStart()) ? `'${raw}` : raw;

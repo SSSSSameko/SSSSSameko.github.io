@@ -12,6 +12,7 @@ test('safeAvatarUrl accepts Weibo image hosts and upgrades http', () => {
 test('safeAvatarUrl rejects untrusted schemes and hosts', () => {
   assert.equal(safeAvatarUrl('javascript:alert(1)'), '');
   assert.equal(safeAvatarUrl('https://example.com/avatar.jpg'), '');
+  assert.equal(safeAvatarUrl('https://tvax3.sinaimg.cn:8443/avatar.jpg'), '');
 });
 
 test('safeAvatarUrl removes volatile query parameters and fragments', () => {

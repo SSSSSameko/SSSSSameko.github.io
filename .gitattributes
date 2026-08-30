@@ -1,0 +1,22 @@
+* text=auto
+.gitattributes text eol=lf
+.gitignore text eol=lf
+Caddyfile text eol=lf
+LICENSE text eol=lf
+*.css text eol=lf
+*.html text eol=lf
+*.js text eol=lf
+*.jsx text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.mjs text eol=lf
+*.service text eol=lf
+*.sh text eol=lf
+*.txt text eol=lf
+*.webmanifest text eol=lf
+*.yml text eol=lf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+*.jpg binary
+*.png binary
+*.webp binary

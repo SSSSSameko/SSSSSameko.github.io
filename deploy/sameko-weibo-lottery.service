@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=www-data
 Group=www-data
-WorkingDirectory=/opt/sameko-weibo-lottery
+WorkingDirectory=/opt/sameko-weibo-lottery/current
 Environment=NODE_ENV=production
 Environment=NODE_OPTIONS=--max-old-space-size=320
 Environment=MALLOC_ARENA_MAX=2
@@ -17,18 +17,33 @@ Environment=DISABLE_COOKIE_STORE=0
 Environment=MAX_STORED_COOKIES=30
 Environment=MAX_COOKIE_BYTES=16384
 Environment=MAX_REPOST_JOB_BODY_BYTES=65536
+Environment=REJECTED_BODY_DRAIN_MS=1000
 Environment=MAX_WEIBO_RESPONSE_BYTES=4194304
 Environment=MAX_CANDIDATES=20000
+Environment=MAX_CANDIDATE_PAYLOAD_BYTES=16777216
+Environment=AVATAR_FETCH_CONCURRENCY=8
+Environment=AVATAR_FETCH_QUEUE_MAX=128
+Environment=COOKIE_AUTH_QUARANTINE_MS=2700000
 Environment=DESKTOP_MAX_PAGES=1000
 Environment=MAX_DRAW_SAVE_BODY_BYTES=2097152
 Environment=MAX_DRAW_RESULT_GROUPS=20
 Environment=MAX_DRAW_WINNERS=500
 Environment=MAX_FEEDBACK_BODY_BYTES=16384
 Environment=MAX_FEEDBACK_ENTRIES=500
+Environment=MAX_CORRUPT_JSON_BACKUPS=6
 Environment=FEEDBACK_RATE_LIMIT_MAX=4
+Environment=FEEDBACK_SOURCE_DAILY_MAX=12
+Environment=FEEDBACK_GLOBAL_HOURLY_MAX=120
 Environment=FEEDBACK_DUPLICATE_WINDOW_MS=600000
 Environment=MAX_ACTIVE_JOBS=1
 Environment=MAX_QUEUED_JOBS=24
+Environment=MAX_CLIENT_REPOST_JOBS=2
+Environment=MAX_RETAINED_JOBS=4
+Environment=MAX_RETAINED_JOB_RESPONSE_BYTES=33554432
+Environment=MAX_JOB_SUBSCRIBERS=32
+Environment=JOB_QUEUE_TIMEOUT_MS=300000
+Environment=JOB_RUN_TIMEOUT_MS=5100000
+Environment=COMPLETED_JOB_RELEASE_MS=60000
 Environment=FETCH_TIMEOUT_MS=20000
 Environment=RATE_LIMIT_WINDOW_MS=60000
 Environment=RATE_LIMIT_MAX=80
@@ -36,8 +51,17 @@ Environment=RATE_LIMIT_MAX_BUCKETS=5000
 Environment=JOB_CREATE_RATE_LIMIT_MAX=8
 Environment=JOB_POLL_RATE_LIMIT_MAX=240
 Environment=DRAW_SAVE_RATE_LIMIT_MAX=12
+Environment=MAX_QUEUED_DRAW_WRITES=12
+Environment=DRAW_BODY_READ_CONCURRENCY=4
+Environment=MAX_QUEUED_DRAW_BODY_READS=8
+Environment=MAX_QUEUED_FEEDBACK_WRITES=8
+Environment=MAX_DRAW_ATTEMPTS=500
+Environment=MAX_DRAW_SEQUENCES=5000
 Environment=MAX_SAVED_DRAWS=1000
 Environment=MAX_SAVED_DRAW_BYTES=104857600
+Environment=DRAW_FILE_SCAN_MAX_ENTRIES=5000
+Environment=DRAW_CLEANUP_BATCH_SIZE=256
+Environment=FILE_CLEANUP_CONCURRENCY=8
 Environment=PAGE_DELAY_JITTER_MS=1500
 Environment=OFFICIAL_PAGE_DELAY_MS=1600
 Environment=DESKTOP_PAGE_DELAY_MS=2300
@@ -54,15 +78,24 @@ Environment=MAX_REPOST_SNAPSHOTS=2
 Environment=WEIBO_KEEPALIVE_ENABLED=1
 Environment=WEIBO_KEEPALIVE_INTERVAL_MS=43200000
 Environment=WEIBO_BROWSER_LAUNCH_TIMEOUT_MS=60000
+Environment=WEIBO_BROWSER_DISK_CACHE_BYTES=33554432
+Environment=WEIBO_BROWSER_MEDIA_CACHE_BYTES=8388608
 Environment=SERVICE_RECYCLE_INTERVAL_MS=86400000
 Environment=SERVICE_MEMORY_HIGH_MB=700
 Environment=SERVICE_MEMORY_MAX_MB=850
-Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/sameko-weibo-lottery/ms-playwright
+Environment=ADMIN_SCRYPT_CONCURRENCY=2
+Environment=RUNTIME_CACHE_MAX_FILES=5000
+Environment=RUNTIME_CACHE_MAX_BYTES=67108864
+Environment=RUNTIME_CACHE_MAX_AGE_DAYS=30
+Environment=RUNTIME_CACHE_SCAN_MAX_ENTRIES=20000
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/sameko-weibo-lottery/current/ms-playwright
 Environment=HOME=/opt/sameko-weibo-lottery/output/runtime-home
 Environment=XDG_CACHE_HOME=/opt/sameko-weibo-lottery/output/runtime-cache
 Environment=CORS_ORIGINS=https://sssssameko.github.io
-EnvironmentFile=-/etc/sameko-weibo-lottery.env
-ExecStart=/usr/bin/node /opt/sameko-weibo-lottery/server.mjs
+EnvironmentFile=/etc/sameko-weibo-lottery.env
+ExecStartPre=/usr/bin/test -d /opt/sameko-weibo-lottery/current/ms-playwright
+ExecStartPre=/usr/bin/test -w /opt/sameko-weibo-lottery/output
+ExecStart=/usr/bin/node /opt/sameko-weibo-lottery/current/server.mjs
 Restart=always
 RestartSec=5
 RuntimeMaxSec=1d
@@ -71,7 +104,7 @@ KillMode=control-group
 NoNewPrivileges=true
 UMask=0077
 PrivateTmp=true
-ProtectSystem=full
+ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true

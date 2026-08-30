@@ -63,3 +63,21 @@ test('measureResultPoster grows with the number of winners without excess empty 
   assert.ok(longLayout.height > shortLayout.height);
   assert.ok(longLayout.height - shortLayout.height < 1400);
 });
+
+test('result poster caps rendered rows while preserving the actual winner total', () => {
+  const model = buildResultPosterModel({
+    ...sample,
+    results: [{
+      ...sample.results[0],
+      winners: Array.from({ length: 100 }, (_, index) => ({
+        uid: String(index),
+        screenName: `中奖用户${index + 1}`,
+      })),
+    }],
+  });
+
+  assert.equal(model.winnerCount, 100);
+  assert.equal(model.displayedWinnerCount, 60);
+  assert.equal(model.omittedWinnerCount, 40);
+  assert.equal(model.groups[0].totalWinnerCount, 100);
+});

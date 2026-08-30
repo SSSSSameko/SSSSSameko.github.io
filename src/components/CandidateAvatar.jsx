@@ -1,12 +1,19 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { avatarFallback, avatarProxyUrl, safeAvatarUrl } from '../lib/avatar.js';
 
-export default function CandidateAvatar({ candidate, className = '', apiBase = '' }) {
+export default function CandidateAvatar({
+  candidate,
+  className = '',
+  apiBase = '',
+  decorative = false,
+  priority = false,
+  loadImage = true,
+}) {
   const name = candidate?.screenName || candidate?.uid || '候选用户';
   const avatar = safeAvatarUrl(candidate?.avatar);
   const proxyAvatar = avatarProxyUrl(avatar, apiBase);
-  const primarySource = proxyAvatar || avatar;
+  const primarySource = loadImage ? proxyAvatar || avatar : '';
   const [source, setSource] = useState(primarySource);
 
   useEffect(() => setSource(primarySource), [primarySource]);
@@ -24,16 +31,23 @@ export default function CandidateAvatar({ candidate, className = '', apiBase = '
       {source ? (
         <img
           src={source}
-          alt={`${name}的头像`}
+          alt={decorative ? '' : `${name}的头像`}
           width="96"
           height="96"
-          loading="lazy"
+          loading={priority ? 'eager' : 'lazy'}
+          fetchPriority={priority ? 'high' : 'auto'}
           decoding="async"
           referrerPolicy="no-referrer"
           onError={handleError}
         />
       ) : (
-        <span aria-hidden="true">{avatarFallback(name)}</span>
+        <span
+          role={decorative ? undefined : 'img'}
+          aria-hidden={decorative ? 'true' : undefined}
+          aria-label={decorative ? undefined : `${name}的头像`}
+        >
+          {avatarFallback(name)}
+        </span>
       )}
     </span>
   );

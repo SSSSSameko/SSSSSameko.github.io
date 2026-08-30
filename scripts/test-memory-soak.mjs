@@ -1,15 +1,34 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import net from 'node:net';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 
-const port = Number(process.env.MEMORY_TEST_PORT || 5198);
+import { serverTestEnv } from './server-test-env.mjs';
+
+async function availablePort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const selected = server.address().port;
+      server.close((error) => error ? reject(error) : resolve(selected));
+    });
+  });
+}
+
+const port = process.env.MEMORY_TEST_PORT
+  ? Number(process.env.MEMORY_TEST_PORT)
+  : await availablePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const adminKey = 'local-memory-test-key';
 const output = [];
+const runtimeDir = await mkdtemp(path.join(tmpdir(), 'sameko-memory-test-'));
 
 const server = spawn(process.execPath, ['server.mjs'], {
   cwd: new URL('..', import.meta.url),
-  env: {
-    ...process.env,
+  env: serverTestEnv(runtimeDir, {
     PORT: String(port),
     HOST: '127.0.0.1',
     ADMIN_KEY: adminKey,
@@ -18,7 +37,7 @@ const server = spawn(process.execPath, ['server.mjs'], {
     RATE_LIMIT_WINDOW_MS: '600000',
     RATE_LIMIT_MAX_BUCKETS: '120',
     NODE_ENV: 'test',
-  },
+  }),
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 
@@ -61,6 +80,7 @@ async function requestBatch(round, count = 1000) {
 
 try {
   await waitForServer();
+  await summary();
   await requestBatch(0, 500);
   const baseline = await summary();
   const samples = [];
@@ -73,6 +93,7 @@ try {
 
   const final = samples.at(-1);
   assert.ok(samples.every((sample) => sample.runtime.rateLimitBuckets <= 120));
+  assert.ok(final.runtime.rateLimitEvictions > 0);
   assert.equal(final.browser.processCount, 0);
   assert.ok(final.memory.heapUsedMb <= baseline.memory.heapUsedMb + 48);
   assert.ok(final.memory.rssMb <= baseline.memory.rssMb + 96);
@@ -83,6 +104,7 @@ try {
     baselineHeapMb: baseline.memory.heapUsedMb,
     finalHeapMb: final.memory.heapUsedMb,
     rateLimitBuckets: final.runtime.rateLimitBuckets,
+    rateLimitEvictions: final.runtime.rateLimitEvictions,
     chromiumProcesses: final.browser.processCount,
   }));
 } finally {
@@ -91,6 +113,7 @@ try {
     new Promise((resolve) => server.once('exit', resolve)),
     new Promise((resolve) => setTimeout(resolve, 5000)),
   ]);
+  await rm(runtimeDir, { force: true, recursive: true });
 }
 
 console.log('MEMORY_SOAK_OK');

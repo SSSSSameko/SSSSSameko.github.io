@@ -6,29 +6,32 @@ const DECK_POSES = [
 
 const SHUFFLE_EASING = 'cubic-bezier(0.77, 0, 0.175, 1)';
 const SETTLE_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
-const SHUFFLE_DURATION = [1040, 1120, 1200];
-const SHUFFLE_DELAY = [0, -260, -520];
+const SHUFFLE_DURATION = [1180, 1240, 1320];
+const SHUFFLE_DELAY = [0, -320, -640];
 
 const SHUFFLE_PATHS = [
   [
     { transform: DECK_POSES[0], opacity: 0.92 },
-    { offset: 0.24, transform: 'translate3d(-48px, -1px, -8px) rotate(-9deg) scale(0.99)', opacity: 0.98 },
-    { offset: 0.58, transform: 'translate3d(22px, 9px, -31px) rotate(2.4deg) scale(0.974)', opacity: 0.8 },
-    { offset: 0.82, transform: 'translate3d(-18px, 7px, -22px) rotate(-6deg) scale(0.986)', opacity: 0.9 },
+    { offset: 0.18, transform: 'translate3d(-44px, -4px, 8px) rotate(-9.4deg) scale(1.008)', opacity: 1 },
+    { offset: 0.38, transform: 'translate3d(13px, 9px, -36px) rotate(2.2deg) scale(0.968)', opacity: 0.76 },
+    { offset: 0.58, transform: 'translate3d(36px, -2px, -4px) rotate(6.5deg) scale(0.995)', opacity: 0.95 },
+    { offset: 0.8, transform: 'translate3d(-17px, 7px, -22px) rotate(-5.8deg) scale(0.986)', opacity: 0.9 },
     { transform: DECK_POSES[0], opacity: 0.92 },
   ],
   [
     { transform: DECK_POSES[1], opacity: 0.96 },
-    { offset: 0.27, transform: 'translate3d(48px, -2px, 3px) rotate(8deg) scale(1.008)', opacity: 1 },
-    { offset: 0.61, transform: 'translate3d(-21px, 10px, -22px) rotate(-2.5deg) scale(0.978)', opacity: 0.84 },
-    { offset: 0.84, transform: 'translate3d(18px, 5px, -10px) rotate(5deg) scale(0.992)', opacity: 0.94 },
+    { offset: 0.2, transform: 'translate3d(46px, -3px, 10px) rotate(8.5deg) scale(1.01)', opacity: 1 },
+    { offset: 0.4, transform: 'translate3d(-15px, 10px, -34px) rotate(-2.1deg) scale(0.972)', opacity: 0.79 },
+    { offset: 0.61, transform: 'translate3d(-37px, -1px, -2px) rotate(-6.2deg) scale(0.998)', opacity: 0.96 },
+    { offset: 0.82, transform: 'translate3d(18px, 5px, -10px) rotate(4.8deg) scale(0.992)', opacity: 0.94 },
     { transform: DECK_POSES[1], opacity: 0.96 },
   ],
   [
     { transform: DECK_POSES[2], opacity: 1 },
-    { offset: 0.22, transform: 'translate3d(-15px, -5px, 9px) rotate(-1.8deg) scale(0.992)', opacity: 0.97 },
-    { offset: 0.5, transform: 'translate3d(17px, 2px, 11px) rotate(1.8deg) scale(1.012)', opacity: 1 },
-    { offset: 0.76, transform: 'translate3d(-9px, -3px, 7px) rotate(-0.9deg) scale(0.997)', opacity: 0.99 },
+    { offset: 0.18, transform: 'translate3d(-11px, -5px, 16px) rotate(-1.2deg) scale(0.996)', opacity: 0.98 },
+    { offset: 0.39, transform: 'translate3d(13px, 2px, 22px) rotate(1.6deg) scale(1.012)', opacity: 1 },
+    { offset: 0.6, transform: 'translate3d(-8px, -4px, 14px) rotate(-0.9deg) scale(0.999)', opacity: 0.99 },
+    { offset: 0.8, transform: 'translate3d(7px, 1px, 9px) rotate(0.7deg) scale(1.005)', opacity: 1 },
     { transform: DECK_POSES[2], opacity: 1 },
   ],
 ];
@@ -45,19 +48,14 @@ function supportsAnimation(card) {
 export function startDrawDeckMotion(deck, { reducedMotion = false } = {}) {
   if (reducedMotion) {
     return deckCards(deck).filter(supportsAnimation).map((card, index) => {
-      const base = DECK_POSES[index];
-      const direction = index % 2 ? 1 : -1;
       return card.animate([
-        { transform: base, opacity: 0.96 },
-        {
-          transform: `translate3d(${direction * (8 + index * 2)}px, ${index === 2 ? -2 : 3}px, ${index === 2 ? 3 : -4}px) rotate(${direction * 0.8}deg)`,
-          opacity: 0.9,
-        },
-        { transform: base, opacity: 0.96 },
+        { opacity: 0.96 },
+        { opacity: 0.86 },
+        { opacity: 1 },
       ], {
-        duration: 960 + index * 120,
-        delay: index ? -index * 90 : 0,
-        iterations: Infinity,
+        duration: 280 + index * 30,
+        delay: index * 35,
+        iterations: 1,
         easing: SHUFFLE_EASING,
       });
     });
@@ -69,6 +67,7 @@ export function startDrawDeckMotion(deck, { reducedMotion = false } = {}) {
       delay: SHUFFLE_DELAY[index],
       iterations: Infinity,
       easing: SHUFFLE_EASING,
+      fill: 'both',
     });
   });
 }
@@ -81,13 +80,19 @@ export function settleDrawDeckMotion(
   } = {},
 ) {
   return deckCards(deck).filter(supportsAnimation).map((card, index) => {
+    if (reducedMotion) {
+      return card.animate([{ opacity: 0.96 }, { opacity: 1 }], {
+        duration: 160,
+        easing: SETTLE_EASING,
+      });
+    }
     const base = DECK_POSES[index];
     const current = readTransform(card, index);
     return card.animate([
       { transform: current && current !== 'none' ? current : base },
       { transform: base },
     ], {
-      duration: reducedMotion ? 180 : 360 + index * 35,
+      duration: 360 + index * 35,
       easing: SETTLE_EASING,
     });
   });
