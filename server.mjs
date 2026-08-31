@@ -7047,23 +7047,30 @@ async function shutdown(signal) {
     }
   }
 
+  let httpDrainTimer = null;
   const httpClosed = new Promise((resolve) => {
     if (!server.listening) return resolve();
     server.close(() => resolve());
     server.closeIdleConnections?.();
+    httpDrainTimer = setTimeout(() => server.closeAllConnections?.(), 2000);
+    httpDrainTimer.unref?.();
   });
   const keepaliveContext = weiboKeepaliveContext;
-  await Promise.all([
-    httpClosed,
-    Promise.allSettled(jobOperations),
-    closeWeiboLoginSession('服务器正在重启，扫码窗口已关闭。').catch(() => {}),
-    closePersistentBrowserContext(
-      keepaliveContext,
-      weiboLoginProfileDir,
-    ).catch(() => {}),
-    browserOperation?.catch(() => {}),
-    browserCleanupOperation?.catch(() => {}),
-  ]);
+  try {
+    await Promise.all([
+      httpClosed,
+      Promise.allSettled(jobOperations),
+      closeWeiboLoginSession('服务器正在重启，扫码窗口已关闭。').catch(() => {}),
+      closePersistentBrowserContext(
+        keepaliveContext,
+        weiboLoginProfileDir,
+      ).catch(() => {}),
+      browserOperation?.catch(() => {}),
+      browserCleanupOperation?.catch(() => {}),
+    ]);
+  } finally {
+    clearTimeout(httpDrainTimer);
+  }
   weiboKeepaliveContext = null;
   clearTimeout(forceExit);
 }
