@@ -364,7 +364,11 @@ try {
   const qrStartBody = await qrStart.json();
   assert.equal(qrStartBody.active, false);
   assert.match(qrStartBody.message, /扫码窗口已关闭/);
-  await access(browserContextClosedFile);
+  await waitUntil(
+    () => access(browserContextClosedFile).then(() => true).catch(() => false),
+    5000,
+    '迟到的浏览器 context 没有在取消后关闭',
+  );
   await waitUntil(
     () => access(browserProfileOwnerFile).then(() => false).catch((error) => error.code === 'ENOENT'),
     5000,
