@@ -43,7 +43,19 @@ jobs:
       - name: Test draw retention recovery
         run: node scripts/test-draw-retention-recovery.mjs
       - name: Test service lifecycle
-        run: node scripts/test-server-lifecycle.mjs
+        shell: bash
+        run: |
+          set +e
+          node scripts/test-server-lifecycle.mjs 2>&1 | tee /tmp/service-lifecycle.log
+          status=${PIPESTATUS[0]}
+          if (( status != 0 )); then
+            message="$(tail -n 40 /tmp/service-lifecycle.log)"
+            message="${message//'%'/'%25'}"
+            message="${message//$'\r'/'%0D'}"
+            message="${message//$'\n'/'%0A'}"
+            echo "::error title=Service lifecycle regression::${message}"
+          fi
+          exit "${status}"
       - name: Test Weibo provider fallback
         run: node scripts/test-weibo-provider-fallback.mjs
       - name: Test browser lifecycle
