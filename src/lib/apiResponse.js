@@ -74,7 +74,6 @@ export async function readResponseTextWithin(response, options = {}) {
     stop(error);
     cancelBody(response, reader, error);
   }, timeoutMs);
-  timer.unref?.();
   if (signal) {
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
