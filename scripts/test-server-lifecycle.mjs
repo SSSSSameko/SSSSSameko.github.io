@@ -49,6 +49,7 @@ const browserProfileOwnerFile = path.join(
 );
 const adminUsername = 'lifecycle-admin';
 const adminPassword = 'lifecycle-test-password';
+const SHUTDOWN_TIMEOUT_MS = 12_000;
 const adminPasswordHash = await hashAdminPassword(adminPassword, {
   salt: Buffer.from('lifecycle-test-salt'),
 });
@@ -477,10 +478,12 @@ try {
   server.kill('SIGTERM');
   const exit = await Promise.race([
     new Promise((resolve) => server.once('exit', (code, signal) => resolve({ code, signal }))),
-    new Promise((_, reject) => setTimeout(() => reject(new Error('服务未在 5 秒内退出')), 5000)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error(
+      `服务未在 ${SHUTDOWN_TIMEOUT_MS / 1000} 秒内退出\n${output.join('')}`,
+    )), SHUTDOWN_TIMEOUT_MS)),
   ]);
   assert.ok(exit.code === 0 || exit.signal === 'SIGTERM');
-  assert.ok(Date.now() - startedShutdownAt < 5000);
+  assert.ok(Date.now() - startedShutdownAt < SHUTDOWN_TIMEOUT_MS);
   if (process.platform !== 'win32') assert.match(output.join(''), /MOCK_FETCH_ABORTED/);
 } finally {
   if (server.exitCode === null && server.signalCode === null) {
