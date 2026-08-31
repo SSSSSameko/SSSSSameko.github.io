@@ -1,6 +1,6 @@
 {
   "name": "sameko-weibo-lottery",
-  "version": "3.1.0",
+  "version": "3.2.0",
   "private": true,
   "type": "module",
   "description": "微博转发抽奖助手，支持候选抓取、筛选、滚动开奖和开奖记录导出。",
