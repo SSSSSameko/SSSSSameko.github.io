@@ -323,7 +323,7 @@ validate_env_file() {
   local reserved_value
   local -a origins=()
 
-  for reserved_key in NODE_ENV NODE_OPTIONS MALLOC_ARENA_MAX HOST PLAYWRIGHT_BROWSERS_PATH HOME XDG_CACHE_HOME; do
+  for reserved_key in NODE_ENV NODE_OPTIONS MALLOC_ARENA_MAX HOST OUTPUT_DIR DRAWS_DIR DRAW_ATTEMPTS_FILE FEEDBACK_FILE PLAYWRIGHT_BROWSERS_PATH HOME XDG_CACHE_HOME; do
     if read_env_value "${reserved_key}" reserved_value; then
       : "${reserved_value}"
       validation_error "${reserved_key} is managed by the systemd service and must not be set here."

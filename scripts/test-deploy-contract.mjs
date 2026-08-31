@@ -39,10 +39,22 @@ assert.doesNotMatch(installer, /chmod -R a\+rX/);
 assert.match(installer, /sensitiveTextName/);
 assert.match(installer, /sensitiveTextExtension/);
 assert.match(installer, /\(sensitiveTextExtension\.test\(name\) && sensitiveTextName\.test\(name\)\)/);
-for (const reserved of ['NODE_ENV', 'NODE_OPTIONS', 'HOST', 'PLAYWRIGHT_BROWSERS_PATH', 'HOME', 'XDG_CACHE_HOME']) {
+for (const reserved of [
+  'NODE_ENV',
+  'NODE_OPTIONS',
+  'HOST',
+  'OUTPUT_DIR',
+  'DRAWS_DIR',
+  'DRAW_ATTEMPTS_FILE',
+  'FEEDBACK_FILE',
+  'PLAYWRIGHT_BROWSERS_PATH',
+  'HOME',
+  'XDG_CACHE_HOME',
+]) {
   assert.match(installer, new RegExp(`\\b${reserved}\\b`));
 }
 assert.match(service, /^Environment=WEIBO_BROWSER_SANDBOX=1$/m);
+assert.match(service, /^Environment=OUTPUT_DIR=\/opt\/sameko-weibo-lottery\/output$/m);
 assert.match(installer, /backup_cleanup_failed=0/);
 assert.match(installer, /Preserving service backup:/);
 const rollbackIncomplete = installer.indexOf('Rollback was incomplete. Preserving diagnostics:');
@@ -61,6 +73,7 @@ const rendered = service
 
 assert.match(rendered, new RegExp(`WorkingDirectory=${appDir}/current`));
 assert.match(rendered, new RegExp(`ExecStart=${nodePath} ${appDir}/current/server\\.mjs`));
+assert.match(rendered, new RegExp(`Environment=OUTPUT_DIR=${appDir}/output`));
 assert.match(rendered, /^Environment=PORT=4317$/m);
 assert.doesNotMatch(rendered, /-v2-v2/);
 

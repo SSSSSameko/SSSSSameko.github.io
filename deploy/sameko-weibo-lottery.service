@@ -13,6 +13,7 @@ Environment=NODE_OPTIONS=--max-old-space-size=320
 Environment=MALLOC_ARENA_MAX=2
 Environment=HOST=127.0.0.1
 Environment=PORT=4173
+Environment=OUTPUT_DIR=/opt/sameko-weibo-lottery/output
 Environment=DISABLE_COOKIE_STORE=0
 Environment=MAX_STORED_COOKIES=30
 Environment=MAX_COOKIE_BYTES=16384
