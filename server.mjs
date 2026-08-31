@@ -7092,12 +7092,18 @@ async function shutdown(signal) {
   clearTimeout(forceExit);
 }
 
-process.once('SIGTERM', () => shutdown('SIGTERM').catch((error) => {
-  console.error(`Shutdown failed: ${safeError(error).message}`);
-}));
-process.once('SIGINT', () => shutdown('SIGINT').catch((error) => {
-  console.error(`Shutdown failed: ${safeError(error).message}`);
-}));
+async function exitAfterShutdown(signal) {
+  try {
+    await shutdown(signal);
+    process.exit(0);
+  } catch (error) {
+    console.error(`Shutdown failed: ${safeError(error).message}`);
+    process.exit(1);
+  }
+}
+
+process.once('SIGTERM', () => { exitAfterShutdown('SIGTERM'); });
+process.once('SIGINT', () => { exitAfterShutdown('SIGINT'); });
 
 async function startServer() {
   await loadDiagnosticHistory().catch((error) => {
