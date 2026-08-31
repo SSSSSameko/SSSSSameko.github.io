@@ -28,7 +28,30 @@ jobs:
       - run: npm ci
       - run: bash -n deploy/install.sh
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:release
+      - name: Audit dependencies
+        run: npm audit --audit-level=low
+      - name: Verify dependency licenses
+        run: npm run licenses:check
+      - name: Run unit tests
+        run: npm test
+      - name: Build production frontend
+        run: npm run build
+      - name: Verify deployment contract
+        run: node scripts/test-deploy-contract.mjs
+      - name: Test HTTP service
+        run: node scripts/test-server-http.mjs
+      - name: Test draw retention recovery
+        run: node scripts/test-draw-retention-recovery.mjs
+      - name: Test service lifecycle
+        run: node scripts/test-server-lifecycle.mjs
+      - name: Test Weibo provider fallback
+        run: node scripts/test-weibo-provider-fallback.mjs
+      - name: Test browser lifecycle
+        run: npm run test:browser-lifecycle
+      - name: Test memory stability
+        run: node scripts/test-memory-soak.mjs
+      - name: Test production UI
+        run: npm run test:ui:built
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         with:
