@@ -87,25 +87,79 @@ function localReceiptId(input, drawnAt, summary) {
   return `local-${stable || 'record'}`;
 }
 
+function validDrawNumber(value) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : null;
+}
+
+function recordTimeText(record) {
+  return String(record?.savedAt || record?.drawnAt || '').trim();
+}
+
+function compareRecordTime(left, right) {
+  const leftText = recordTimeText(left);
+  const rightText = recordTimeText(right);
+  const leftTime = Date.parse(leftText);
+  const rightTime = Date.parse(rightText);
+  const leftValid = Number.isFinite(leftTime);
+  const rightValid = Number.isFinite(rightTime);
+  if (leftValid && rightValid && leftTime !== rightTime) return leftTime - rightTime;
+  if (leftValid !== rightValid) return leftValid ? 1 : -1;
+  return leftText.localeCompare(rightText);
+}
+
+function stableRecordKey(record) {
+  return [
+    String(record?.drawnAt || ''),
+    String(record?.savedAt || ''),
+    String(record?.auditHash || ''),
+    String(record?.id || ''),
+    String(record?.file || ''),
+    String(record?.recordState || ''),
+    JSON.stringify(record?.results || []),
+  ].join('\u0000');
+}
+
+function comparePreferredRecord(left, right) {
+  const leftServer = left?.recordState === 'server' ? 1 : 0;
+  const rightServer = right?.recordState === 'server' ? 1 : 0;
+  if (leftServer !== rightServer) return rightServer - leftServer;
+
+  const leftNumber = validDrawNumber(left?.drawNumber);
+  const rightNumber = validDrawNumber(right?.drawNumber);
+  if (Boolean(leftNumber) !== Boolean(rightNumber)) return rightNumber ? 1 : -1;
+
+  const leftSaved = String(left?.savedAt || '').trim() ? 1 : 0;
+  const rightSaved = String(right?.savedAt || '').trim() ? 1 : 0;
+  if (leftSaved !== rightSaved) return rightSaved - leftSaved;
+  return stableRecordKey(left).localeCompare(stableRecordKey(right));
+}
+
 export function completedDrawStats(records, statusId, targetAuditHash = '') {
   const unique = new Map();
   for (const record of Array.isArray(records) ? records : []) {
     if (String(record?.statusId || '') !== String(statusId || '')) continue;
     const hash = String(record?.auditHash || '').trim();
-    if (!hash || unique.has(hash)) continue;
-    unique.set(hash, record);
+    if (!hash) continue;
+    const previous = unique.get(hash);
+    if (!previous || comparePreferredRecord(record, previous) < 0) unique.set(hash, record);
   }
 
   const ordered = [...unique.values()].sort((left, right) => {
-    const leftNumber = Number(left.drawNumber);
-    const rightNumber = Number(right.drawNumber);
-    if (Number.isSafeInteger(leftNumber) && leftNumber > 0
-      && Number.isSafeInteger(rightNumber) && rightNumber > 0) {
+    const leftNumber = validDrawNumber(left?.drawNumber);
+    const rightNumber = validDrawNumber(right?.drawNumber);
+    if (Boolean(leftNumber) !== Boolean(rightNumber)) return leftNumber ? 1 : -1;
+    if (leftNumber && rightNumber && leftNumber !== rightNumber) {
       return leftNumber - rightNumber;
     }
-    return String(left.savedAt || left.drawnAt || '').localeCompare(
-      String(right.savedAt || right.drawnAt || ''),
-    );
+    const timeOrder = compareRecordTime(left, right);
+    if (timeOrder) return timeOrder;
+    const leftDrawnAt = String(left?.drawnAt || '');
+    const rightDrawnAt = String(right?.drawnAt || '');
+    if (leftDrawnAt !== rightDrawnAt) return leftDrawnAt.localeCompare(rightDrawnAt);
+    const hashOrder = String(left?.auditHash || '').localeCompare(String(right?.auditHash || ''));
+    if (hashOrder) return hashOrder;
+    return String(left?.id || '').localeCompare(String(right?.id || ''));
   });
   const targetIndex = ordered.findIndex((record) => (
     String(record.auditHash || '') === String(targetAuditHash || '')
@@ -130,6 +184,20 @@ export function drawCountCopy({ source, count, completed }) {
   }
   if (completed && safeCount > 0) return `本链接第 ${safeCount} 次开奖`;
   return safeCount > 0 ? `此前已完成 ${safeCount} 次` : '本链接尚无开奖记录';
+}
+
+export function nextManualDrawNumber(history, excludeId = '') {
+  const excluded = String(excludeId || '');
+  let maximum = 0;
+  for (const item of Array.isArray(history) ? history : []) {
+    const receipt = normalizeDrawReceipt(item);
+    if (receipt.source !== 'manual' || receipt.recordState !== 'server') continue;
+    if (excluded && receipt.id === excluded) continue;
+    if (Number.isSafeInteger(receipt.drawNumber) && receipt.drawNumber > maximum) {
+      maximum = receipt.drawNumber;
+    }
+  }
+  return maximum >= Number.MAX_SAFE_INTEGER ? null : maximum + 1;
 }
 
 export function normalizeDrawReceipt(input = {}) {

@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import net from 'node:net';
@@ -5,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { stopChildProcess } from './child-process.mjs';
 import { serverTestEnv } from './server-test-env.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -20,6 +22,7 @@ const scripts = [
   'test-feedback-ui.mjs',
   'test-admin-ui.mjs',
 ];
+const SCRIPT_TIMEOUT_MS = 120_000;
 
 async function availablePort() {
   return await new Promise((resolve, reject) => {
@@ -37,7 +40,9 @@ async function waitForServer(url, child) {
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`UI 测试服务提前退出：${child.exitCode}`);
     try {
-      const response = await fetch(`${url}/api/health`);
+      const response = await fetch(`${url}/api/health`, {
+        signal: AbortSignal.timeout(1500),
+      });
       if (response.ok) return;
     } catch {
     }
@@ -46,17 +51,106 @@ async function waitForServer(url, child) {
   throw new Error('UI 测试服务启动超时');
 }
 
+async function verifyProcessGroupCleanup() {
+  if (process.platform === 'win32') return;
+  const descendantSource = `
+process.on('SIGTERM', () => {});
+process.stdout.write(String(process.pid) + '\\n');
+setInterval(() => {}, 1000);
+`;
+  const parentSource = `
+const { spawn } = require('node:child_process');
+const descendant = spawn(process.execPath, ['-e', ${JSON.stringify(descendantSource)}], {
+  stdio: ['ignore', 'pipe', 'inherit'],
+});
+descendant.stdout.once('data', (chunk) => {
+  process.stdout.write(chunk);
+  process.exit(1);
+});
+`;
+  const child = spawn(process.execPath, ['-e', parentSource], {
+    stdio: ['ignore', 'pipe', 'inherit'],
+    detached: true,
+  });
+  let output = '';
+  try {
+    const descendantPid = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('进程组清理测试启动超时')), 5000);
+      child.stdout.on('data', (chunk) => {
+        output += chunk.toString();
+        const value = Number.parseInt(output, 10);
+        if (!Number.isInteger(value)) return;
+        clearTimeout(timer);
+        resolve(value);
+      });
+      child.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once('exit', (code, signal) => {
+        clearTimeout(timer);
+        reject(new Error(`进程组清理测试提前退出（${signal || code}）`));
+      });
+    });
+    if (child.exitCode === null && child.signalCode === null) {
+      await new Promise((resolve) => child.once('exit', resolve));
+    }
+    await stopChildProcess(child, {
+      processGroup: true,
+      gracefulTimeoutMs: 150,
+      killTimeoutMs: 5000,
+    });
+    assert.throws(
+      () => process.kill(descendantPid, 0),
+      (error) => error?.code === 'ESRCH',
+      '父进程退出后仍残留后代进程',
+    );
+  } finally {
+    try {
+      process.kill(-child.pid, 'SIGKILL');
+    } catch (error) {
+      if (error.code !== 'ESRCH') throw error;
+    }
+  }
+}
+
 async function runScript(file, env) {
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [path.join(root, 'scripts', file)], {
       cwd: root,
       env,
       stdio: 'inherit',
+      detached: process.platform !== 'win32',
     });
-    child.once('error', reject);
+    let settled = false;
+    let timedOut = false;
+    let cleanupPromise = null;
+    const cleanup = () => {
+      cleanupPromise ||= stopChildProcess(child, { processGroup: process.platform !== 'win32' });
+      return cleanupPromise;
+    };
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      cleanup()
+        .then(() => finish(new Error(`${file} 超过 ${SCRIPT_TIMEOUT_MS / 1000} 秒，已停止`)))
+        .catch(finish);
+    }, SCRIPT_TIMEOUT_MS);
+    child.once('error', finish);
     child.once('exit', (code, signal) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${file} 失败（${signal || code}）`));
+      if (timedOut) return;
+      if (code === 0) finish();
+      else {
+        cleanup()
+          .then(() => finish(new Error(`${file} 失败（${signal || code}）`)))
+          .catch(finish);
+      }
     });
   });
 }
@@ -80,21 +174,13 @@ const server = spawn(process.execPath, [path.join(root, 'server.mjs')], {
 });
 
 try {
+  await verifyProcessGroupCleanup();
   await waitForServer(baseUrl, server);
   for (const file of scripts) await runScript(file, env);
 } finally {
-  if (server.exitCode === null) {
-    server.kill('SIGTERM');
-    await new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        if (server.exitCode === null) server.kill('SIGKILL');
-        resolve();
-      }, 5000);
-      server.once('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
+  try {
+    await stopChildProcess(server);
+  } finally {
+    await rm(runtimeDir, { force: true, recursive: true });
   }
-  await rm(runtimeDir, { force: true, recursive: true });
 }

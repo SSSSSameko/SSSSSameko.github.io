@@ -11,7 +11,7 @@ const receipt = {
   id: 'receipt-ui-test',
   source: 'mobile',
   statusId: '1234567890',
-  statusUrl: 'https://weibo.com/1/Example',
+  statusUrl: 'https://weibo.com/2715025067/Example',
   drawNumber: 2,
   drawnAt: '2026-07-24T02:00:00.000Z',
   savedAt: '2026-07-24T02:00:01.000Z',
@@ -199,11 +199,12 @@ try {
     await context.close();
   }
 
+  const largePrizeName = '特别纪念奖'.repeat(16);
   const largeReceipt = {
     ...receipt,
     id: 'receipt-ui-large-reduced',
     results: [{
-      prize: { name: '幸运奖', count: 500, color: '#ee8fa1' },
+      prize: { name: largePrizeName, count: 500, color: '#ee8fa1' },
       winners: Array.from({ length: 500 }, (_, index) => ({
         uid: `large-${index + 1}`,
         screenName: `候选用户 ${index + 1}`,
@@ -226,16 +227,40 @@ try {
     await gotoUiPage(page, baseUrl);
     await page.locator('.root-tabbar button').filter({ hasText: '记录' }).click();
     await page.locator('.history-list > button').first().click();
-    const rows = page.getByRole('dialog', { name: /开奖结果/ }).locator('.receipt-winner');
+    const dialog = page.getByRole('dialog', { name: /开奖结果/ });
+    const rows = dialog.locator('.receipt-winner');
     await rows.first().waitFor({ state: 'visible' });
-    assert.equal(await rows.count(), 500);
+    assert.equal(await rows.count(), 12);
     await page.waitForTimeout(20);
+    const prizeNameLayout = await dialog.locator('.receipt-prize header strong').evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      height: element.getBoundingClientRect().height,
+      lineHeight: Number.parseFloat(getComputedStyle(element).lineHeight),
+    }));
+    assert.ok(prizeNameLayout.scrollWidth <= prizeNameLayout.clientWidth + 1, JSON.stringify(prizeNameLayout));
+    assert.ok(prizeNameLayout.height > prizeNameLayout.lineHeight, JSON.stringify(prizeNameLayout));
     const motion = await rows.evaluateAll((items) => ({
       hidden: items.filter((item) => getComputedStyle(item).opacity === '0').length,
       maxDelayMs: Math.max(...items.map((item) => Number.parseFloat(getComputedStyle(item).animationDelay) * 1000)),
     }));
     assert.equal(motion.hidden, 0, JSON.stringify(motion));
     assert.equal(motion.maxDelayMs, 0, JSON.stringify(motion));
+    await dialog.getByRole('button', { name: `查看${largePrizeName}中奖名单，共 500 人` }).click();
+    assert.equal(await rows.count(), 62);
+    assert.equal(await page.evaluate(() => {
+      const active = document.activeElement;
+      const rect = active?.getBoundingClientRect();
+      return Boolean(rect && rect.bottom > 0 && rect.top < window.innerHeight);
+    }), true);
+    await dialog.getByRole('button', { name: `继续显示${largePrizeName}中奖名单，共 500 人` }).click();
+    assert.equal(await rows.count(), 112);
+    await dialog.getByRole('button', { name: `收起${largePrizeName}中奖名单` }).click();
+    assert.equal(await rows.count(), 12);
+    const collapsedControl = dialog.getByRole('button', {
+      name: `查看${largePrizeName}中奖名单，共 500 人`,
+    });
+    assert.equal(await collapsedControl.evaluate((button) => button === document.activeElement), true);
   } finally {
     await largeContext.close();
   }

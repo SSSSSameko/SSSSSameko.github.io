@@ -1116,6 +1116,15 @@ button {
   opacity: 0;
 }
 
+.v3-file-action:focus-within {
+  outline: 3px solid rgba(10, 122, 255, 0.38);
+  outline-offset: 2px;
+}
+
+.v3-file-action input:focus-visible {
+  outline: none;
+}
+
 .search-field {
   position: relative;
   margin-top: 12px;
@@ -3518,11 +3527,15 @@ button {
 
 .receipt-prize > header {
   display: grid;
-  grid-template-columns: 34px minmax(0, 1fr);
+  grid-template-columns: 34px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   min-height: 57px;
   padding: 10px 12px;
+}
+
+.receipt-prize > header > div {
+  min-width: 0;
 }
 
 .receipt-prize-mark {
@@ -3548,6 +3561,8 @@ button {
   color: var(--live-ink);
   font-size: 14px;
   font-weight: 680;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .receipt-prize header small {
@@ -3638,6 +3653,44 @@ button {
   font-size: 10px;
   font-style: normal;
   font-weight: 690;
+}
+
+.receipt-prize-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.receipt-prize-controls button {
+  display: inline-flex;
+  min-width: 48px;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 11px;
+  color: var(--live-accent-strong);
+  background: rgba(248, 250, 255, 0.88);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.receipt-prize-controls button:last-child:not(:first-child) {
+  color: var(--live-secondary);
+  background: rgba(118, 118, 128, 0.07);
+}
+
+.receipt-prize-controls svg {
+  width: 14px;
+  height: 14px;
+  transition: transform 180ms var(--ease-out);
+}
+
+.receipt-prize-controls .is-collapse svg {
+  transform: rotate(180deg);
 }
 
 .receipt-audit {

@@ -46,16 +46,22 @@ http://127.0.0.1:4173/
 - `COOKIE_WRITE_KEY=仅供服务器 Cookie 池维护使用的独立密钥（通过 x-cookie-write-key 请求头提供，若配置则为 64 位十六进制字符）`
 - `SOURCE_FINGERPRINT_SECRET=去标识化来源与登录态指纹密钥（若配置则为 64 位十六进制字符，未配置时复用会话密钥）`
 - `PLAYWRIGHT_BROWSERS_PATH=/opt/sameko-weibo-lottery/current/ms-playwright`
+- `WEIBO_BROWSER_SANDBOX=1`（生产环境默认开启 Chromium 沙箱；仅在目标主机明确不支持时才设为 `0`）
 - `MAX_DRAW_SAVE_BODY_BYTES=2097152`
 - `REJECTED_BODY_DRAIN_MS=1000`（拒绝超限请求后最多排空连接的时间，避免慢速请求长期占用）
+- `MAX_DRAW_ATTEMPT_BYTES=1048576`（开奖动作日志只保留最新 1 MiB，并按条数和字节双重裁剪）
 - `MAX_DRAW_SEQUENCES=5000`（限制长期保留的微博开奖序号账本条目）
 - `MAX_SAVED_DRAW_AGE_DAYS=180`
+- `MAX_SAVED_DRAW_FILE_BYTES=4194304`（后台单个开奖记录读取上限，防止异常文件造成内存峰值）
 - `DRAW_FILE_SCAN_MAX_ENTRIES=5000`（开奖记录目录单轮扫描保护上限）
+- `DRAW_RECOVERY_SCAN_MAX_ENTRIES=20000`（普通扫描被截断时的受控恢复上限）
+- `DRAW_FILE_SCAN_BUDGET_MS=15000`（单轮开奖记录扫描时间上限）
 - `DRAW_CLEANUP_BATCH_SIZE=256`（单轮最多回收的开奖记录文件数）
 - `FILE_CLEANUP_CONCURRENCY=8`（文件回收并发上限）
 - `MAX_FEEDBACK_AGE_DAYS=90`
 - `MAX_CORRUPT_JSON_BACKUPS=6`（每个存储文件最多保留的损坏副本数）
 - `MAX_CANDIDATES=20000`（单次任务的容量上限，不代表微博一定能返回这么多可见转发）
+- `MAX_ACCESS_TOKEN_BYTES=1024`（官方接口访问凭据的单字段长度上限，最多可配置为 8192 字节）
 - `MAX_CANDIDATE_PAYLOAD_BYTES=16777216`（候选聚合数据的内存上限）
 - `MAX_CLIENT_REPOST_JOBS=2`（同一来源最多同时运行或排队的抓取任务）
 - `MAX_RETAINED_JOBS=4`（限制已完成任务在内存中的短时暂存数量）
@@ -102,11 +108,18 @@ Ubuntu 服务器将仓库检出到 `/opt/sameko-weibo-lottery` 后运行：
 sudo bash deploy/install.sh
 ```
 
-脚本先在独立目录中安装锁定依赖、构建前端并安装 Playwright Chromium，再把完整版本放入 `releases/`，通过 `current` 符号链接一次切换前后端。健康检查失败时会恢复上一版本和原 systemd 配置；恢复不完整时会保留备份供人工处理。最近两个旧版本会继续保留。若源码不在应用目录，可通过 `SOURCE_DIR=/path/to/source` 指定来源。
+脚本默认要求源码是干净的 Git 仓库根目录，并从当前 commit 直接生成发布归档；commit 会写入发布目录，未提交文件不会进入服务器版本。随后在独立目录中安装锁定依赖、构建前端并安装 Playwright Chromium，再把完整版本放入 `releases/`，通过 `current` 符号链接一次切换前后端。健康检查失败时会恢复上一版本和原 systemd 配置；恢复不完整时会保留备份供人工处理。最近两个旧版本会继续保留。若源码不在应用目录，可通过 `SOURCE_DIR=/path/to/source` 指定来源；只有经过单独校验的离线归档才应设置 `ALLOW_UNVERSIONED_SOURCE=1`。
 
-首次运行会要求输入后台账号和密码，并在权限为 `0600` 的 `/etc/sameko-weibo-lottery.env` 中生成密码哈希、三个 32 字节十六进制密钥和默认 CORS 来源。再次运行会保留并校验该文件；配置不合法时不会停止服务。环境文件中的服务回收周期和内存阈值也会同步到 systemd，避免后台显示与实际限制不一致。
+首次运行会要求输入后台账号和密码，并在权限为 `0600` 的 `/etc/sameko-weibo-lottery.env` 中生成密码哈希、三个 32 字节十六进制密钥和默认 CORS 来源。再次运行会保留并校验该文件；配置不合法时不会停止服务。环境文件中的服务回收周期和内存阈值会同步到 systemd；`NODE_OPTIONS`、`HOST`、`HOME` 和 Playwright 路径等运行约束由服务固定管理，不允许在该文件中覆盖。
 
-服务器需要预先安装受支持的 Node.js、npm、OpenSSL 和 systemd。部署更新前应先运行 `npm run test:release`；systemd 仍按 24 小时周期回收服务进程，避免小内存服务器长期积累不可回收资源。
+服务器需要预先安装受支持的 Node.js、npm、Git、tar、OpenSSL、GNU coreutils 和 systemd。部署更新前应先运行 `npm run test:release`；systemd 仍按 24 小时周期回收服务进程，避免小内存服务器长期积累不可回收资源。
+
+`deploy/Caddyfile` 是反向代理模板，不会由安装脚本覆盖现有站点配置。启用后台或备用 Cookie 前，应将模板按实际域名或 IP 合并到 `/etc/caddy/Caddyfile`；如果修改了应用的 `PORT`，也要同步修改 `reverse_proxy` 的端口。HTTP 只保留证书验证入口，其余请求跳转 HTTPS，并在 HTTPS 响应中启用 HSTS。修改后运行：
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
 
 依赖版本变更后运行 `npm run licenses`，同步更新 `THIRD_PARTY_NOTICES.md` 和前端可查看的完整许可文本。普通构建不会改写已审核的许可清单。
 

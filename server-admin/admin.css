@@ -280,6 +280,12 @@ button:active:not(:disabled) {
   line-height: 1.55;
 }
 
+.confirm-dialog-copy .confirm-dialog-error {
+  margin-top: -12px;
+  color: #bf3f4c;
+  font-weight: 650;
+}
+
 .confirm-dialog-actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1222,6 +1228,10 @@ button:disabled {
   padding: 0;
 }
 
+.records-panel {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
 .records-panel-head,
 .detail-panel-head {
   position: relative;
@@ -1272,6 +1282,22 @@ button:disabled {
   display: inline-block;
 }
 
+.record-scan-note {
+  display: none;
+  margin: -2px 16px 10px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.record-scan-note.visible {
+  display: block;
+}
+
+.record-scan-note.warning {
+  color: var(--warning, #9a6700);
+}
+
 .record-list-scroll,
 .detail-panel-scroll {
   min-height: 0;
@@ -1285,6 +1311,28 @@ button:disabled {
 .record-list-scroll {
   padding: 10px;
   scroll-padding: 10px;
+}
+
+.record-load-more {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 10px;
+  border: 1px solid rgba(117, 117, 128, .18);
+  border-radius: 10px;
+  color: var(--blue);
+  background: rgba(255, 255, 255, .68);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.record-load-more:hover {
+  background: rgba(255, 255, 255, .92);
+}
+
+.record-load-more:disabled {
+  color: var(--muted);
+  cursor: wait;
 }
 
 .detail-panel-scroll {

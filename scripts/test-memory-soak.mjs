@@ -5,6 +5,7 @@ import net from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { stopChildProcess } from './child-process.mjs';
 import { serverTestEnv } from './server-test-env.mjs';
 
 async function availablePort() {
@@ -23,6 +24,7 @@ const port = process.env.MEMORY_TEST_PORT
   : await availablePort();
 const baseUrl = `http://127.0.0.1:${port}`;
 const adminKey = 'local-memory-test-key';
+const REQUEST_TIMEOUT_MS = 5000;
 const output = [];
 const runtimeDir = await mkdtemp(path.join(tmpdir(), 'sameko-memory-test-'));
 
@@ -48,7 +50,9 @@ async function waitForServer() {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${baseUrl}/api/health`);
+      const response = await fetch(`${baseUrl}/api/health`, {
+        signal: AbortSignal.timeout(1000),
+      });
       if (response.ok) return;
     } catch {
     }
@@ -60,6 +64,7 @@ async function waitForServer() {
 async function summary() {
   const response = await fetch(`${baseUrl}/api/admin/summary`, {
     headers: { 'x-api-key': adminKey },
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   assert.equal(response.status, 200);
   return (await response.json()).system;
@@ -72,6 +77,7 @@ async function requestBatch(round, count = 1000) {
       const id = round * count + start + index + 1;
       const response = await fetch(`${baseUrl}/api/health`, {
         headers: { 'x-forwarded-for': `198.51.${Math.floor(id / 250) % 255}.${id % 250 + 1}` },
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       assert.equal(response.status, 200);
     }));
@@ -108,12 +114,11 @@ try {
     chromiumProcesses: final.browser.processCount,
   }));
 } finally {
-  server.kill('SIGINT');
-  await Promise.race([
-    new Promise((resolve) => server.once('exit', resolve)),
-    new Promise((resolve) => setTimeout(resolve, 5000)),
-  ]);
-  await rm(runtimeDir, { force: true, recursive: true });
+  try {
+    await stopChildProcess(server);
+  } finally {
+    await rm(runtimeDir, { force: true, recursive: true });
+  }
 }
 
 console.log('MEMORY_SOAK_OK');

@@ -1,16 +1,25 @@
 import { listDisplayState } from './admin-list-state.js';
+import { readJsonResponse } from './api-response.js';
 
 (() => {
   const ATTEMPT_VISIBLE_LIMIT = 5;
   const REQUEST_TIMEOUT_MS = 20_000;
+  const WEIBO_OPERATION_TIMEOUT_MS = 150_000;
   const LOGIN_POLL_INTERVAL_MS = 2_600;
   const DETAIL_CACHE_LIMIT = 2;
+  const DRAW_PAGE_SIZE = 200;
+  const responseLifecycles = new WeakMap();
   const state = {
     username: '',
     csrfToken: '',
     sessionExpiresAt: '',
     summary: null,
     draws: [],
+    drawsHasMore: false,
+    drawsNextOffset: 0,
+    drawsNextCursor: '',
+    drawsLoadingMore: false,
+    drawsScan: null,
     feedback: [],
     feedbackFilter: 'all',
     selected: null,
@@ -40,6 +49,8 @@ import { listDisplayState } from './admin-list-state.js';
     detailFile: '',
     detailOpener: null,
     detailCache: new Map(),
+    drawsController: null,
+    detailController: null,
     requestControllers: new Set(),
     logoutPending: false,
   };
@@ -72,6 +83,7 @@ import { listDisplayState } from './admin-list-state.js';
     searchInput: $('searchInput'),
     exportAllBtn: $('exportAllBtn'),
     recordCount: $('recordCount'),
+    recordScanNote: $('recordScanNote'),
     recordList: $('recordList'),
     detailPanel: $('detailPanel'),
     detailContent: $('detailContent'),
@@ -93,6 +105,7 @@ import { listDisplayState } from './admin-list-state.js';
     confirmDialog: $('confirmDialog'),
     confirmTitle: $('confirmTitle'),
     confirmMessage: $('confirmMessage'),
+    confirmError: $('confirmError'),
     confirmCancelBtn: $('confirmCancelBtn'),
     confirmDeleteBtn: $('confirmDeleteBtn'),
     adminAlert: $('adminAlert'),
@@ -256,9 +269,7 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   function presentError(error, source = 'general') {
-    const message = errorText(error);
-    showAlert(message, source);
-    showToast(message);
+    showAlert(errorText(error), source);
   }
 
   function setExportStatus(message = '') {
@@ -281,6 +292,10 @@ import { listDisplayState } from './admin-list-state.js';
     state.drawsRequestId += 1;
     state.feedbackRequestId += 1;
     state.detailRequestId += 1;
+    state.drawsController?.abort();
+    state.drawsController = null;
+    state.detailController?.abort();
+    state.detailController = null;
     for (const controller of state.requestControllers) controller.abort();
     state.requestControllers.clear();
   }
@@ -295,6 +310,11 @@ import { listDisplayState } from './admin-list-state.js';
     state.sessionExpiresAt = '';
     state.summary = null;
     state.draws = [];
+    state.drawsHasMore = false;
+    state.drawsNextOffset = 0;
+    state.drawsNextCursor = '';
+    state.drawsLoadingMore = false;
+    state.drawsScan = null;
     state.feedback = [];
     state.feedbackFilter = 'all';
     state.selected = null;
@@ -344,7 +364,22 @@ import { listDisplayState } from './admin-list-state.js';
       headers,
       credentials: 'same-origin',
     });
-    const data = await response.json().catch(() => ({}));
+    let data;
+    try {
+      data = await readAdminJson(response, {
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        strict: true,
+      });
+    } catch (error) {
+      error.status ??= response.status;
+      if (response.status === 401) {
+        cancelSessionRequests();
+        clearSessionState();
+        setAuthed(false);
+        throw new Error('登录已失效，请重新登录');
+      }
+      throw error;
+    }
     if (response.status === 401) {
       cancelSessionRequests();
       clearSessionState();
@@ -358,6 +393,26 @@ import { listDisplayState } from './admin-list-state.js';
       throw error;
     }
     return data;
+  }
+
+  async function readAdminJson(response, options = {}) {
+    const lifecycle = responseLifecycles.get(response);
+    try {
+      return await readJsonResponse(response, {
+        ...options,
+        signal: lifecycle?.signal || options.signal,
+      });
+    } catch (error) {
+      if (lifecycle?.timedOut()) {
+        const timeoutError = new Error('服务器响应超时，请稍后重试');
+        timeoutError.status = response.status;
+        throw timeoutError;
+      }
+      throw error;
+    } finally {
+      lifecycle?.cleanup();
+      responseLifecycles.delete(response);
+    }
   }
 
   async function fetchWithTimeout(path, options = {}) {
@@ -380,15 +435,23 @@ import { listDisplayState } from './admin-list-state.js';
       timedOut = true;
       controller.abort();
     }, timeoutMs);
-    try {
-      return await fetch(path, { ...fetchOptions, signal: controller.signal });
-    } catch (error) {
-      if (timedOut) throw new Error('服务器响应超时，请稍后重试');
-      throw error;
-    } finally {
+    const cleanup = () => {
       clearTimeout(timer);
       signal?.removeEventListener('abort', relayAbort);
       state.requestControllers.delete(controller);
+    };
+    try {
+      const response = await fetch(path, { ...fetchOptions, signal: controller.signal });
+      responseLifecycles.set(response, {
+        signal: controller.signal,
+        timedOut: () => timedOut,
+        cleanup,
+      });
+      return response;
+    } catch (error) {
+      cleanup();
+      if (timedOut) throw new Error('服务器响应超时，请稍后重试');
+      throw error;
     }
   }
 
@@ -439,12 +502,16 @@ import { listDisplayState } from './admin-list-state.js';
       metricCard(formatPercent(anonymousMemoryPercent), '匿名内存', `${formatMemoryMb(memory.cgroupAnonMb)} / 服务上限`, anonymousMemoryPercent),
       metricCard(formatPercent(hostMemoryPercent), '主机内存', `可用 ${formatMemoryMb(memory.hostAvailableMb)}`, hostMemoryPercent),
       metricCard(formatNumber(browser.processCount), 'Chromium', browser.operation?.label || '当前进程'),
-      metricCard(formatNumber(summary.cookie?.availableAccountCount ?? summary.cookie?.accountCount), '可用账号', `已保存 Cookie ${formatNumber(summary.cookie?.cookieCount)}`),
+      metricCard(
+        formatNumber(summary.cookie?.verifiedAccountCount ?? 0),
+        '已验证账号',
+        `可尝试 ${formatNumber(summary.cookie?.tryableAccountCount ?? summary.cookie?.availableAccountCount ?? 0)} · 保存 Cookie ${formatNumber(summary.cookie?.cookieCount)}`,
+      ),
       metricCard(formatPercent(queuePercent), '并发占用', `${formatNumber(queue.active)} 运行 · ${formatNumber(queue.queued)} 排队`, queuePercent),
     ].join('');
 
     els.heroSubtitle.textContent = `已运行 ${plain(system.uptimeText)}，记录 ${formatNumber(summary.savedDrawCount)} 次开奖、${formatNumber(summary.winnerCount)} 人次中奖。`;
-    els.healthPill.innerHTML = `<span></span>${summary.adminEnabled ? '服务正常' : '后台未启用'}`;
+    els.healthPill.innerHTML = `<span></span>${summary.adminEnabled ? '后台已连接' : '后台未启用'}`;
     els.lastUpdated.textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
     els.topStatusLight.classList.toggle('error', !summary.adminEnabled);
 
@@ -594,14 +661,22 @@ import { listDisplayState } from './admin-list-state.js';
   function renderCookie(cookie) {
     const queue = state.summary?.queue || {};
     const cookieCount = Number(cookie.cookieCount || 0);
-    const accountCount = Number(cookie.availableAccountCount ?? cookie.accountCount ?? cookieCount);
+    const tryableCount = Number(cookie.tryableAccountCount ?? cookie.availableAccountCount ?? cookie.accountCount ?? cookieCount);
+    const verifiedCount = Number(cookie.verifiedAccountCount || 0);
+    const pendingCount = Number(cookie.pendingAccountCount || 0);
+    const failedCount = Number(cookie.checkFailedAccountCount || 0);
+    const quarantinedCount = Number(cookie.quarantinedAccountCount ?? cookie.quarantinedCount ?? 0);
     const status = cookie.cookieStoreDisabled
       ? 'Cookie 保存已关闭'
       : cookie.hasCookie
-        ? `可用账号 ${formatNumber(accountCount)} 个 · 保存 Cookie ${formatNumber(cookieCount)} 条`
+        ? `已验证账号 ${formatNumber(verifiedCount)} 个 · 可尝试 ${formatNumber(tryableCount)} 个`
         : '暂未保存 Cookie';
     els.cookieBox.innerHTML = `
       <div class="cookie-line"><strong>${escapeHtml(status)}</strong></div>
+      <div class="cookie-line">保存记录：${escapeHtml(formatNumber(cookieCount))} 条</div>
+      <div class="cookie-line">待验证：${escapeHtml(formatNumber(pendingCount))} 个账号</div>
+      <div class="cookie-line">校验异常：${escapeHtml(formatNumber(failedCount))} 个账号</div>
+      <div class="cookie-line">临时隔离：${escapeHtml(formatNumber(quarantinedCount))} 个账号</div>
       <div class="cookie-line">最近有效：${escapeHtml(formatDate(cookie.lastValidAt))}</div>
       <div class="cookie-line">最近校验：${escapeHtml(formatDate(cookie.lastCheckedAt))}</div>
       <div class="cookie-line">最近保存：${escapeHtml(formatDate(cookie.savedAt))}</div>
@@ -679,7 +754,7 @@ import { listDisplayState } from './admin-list-state.js';
         ${diagnosticRow('最近尝试', formatDate(login.lastAttemptAt))}
         ${diagnosticRow('最近成功', formatDate(login.lastSuccessAt || login.lastRefreshAt))}
         ${diagnosticRow('最近失败', formatDate(login.lastFailureAt), login.lastError || '')}
-        ${diagnosticRow('Cookie 可用账号', `${formatNumber(cookie.availableAccountCount ?? cookie.accountCount ?? cookie.cookieCount ?? 0)} 个`, `保存 Cookie ${formatNumber(cookie.cookieCount || 0)} 条${cookie.quarantinedCount ? ` · 暂停尝试 ${formatNumber(cookie.quarantinedCount)} 条` : ''}${cookie.lastValidAt ? ` · 最近有效 ${formatDate(cookie.lastValidAt)}` : ''}`)}
+        ${diagnosticRow('Cookie 已验证账号', `${formatNumber(cookie.verifiedAccountCount || 0)} 个`, `可尝试 ${formatNumber(cookie.tryableAccountCount ?? cookie.availableAccountCount ?? 0)} 个 · 保存 ${formatNumber(cookie.cookieCount || 0)} 条${cookie.pendingAccountCount ? ` · 待验证 ${formatNumber(cookie.pendingAccountCount)} 个` : ''}${cookie.checkFailedAccountCount ? ` · 校验异常 ${formatNumber(cookie.checkFailedAccountCount)} 个` : ''}${cookie.quarantinedAccountCount ? ` · 临时隔离 ${formatNumber(cookie.quarantinedAccountCount)} 个` : ''}`)}
       </div>
       ${login.lastError ? `<div class="status-note danger">最近保活失败原因：${escapeHtml(login.lastError)}</div>` : ''}
       <div class="history-list">${historyHtml}</div>
@@ -821,13 +896,24 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   function renderDraws() {
-    els.recordCount.textContent = `${formatNumber(state.draws.length)} 条`;
+    els.recordCount.textContent = `${state.drawsHasMore ? '已载入 ' : ''}${formatNumber(state.draws.length)} 条`;
+    const scan = state.drawsScan || {};
+    const scanNote = scan.scanTruncated
+      ? `本轮扫描达到保护上限，已检查 ${formatNumber(scan.scannedEntries)} 项；当前显示保留范围内的记录。`
+      : scan.scannedEntries
+        ? `已检查 ${formatNumber(scan.scannedEntries)} 项，匹配 ${formatNumber(scan.matchedFiles)} 个开奖记录。`
+        : '';
+    if (els.recordScanNote) {
+      els.recordScanNote.textContent = scanNote;
+      els.recordScanNote.classList.toggle('visible', Boolean(scanNote));
+      els.recordScanNote.classList.toggle('warning', Boolean(scan.scanTruncated));
+    }
     if (!state.draws.length) {
       els.recordList.innerHTML = '<div class="empty-list">暂无开奖记录。完成开奖后，后台会自动保存一条记录。</div>';
       return;
     }
 
-    els.recordList.innerHTML = state.draws.map((item, index) => {
+    const rows = state.draws.map((item, index) => {
       const active = (state.detailFile || state.selected?.file) === item.file ? ' active' : '';
       return `
         <button class="record-row${active}" type="button" data-file="${escapeHtml(item.file)}" data-index="${index}"${active ? ' aria-current="true"' : ''}>
@@ -843,6 +929,27 @@ import { listDisplayState } from './admin-list-state.js';
         </button>
       `;
     }).join('');
+    const loadMore = state.drawsHasMore
+      ? `<button class="record-load-more" type="button" data-load-more${state.drawsLoadingMore ? ' disabled aria-busy="true"' : ''}>${state.drawsLoadingMore ? '正在载入…' : '载入更多记录'}</button>`
+      : '';
+    els.recordList.innerHTML = `${rows}${loadMore}`;
+  }
+
+  function setLoadMorePending(pending) {
+    const button = els.recordList.querySelector('[data-load-more]');
+    if (!button) return;
+    button.disabled = pending;
+    button.toggleAttribute('aria-busy', pending);
+    button.textContent = pending ? '正在载入…' : '载入更多记录';
+  }
+
+  function restoreAppendFocus(previousCount) {
+    requestAnimationFrame(() => {
+      const target = els.recordList.querySelector('[data-load-more]')
+        || els.recordList.querySelector(`.record-row[data-index="${previousCount}"]`)
+        || els.recordList.querySelector('.record-row:last-of-type');
+      target?.focus({ preventScroll: true });
+    });
   }
 
   function compactRecordDetailOpen() {
@@ -1099,7 +1206,10 @@ import { listDisplayState } from './admin-list-state.js';
     try {
       els.startWeiboLoginBtn.disabled = true;
       showToast('正在打开微博扫码登录');
-      const data = await api('/api/admin/weibo-login/start', { method: 'POST', timeoutMs: 90_000 });
+      const data = await api('/api/admin/weibo-login/start', {
+        method: 'POST',
+        timeoutMs: WEIBO_OPERATION_TIMEOUT_MS,
+      });
       if (!isCurrentSession(generation)) return;
       renderWeiboLogin(data);
       if (state.summary) {
@@ -1142,7 +1252,10 @@ import { listDisplayState } from './admin-list-state.js';
     try {
       els.refreshWeiboCookieBtn.disabled = true;
       showToast('正在刷新服务器微博 Cookie');
-      const data = await api('/api/admin/weibo-login/refresh', { method: 'POST', timeoutMs: 90_000 });
+      const data = await api('/api/admin/weibo-login/refresh', {
+        method: 'POST',
+        timeoutMs: WEIBO_OPERATION_TIMEOUT_MS,
+      });
       if (!isCurrentSession(generation)) return;
       renderWeiboLogin(data);
       await loadSummary();
@@ -1158,14 +1271,67 @@ import { listDisplayState } from './admin-list-state.js';
     }
   }
 
-  async function loadDraws() {
+  async function loadDraws({ append = false } = {}) {
+    if (append && (state.drawsLoadingMore || !state.drawsHasMore)) return;
+    if (!append && state.drawsLoadingMore) {
+      state.drawsLoadingMore = false;
+      renderDraws();
+    }
+    state.drawsController?.abort();
+    const controller = new AbortController();
+    state.drawsController = controller;
+    const previousCount = state.draws.length;
+    const restoreFocus = append && document.activeElement?.matches('[data-load-more]');
+    if (append) {
+      state.drawsLoadingMore = true;
+      setLoadMorePending(true);
+    }
     const generation = state.sessionGeneration;
     const requestId = ++state.drawsRequestId;
-    const query = new URLSearchParams({ limit: '200', search: state.search });
-    const data = await api(`/api/admin/draws?${query.toString()}`);
-    if (generation !== state.sessionGeneration || requestId !== state.drawsRequestId) return;
-    state.draws = data.items || [];
-    renderDraws();
+    const offset = append ? state.drawsNextOffset : 0;
+    const query = new URLSearchParams({
+      limit: String(DRAW_PAGE_SIZE),
+      offset: String(offset),
+      search: state.search,
+    });
+    if (append && state.drawsNextCursor) query.set('cursor', state.drawsNextCursor);
+    try {
+      const data = await api(`/api/admin/draws?${query.toString()}`, { signal: controller.signal });
+      if (generation !== state.sessionGeneration || requestId !== state.drawsRequestId) return;
+      const incoming = Array.isArray(data.items) ? data.items : [];
+      if (append) {
+        const known = new Set(state.draws.map((item) => item.file));
+        state.draws = [...state.draws, ...incoming.filter((item) => !known.has(item.file))];
+      } else {
+        state.draws = incoming;
+      }
+      state.drawsHasMore = data.hasMore === true;
+      state.drawsNextOffset = Number.isSafeInteger(data.nextOffset)
+        ? data.nextOffset
+        : offset + incoming.length;
+      state.drawsNextCursor = typeof data.nextCursor === 'string' ? data.nextCursor : '';
+      state.drawsScan = {
+        scanTruncated: data.scanTruncated === true,
+        scannedEntries: Number(data.scannedEntries) || 0,
+        matchedFiles: Number(data.matchedFiles) || 0,
+        totalBytes: Number(data.totalBytes) || 0,
+        retainedLimit: Number(data.retainedLimit) || 0,
+      };
+      if (!append) renderDraws();
+    } catch (error) {
+      if (controller.signal.aborted && error?.name === 'AbortError') return;
+      throw error;
+    } finally {
+      const currentRequest = state.drawsController === controller
+        && requestId === state.drawsRequestId
+        && generation === state.sessionGeneration;
+      if (append && currentRequest) {
+        state.drawsLoadingMore = false;
+        renderDraws();
+        if (restoreFocus) restoreAppendFocus(previousCount);
+      }
+      if (state.drawsController === controller) state.drawsController = null;
+    }
   }
 
   async function loadFeedback() {
@@ -1217,12 +1383,15 @@ import { listDisplayState } from './admin-list-state.js';
   }
 
   async function openRecord(file, opener = null) {
+    state.detailController?.abort();
+    state.detailController = null;
     const generation = state.sessionGeneration;
     const requestId = ++state.detailRequestId;
     state.detailFile = file;
     state.detailOpener = opener || document.activeElement;
     state.detailOpen = true;
     state.detailError = '';
+    clearAlert('detail');
     const cached = state.selected?.file === file ? state.selected : state.detailCache.get(file);
     if (cached) {
       state.selected = cached;
@@ -1238,8 +1407,12 @@ import { listDisplayState } from './admin-list-state.js';
     renderDraws();
     renderDetail();
     focusDetailCloseWhenReady(file);
+    const controller = new AbortController();
+    state.detailController = controller;
     try {
-      const data = await api(`/api/admin/draws/${encodeURIComponent(file)}`);
+      const data = await api(`/api/admin/draws/${encodeURIComponent(file)}`, {
+        signal: controller.signal,
+      });
       if (generation !== state.sessionGeneration || requestId !== state.detailRequestId) return;
       state.selected = data.item;
       state.detailLoading = false;
@@ -1249,12 +1422,15 @@ import { listDisplayState } from './admin-list-state.js';
       els.detailContent.scrollTop = 0;
       focusDetailCloseWhenReady(file);
     } catch (error) {
+      if (controller.signal.aborted && error?.name === 'AbortError') return;
       if (generation !== state.sessionGeneration || requestId !== state.detailRequestId) return;
       state.detailLoading = false;
       state.detailError = errorText(error);
       renderDetail();
       els.detailContent.scrollTop = 0;
-      showToast(state.detailError);
+      showAlert(`记录载入失败：${state.detailError}`, 'detail');
+    } finally {
+      if (state.detailController === controller) state.detailController = null;
     }
   }
 
@@ -1266,6 +1442,7 @@ import { listDisplayState } from './admin-list-state.js';
     state.pendingDeleteFeedbackId = '';
     els.confirmTitle.textContent = '删除开奖记录';
     els.confirmMessage.textContent = '这条记录会从服务器移除，删除后无法恢复。';
+    clearConfirmError();
     els.confirmDialog.showModal();
     requestAnimationFrame(() => els.confirmCancelBtn.focus());
   }
@@ -1287,6 +1464,16 @@ import { listDisplayState } from './admin-list-state.js';
     });
   }
 
+  function clearConfirmError() {
+    els.confirmError.textContent = '';
+    els.confirmError.hidden = true;
+  }
+
+  function showConfirmError(error) {
+    els.confirmError.textContent = errorText(error);
+    els.confirmError.hidden = false;
+  }
+
   function closeDeleteConfirm({ restoreFocus = true } = {}) {
     const opener = state.confirmOpener;
     const fallback = state.confirmFocusFallback;
@@ -1294,6 +1481,7 @@ import { listDisplayState } from './admin-list-state.js';
     state.pendingDeleteFeedbackId = '';
     state.confirmOpener = null;
     state.confirmFocusFallback = 'records';
+    clearConfirmError();
     if (els.confirmDialog.open) els.confirmDialog.close();
     if (restoreFocus) restoreConfirmFocus(opener, fallback);
     return opener;
@@ -1321,7 +1509,7 @@ import { listDisplayState } from './admin-list-state.js';
       await loadAll();
       restoreConfirmFocus(opener, fallback);
     } catch (error) {
-      presentError(error, 'delete');
+      showConfirmError(error);
     } finally {
       els.confirmDeleteBtn.disabled = false;
     }
@@ -1364,6 +1552,7 @@ import { listDisplayState } from './admin-list-state.js';
     state.pendingDeleteFeedbackId = id;
     els.confirmTitle.textContent = '删除用户反馈';
     els.confirmMessage.textContent = '这条反馈会从服务器移除，删除后无法恢复。';
+    clearConfirmError();
     els.confirmDialog.showModal();
     requestAnimationFrame(() => els.confirmCancelBtn.focus());
   }
@@ -1408,6 +1597,43 @@ import { listDisplayState } from './admin-list-state.js';
   function exportCsv(records, name) {
     const csv = rowsFromRecords(records).map((row) => row.map(csvCell).join(',')).join('\n');
     downloadBlob(`\uFEFF${csv}`, 'text/csv;charset=utf-8', name);
+  }
+
+  async function copyText(text) {
+    const value = String(text || '');
+    if (!value) throw new Error('没有可复制的内容');
+
+    let clipboardError = null;
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch (error) {
+        clipboardError = error;
+      }
+    }
+
+    const previousFocus = document.activeElement;
+    const textarea = document.createElement('textarea');
+    textarea.value = value;
+    textarea.setAttribute('readonly', '');
+    textarea.setAttribute('aria-hidden', 'true');
+    textarea.style.position = 'fixed';
+    textarea.style.top = '0';
+    textarea.style.left = '-9999px';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    let copied = false;
+    try {
+      textarea.focus({ preventScroll: true });
+      textarea.select();
+      textarea.setSelectionRange(0, value.length);
+      copied = document.execCommand?.('copy') === true;
+    } finally {
+      textarea.remove();
+      previousFocus?.focus?.({ preventScroll: true });
+    }
+    if (!copied) throw clipboardError || new Error('浏览器未允许复制');
   }
 
   async function exportAll() {
@@ -1467,10 +1693,10 @@ import { listDisplayState } from './admin-list-state.js';
       return;
     }
     try {
-      await navigator.clipboard.writeText(names);
+      await copyText(names);
       showToast('中奖名单已复制');
     } catch {
-      showToast('浏览器没有允许剪贴板权限');
+      presentError(new Error('浏览器未允许复制，请手动选择名单文本。'), 'copy');
     }
   }
 
@@ -1496,7 +1722,10 @@ import { listDisplayState } from './admin-list-state.js';
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ username, password }),
       });
-      const data = await response.json().catch(() => ({}));
+      const data = await readAdminJson(response, {
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        strict: true,
+      });
       if (!response.ok || data.ok === false) throw new Error(data.error || '登录失败');
       cancelSessionRequests();
       state.username = data.username;
@@ -1518,23 +1747,31 @@ import { listDisplayState } from './admin-list-state.js';
     state.logoutPending = true;
     els.logoutBtn.disabled = true;
     els.logoutBtn.setAttribute('aria-busy', 'true');
-    const csrfToken = state.csrfToken;
-    cancelSessionRequests();
-    clearSessionState();
-    setAuthed(false);
-    showToast('已退出后台');
     try {
-      await fetchWithTimeout('/api/admin/logout', {
+      const response = await fetchWithTimeout('/api/admin/logout', {
         method: 'POST',
         credentials: 'same-origin',
-        headers: csrfToken ? { 'x-admin-csrf': csrfToken } : {},
+        headers: state.csrfToken ? { 'x-admin-csrf': state.csrfToken } : {},
         timeoutMs: 5000,
         trackSession: false,
       });
-    } catch {
+      const data = await readAdminJson(response, { timeoutMs: 5000, strict: true });
+      if (!response.ok && response.status !== 401) {
+        const error = new Error(data.error || `退出失败：${response.status}`);
+        error.status = response.status;
+        throw error;
+      }
+      cancelSessionRequests();
+      clearSessionState();
+      setAuthed(false);
+      clearAlert('logout');
+      showToast('已退出后台');
+    } catch (error) {
+      presentError(error, 'logout');
     } finally {
       state.logoutPending = false;
       els.logoutBtn.removeAttribute('aria-busy');
+      els.logoutBtn.disabled = !state.username;
     }
   }
 
@@ -1544,11 +1781,14 @@ import { listDisplayState } from './admin-list-state.js';
         credentials: 'same-origin',
         headers: { accept: 'application/json' },
       });
+      const data = await readAdminJson(response, {
+        timeoutMs: REQUEST_TIMEOUT_MS,
+        strict: true,
+      });
       if (!response.ok) {
         setAuthed(false);
         return;
       }
-      const data = await response.json();
       cancelSessionRequests();
       state.username = data.username;
       state.csrfToken = data.csrfToken;
@@ -1584,6 +1824,8 @@ import { listDisplayState } from './admin-list-state.js';
 
   function closeRecordDetail(restoreFocus = true) {
     state.detailRequestId += 1;
+    state.detailController?.abort();
+    state.detailController = null;
     const detailFile = state.detailFile || state.selected?.file || '';
     const opener = state.detailOpener;
     state.detailOpen = false;
@@ -1628,6 +1870,13 @@ import { listDisplayState } from './admin-list-state.js';
   });
 
   els.recordList.addEventListener('click', (event) => {
+    const loadMore = event.target.closest('[data-load-more]');
+    if (loadMore) {
+      loadDraws({ append: true })
+        .then(() => clearAlert('records'))
+        .catch((error) => presentError(error, 'records'));
+      return;
+    }
     const button = event.target.closest('[data-file]');
     if (button) openRecord(button.dataset.file, button);
   });
@@ -1643,6 +1892,7 @@ import { listDisplayState } from './admin-list-state.js';
     state.pendingDeleteFeedbackId = '';
     state.confirmOpener = null;
     state.confirmFocusFallback = 'records';
+    clearConfirmError();
     if (opener) restoreConfirmFocus(opener, fallback);
   });
   els.confirmDialog.addEventListener('click', (event) => {

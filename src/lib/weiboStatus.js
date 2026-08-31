@@ -10,10 +10,16 @@ const PROFILE_ROUTES = new Set(['u', 'n', 'profile', 'home', 'my', 'settings']);
 const STATUS_ROUTES = new Set(['status', 'detail', 'mblog']);
 const SHARED_URL_PATTERN = /(?:https?:\/\/)?(?:www\.|m\.)?weibo\.(?:com|cn)(?:[/?#][^\s<>"'，。！？；：、…（）【】]*)?/gi;
 const TRAILING_URL_PUNCTUATION = /[)\]}>，。！？；：、…]+$/u;
+const STORED_STATUS_ID_PATTERN = /^[0-9A-Za-z]{5,64}$/;
 
 function validToken(value, { minLength = 1 } = {}) {
   const token = String(value || '').trim();
   return /^[0-9A-Za-z]{1,64}$/.test(token) && token.length >= minLength ? token : '';
+}
+
+export function normalizeStoredStatusId(value) {
+  const token = String(value || '').trim();
+  return STORED_STATUS_ID_PATTERN.test(token) ? token : '';
 }
 
 function statusTokenFromUrl(reference) {

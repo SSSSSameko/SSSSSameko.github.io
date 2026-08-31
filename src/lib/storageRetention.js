@@ -91,15 +91,20 @@ export function retainRecentEntries(entries, options = {}) {
 }
 
 export function retainLatestLines(lines, options = {}) {
-  const maxLines = Math.max(1, Number(options.maxLines || 1));
-  const maxBytes = Math.max(1, Number(options.maxBytes ?? Number.MAX_SAFE_INTEGER));
-  const items = (Array.isArray(lines) ? lines : [])
-    .map((line) => String(line || '').trim())
-    .filter(Boolean)
-    .slice(-maxLines);
+  const maxLines = Math.max(1, Math.floor(Number(options.maxLines || 1)));
+  const maxBytes = Math.max(1, Math.floor(Number(options.maxBytes ?? Number.MAX_SAFE_INTEGER)));
+  const source = Array.isArray(lines) ? lines : [];
+  const retained = [];
+  let retainedBytes = 0;
 
-  while (items.length > 1 && Buffer.byteLength(`${items.join('\n')}\n`, 'utf8') > maxBytes) {
-    items.shift();
+  for (let index = source.length - 1; index >= 0 && retained.length < maxLines; index -= 1) {
+    const line = String(source[index] || '').trim();
+    if (!line) continue;
+    const lineBytes = Buffer.byteLength(line, 'utf8') + 1;
+    if (lineBytes > maxBytes) continue;
+    if (retainedBytes + lineBytes > maxBytes) break;
+    retained.unshift(line);
+    retainedBytes += lineBytes;
   }
-  return items;
+  return retained;
 }

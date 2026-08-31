@@ -1,5 +1,6 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
@@ -23,11 +24,16 @@ import {
   compactCookieEntriesByAccount,
   cookieCandidatesWithFallback,
   cookiePoolCounts,
+  cookiePoolStatusCounts,
 } from './src/lib/cookiePool.js';
 import { xsrfTokenFromCookie } from './src/lib/cookieHeaders.js';
 import { completedDrawStats } from './src/lib/drawReceipts.js';
 import { normalizeFeedbackSubmission } from './src/lib/feedback.js';
-import { isWeiboHost, statusTokenFromReference } from './src/lib/weiboStatus.js';
+import {
+  isWeiboHost,
+  normalizeStoredStatusId,
+  statusTokenFromReference,
+} from './src/lib/weiboStatus.js';
 import { safeAvatarUrl } from './src/lib/avatar.js';
 import { createAsyncGate } from './src/lib/asyncGate.js';
 import {
@@ -44,6 +50,7 @@ import {
 } from './src/lib/requestTrust.js';
 import {
   removeFilesBestEffort,
+  retainLatestLines,
   retainRecentEntries,
   selectNewestFiles,
   selectFilesToPrune,
@@ -63,6 +70,7 @@ import {
   findProfileBrowserPids,
   preparePersistentProfile,
   prunePersistentProfileCaches,
+  settlePromiseWithin,
 } from './src/lib/weiboBrowserLifecycle.js';
 import {
   isWeiboThrottleStatus,
@@ -146,8 +154,19 @@ const maxFeedbackEntries = envInteger('MAX_FEEDBACK_ENTRIES', 500, 20);
 const maxFeedbackAgeDays = envNumber('MAX_FEEDBACK_AGE_DAYS', 90, 1);
 const maxFeedbackAgeMs = maxFeedbackAgeDays * 24 * 60 * 60_000;
 const maxCorruptJsonBackups = envInteger('MAX_CORRUPT_JSON_BACKUPS', 6, 1, 20);
+const maxCookieStoreFileBytes = envNumber('MAX_COOKIE_STORE_FILE_BYTES', 1024 * 1024, 64 * 1024);
+const maxWeiboLoginStateFileBytes = envNumber('MAX_WEIBO_LOGIN_STATE_FILE_BYTES', 256 * 1024, 16 * 1024);
+const maxDrawSequenceFileBytes = envNumber('MAX_DRAW_SEQUENCE_FILE_BYTES', 2 * 1024 * 1024, 64 * 1024);
+const maxSystemMetricsFileBytes = envNumber('MAX_SYSTEM_METRICS_FILE_BYTES', 2 * 1024 * 1024, 64 * 1024);
+const maxAdminEventsFileBytes = envNumber('MAX_ADMIN_EVENTS_FILE_BYTES', 1024 * 1024, 64 * 1024);
+const maxFeedbackFileBytes = envNumber('MAX_FEEDBACK_FILE_BYTES', 2 * 1024 * 1024, 64 * 1024);
+const maxGenericStoredJsonBytes = envNumber('MAX_GENERIC_STORED_JSON_BYTES', 2 * 1024 * 1024, 64 * 1024);
 const feedbackDuplicateWindowMs = envNumber('FEEDBACK_DUPLICATE_WINDOW_MS', 10 * 60_000, 60_000);
 const maxCookieBytes = envNumber('MAX_COOKIE_BYTES', 16_384, 1024);
+const maxAccessTokenBytes = Math.min(
+  8192,
+  Math.floor(envNumber('MAX_ACCESS_TOKEN_BYTES', 1024, 64)),
+);
 const maxRepostJobBodyBytes = envNumber('MAX_REPOST_JOB_BODY_BYTES', 64 * 1024, 16 * 1024);
 const rejectedBodyDrainMs = envNumber('REJECTED_BODY_DRAIN_MS', 1000, 250);
 const maxWeiboResponseBytes = envNumber('MAX_WEIBO_RESPONSE_BYTES', 4 * 1024 * 1024, 64 * 1024);
@@ -183,6 +202,9 @@ const sameStatusRequestGapMs = envNumber('SAME_STATUS_REQUEST_GAP_MS', 3000, 0);
 const repostSnapshotTtlMs = envNumber('REPOST_SNAPSHOT_TTL_MS', 15_000, 5000);
 const maxRepostSnapshots = envInteger('MAX_REPOST_SNAPSHOTS', 2, 1);
 const weiboLoginSessionTtlMs = envNumber('WEIBO_LOGIN_SESSION_TTL_MS', 8 * 60_000, 60_000);
+const weiboLoginPageTimeoutMs = envNumber('WEIBO_LOGIN_PAGE_TIMEOUT_MS', 45_000, 1000);
+const weiboLoginScreenshotTimeoutMs = envNumber('WEIBO_LOGIN_SCREENSHOT_TIMEOUT_MS', 15_000, 1000);
+const weiboLoginCookieTimeoutMs = envNumber('WEIBO_LOGIN_COOKIE_TIMEOUT_MS', 15_000, 1000);
 const weiboKeepaliveIntervalMs = envNumber('WEIBO_KEEPALIVE_INTERVAL_MS', 12 * 60 * 60_000, 60_000);
 const weiboKeepaliveStartupDelayMs = envNumber('WEIBO_KEEPALIVE_STARTUP_DELAY_MS', 90_000, 10_000);
 const weiboKeepaliveRetryMs = envNumber('WEIBO_KEEPALIVE_RETRY_MS', 30 * 60_000, 60_000);
@@ -203,19 +225,36 @@ const maxDrawStatCount = Math.min(
   Math.floor(envNumber('MAX_DRAW_STAT_COUNT', 10_000_000, maxCandidates)),
 );
 const maxDrawAttempts = envInteger('MAX_DRAW_ATTEMPTS', 500, 20);
+const maxDrawAttemptBytes = envInteger('MAX_DRAW_ATTEMPT_BYTES', 1024 * 1024, 4096, 64 * 1024 * 1024);
 const maxDrawSequences = envInteger('MAX_DRAW_SEQUENCES', 5000, 100);
 const maxSavedDraws = envInteger('MAX_SAVED_DRAWS', 1000, 20);
 const maxSavedDrawBytes = envNumber('MAX_SAVED_DRAW_BYTES', 100 * 1024 * 1024, 1024 * 1024);
+const maxSavedDrawFileBytes = envNumber(
+  'MAX_SAVED_DRAW_FILE_BYTES',
+  Math.max(4 * 1024 * 1024, maxDrawSaveBodyBytes * 2),
+  maxDrawSaveBodyBytes,
+);
 const maxSavedDrawAgeDays = envNumber('MAX_SAVED_DRAW_AGE_DAYS', 180, 1);
 const maxSavedDrawAgeMs = maxSavedDrawAgeDays * 24 * 60 * 60_000;
-const drawFileScanMaxEntries = Math.floor(envNumber(
+const drawFileScanMaxEntries = envInteger(
   'DRAW_FILE_SCAN_MAX_ENTRIES',
   Math.max(5000, maxSavedDraws * 4),
   Math.max(100, maxSavedDraws),
-));
+  100_000,
+);
+const drawRecoveryScanMaxEntries = envInteger(
+  'DRAW_RECOVERY_SCAN_MAX_ENTRIES',
+  Math.max(20_000, drawFileScanMaxEntries),
+  drawFileScanMaxEntries,
+  100_000,
+);
+const drawFileScanBudgetMs = envInteger('DRAW_FILE_SCAN_BUDGET_MS', 15_000, 1000, 120_000);
 const drawCleanupBatchSize = Math.floor(envNumber('DRAW_CLEANUP_BATCH_SIZE', 256, 1));
 const fileCleanupConcurrency = Math.floor(envNumber('FILE_CLEANUP_CONCURRENCY', 8, 1));
 const enableWeiboKeepalive = !/^(0|false|no)$/i.test(String(process.env.WEIBO_KEEPALIVE_ENABLED ?? '1').trim());
+const weiboBrowserSandbox = !/^(0|false|no)$/i.test(String(
+  process.env.WEIBO_BROWSER_SANDBOX ?? (isProduction ? '1' : '0'),
+).trim());
 const serviceRecycleIntervalMs = envNumber('SERVICE_RECYCLE_INTERVAL_MS', 24 * 60 * 60_000, 60_000);
 const serviceMemoryHighMb = envNumber('SERVICE_MEMORY_HIGH_MB', 700, 1);
 const serviceMemoryMaxMb = envNumber('SERVICE_MEMORY_MAX_MB', 850, 1);
@@ -228,6 +267,7 @@ const runtimeCacheMaxAgeDays = envNumber('RUNTIME_CACHE_MAX_AGE_DAYS', 30, 1);
 const runtimeCacheMaxAgeMs = runtimeCacheMaxAgeDays * 24 * 60 * 60_000;
 const runtimeCacheScanMaxEntries = envInteger('RUNTIME_CACHE_SCAN_MAX_ENTRIES', 20_000, 1000);
 const maxAdminEventQueue = Math.min(512, Math.floor(envNumber('MAX_ADMIN_EVENT_QUEUE', 128, 8)));
+const maxErrorMessageChars = envInteger('MAX_ERROR_MESSAGE_CHARS', 4096, 512, 16_384);
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
   .map((origin) => normalizeConfiguredOrigin(origin))
@@ -236,7 +276,7 @@ const OFFICIAL_PAGE_SIZE = 200;
 const OFFICIAL_MAX_PAGES = 500;
 const DESKTOP_FIRST_PAGE_SIZE = 10;
 const DESKTOP_PAGE_SIZE = 20;
-const DESKTOP_MAX_PAGES = envInteger('DESKTOP_MAX_PAGES', 1000, 1);
+const DESKTOP_MAX_PAGES = envInteger('DESKTOP_MAX_PAGES', 1000, 1, 1000);
 const LEGACY_MAX_PAGES = 500;
 const MOBILE_MAX_PAGES = 120;
 const COOKIE_CHECK_URL = 'https://m.weibo.cn/api/config';
@@ -290,10 +330,12 @@ let weiboLoginSession = null;
 let weiboLoginStopRevision = 0;
 let weiboKeepaliveRunning = false;
 let weiboBrowserOperation = null;
+let weiboBrowserCleanupOperation = null;
 let weiboKeepaliveContext = null;
 let weiboKeepaliveTimer = null;
 let weiboKeepaliveScheduleRevision = 0;
 let weiboLoginRefreshOperation = null;
+let weiboLoginCloseOperation = null;
 let profileCacheCleanupState = {
   lastRunAt: '',
   removedCount: 0,
@@ -405,7 +447,12 @@ function normalizeConfiguredOrigin(origin) {
   }
 }
 
+function responseCanWrite(res) {
+  return !res.destroyed && !res.writableEnded && !res.headersSent;
+}
+
 function sendJsonBody(res, status, body) {
+  if (!responseCanWrite(res)) return false;
   const content = Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8');
   res.writeHead(status, {
     ...securityHeaders(),
@@ -414,6 +461,7 @@ function sendJsonBody(res, status, body) {
     'content-length': content.length,
   });
   res.end(content);
+  return true;
 }
 
 function sendJson(res, status, data) {
@@ -421,6 +469,7 @@ function sendJson(res, status, data) {
 }
 
 function sendText(res, status, text) {
+  if (!responseCanWrite(res)) return false;
   const content = Buffer.from(String(text), 'utf8');
   res.writeHead(status, {
     ...securityHeaders(),
@@ -428,6 +477,7 @@ function sendText(res, status, text) {
     'content-length': content.length,
   });
   res.end(content);
+  return true;
 }
 
 function cspConnectSources() {
@@ -681,6 +731,11 @@ function requestAbortedError() {
   return error;
 }
 
+function throwIfRequestAborted(signal) {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : requestAbortedError();
+}
+
 function createRequestAbortSignal(req, res) {
   const controller = new AbortController();
   const abort = () => {
@@ -706,7 +761,7 @@ function createRequestAbortSignal(req, res) {
 }
 
 async function readJsonBody(req, maxBytes = 1024 * 1024, { signal } = {}) {
-  if (signal?.aborted) throw signal.reason || requestAbortedError();
+  throwIfRequestAborted(signal);
   const contentType = firstHeaderValue(req.headers['content-type']).split(';')[0].trim().toLowerCase();
   if (!/^application\/(?:[a-z0-9.+-]+\+)?json$/.test(contentType)) {
     const error = new Error('请求必须使用 application/json');
@@ -769,7 +824,12 @@ async function readJsonBody(req, maxBytes = 1024 * 1024, { signal } = {}) {
     const onClose = () => {
       if (!req.complete) fail(requestAbortedError());
     };
-    const onSignalAbort = () => fail(signal?.reason || requestAbortedError());
+    const onSignalAbort = () => {
+      if (!req.complete && !req.readableEnded && !req.destroyed) {
+        beginRequestDrain(req, rejectedBodyDrainMs);
+      }
+      fail(signal?.reason || requestAbortedError());
+    };
 
     req.on('data', onData);
     req.once('end', onEnd);
@@ -853,14 +913,30 @@ async function pruneCorruptJsonBackups(filePath) {
   await Promise.all(stale.map((name) => fs.rm(path.join(directory, name), { force: true })));
 }
 
-async function isolateCorruptJsonFile(filePath, expectedRaw) {
+async function pruneJsonBackups(filePath, marker) {
+  const directory = path.dirname(filePath);
+  const prefix = `${path.basename(filePath)}${marker}`;
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const stale = entries
+    .filter((entry) => entry.isFile() && entry.name.startsWith(prefix))
+    .map((entry) => entry.name)
+    .sort((left, right) => right.localeCompare(left))
+    .slice(maxCorruptJsonBackups);
+  await Promise.all(stale.map((name) => fs.rm(path.join(directory, name), { force: true })));
+}
+
+async function isolateCorruptJsonFile(filePath, expectedRaw, maxBytes = null) {
   return await withJsonFileLock(filePath, async () => {
     if (typeof expectedRaw === 'string') {
       let currentRaw;
       try {
-        currentRaw = await fs.readFile(filePath, 'utf8');
+        currentRaw = await readTextFileWithinLimit(
+          filePath,
+          maxBytes ?? maxGenericStoredJsonBytes,
+        );
       } catch (error) {
         if (error.code === 'ENOENT') return '';
+        if (error.code === 'JSON_FILE_TOO_LARGE') return '';
         throw error;
       }
       if (currentRaw !== expectedRaw) return '';
@@ -882,12 +958,128 @@ async function isolateCorruptJsonFile(filePath, expectedRaw) {
   });
 }
 
+async function isolateOversizedJsonFile(filePath, maxBytes) {
+  return await withJsonFileLock(filePath, async () => {
+    let stat;
+    try {
+      stat = await fs.lstat(filePath);
+    } catch (error) {
+      if (error.code === 'ENOENT') return '';
+      throw error;
+    }
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= maxBytes) return '';
+
+    const stamp = new Date().toISOString().replace(/\D/g, '').slice(0, 14);
+    const isolatedPath = `${filePath}.oversized-${stamp}-${crypto.randomBytes(4).toString('hex')}`;
+    try {
+      await fs.rename(filePath, isolatedPath);
+    } catch (error) {
+      if (error.code === 'ENOENT') return '';
+      throw error;
+    }
+    console.warn(`Isolated oversized JSON file: ${path.basename(isolatedPath)}`);
+    await pruneJsonBackups(filePath, '.oversized-').catch((error) => {
+      console.warn(`Oversized JSON cleanup failed: ${safeError(error).message}`);
+    });
+    return isolatedPath;
+  });
+}
+
+const readOnlyFileFlags = fsConstants.O_RDONLY | Number(fsConstants.O_NOFOLLOW || 0);
+
+function nonRegularStorageFileError() {
+  const error = new Error('存储文件不是普通文件');
+  error.code = 'JSON_FILE_NOT_REGULAR';
+  return error;
+}
+
+async function openRegularStorageFile(filePath) {
+  const initial = await fs.lstat(filePath);
+  if (!initial.isFile() || initial.isSymbolicLink()) throw nonRegularStorageFileError();
+
+  let handle;
+  try {
+    handle = await fs.open(filePath, readOnlyFileFlags);
+  } catch (error) {
+    if (error?.code === 'ELOOP') throw nonRegularStorageFileError();
+    throw error;
+  }
+
+  try {
+    const current = await fs.lstat(filePath);
+    const stat = await handle.stat();
+    if (!current.isFile() || current.isSymbolicLink() || !stat.isFile()) {
+      throw nonRegularStorageFileError();
+    }
+    return { handle, stat };
+  } catch (error) {
+    await handle.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function readTextFileWithinLimit(filePath, maxBytes, signal) {
+  const limit = Math.max(1, Math.floor(Number(maxBytes)));
+  throwIfRequestAborted(signal);
+  const { handle, stat } = await openRegularStorageFile(filePath);
+  try {
+    throwIfRequestAborted(signal);
+    if (stat.size > limit) {
+      const error = new Error(`存储文件超过 ${limit} 字节上限`);
+      error.code = 'JSON_FILE_TOO_LARGE';
+      error.maxBytes = limit;
+      error.size = stat.size;
+      throw error;
+    }
+
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      throwIfRequestAborted(signal);
+      const remaining = limit - total + 1;
+      const buffer = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+      if (!bytesRead) break;
+      total += bytesRead;
+      if (total > limit) {
+        const error = new Error(`存储文件超过 ${limit} 字节上限`);
+        error.code = 'JSON_FILE_TOO_LARGE';
+        error.maxBytes = limit;
+        error.size = total;
+        throw error;
+      }
+      chunks.push(buffer.subarray(0, bytesRead));
+    }
+    throwIfRequestAborted(signal);
+    return Buffer.concat(chunks, total).toString('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+
 async function readStoredJson(filePath, fallback, validate, options = {}) {
+  const maxBytes = options.maxBytes ?? maxGenericStoredJsonBytes;
   let raw;
   try {
-    raw = await fs.readFile(filePath, 'utf8');
+    raw = await readTextFileWithinLimit(filePath, maxBytes, options.signal);
   } catch (error) {
     if (error.code === 'ENOENT') return fallback();
+    if (error.code === 'JSON_FILE_TOO_LARGE') {
+      const isolated = await isolateOversizedJsonFile(filePath, Number(maxBytes)).catch((isolationError) => {
+        console.warn(`Oversized JSON isolation failed for ${path.basename(filePath)}: ${safeError(isolationError).message}`);
+        return '';
+      });
+      if (options.rejectOversize) {
+        const oversizedError = new Error(
+          `JSON 文件过大，已${isolated ? '隔离' : '拒绝读取'}：${path.basename(filePath)}`,
+        );
+        oversizedError.code = 'JSON_FILE_TOO_LARGE';
+        oversizedError.status = 500;
+        throw oversizedError;
+      }
+      console.warn(`Ignored oversized JSON file: ${path.basename(filePath)}`);
+      return fallback();
+    }
     throw error;
   }
 
@@ -896,7 +1088,7 @@ async function readStoredJson(filePath, fallback, validate, options = {}) {
     parsed = JSON.parse(raw);
   } catch (error) {
     if (error.name !== 'SyntaxError') throw error;
-    await isolateCorruptJsonFile(filePath, raw);
+    await isolateCorruptJsonFile(filePath, raw, maxBytes);
     if (options.rejectCorrupt) {
       const corruptError = new Error(`JSON 文件损坏，已隔离：${path.basename(filePath)}`);
       corruptError.status = 500;
@@ -905,7 +1097,7 @@ async function readStoredJson(filePath, fallback, validate, options = {}) {
     return fallback();
   }
   if (!validate(parsed)) {
-    await isolateCorruptJsonFile(filePath, raw);
+    await isolateCorruptJsonFile(filePath, raw, maxBytes);
     if (options.rejectCorrupt) {
       const corruptError = new Error(`JSON 文件结构不正确，已隔离：${path.basename(filePath)}`);
       corruptError.status = 500;
@@ -946,10 +1138,17 @@ async function readResponseBuffer(response, maxBytes, tooLargeMessage = '返回�
       chunks.push(Buffer.from(chunk));
     }
   } catch (error) {
-    await response.body?.cancel().catch(() => {});
+    await cancelResponseBody(response);
     throw error;
   }
   return Buffer.concat(chunks, total);
+}
+
+async function cancelResponseBody(response) {
+  try {
+    await Promise.resolve(response?.body?.cancel?.());
+  } catch {
+  }
 }
 
 function cachedAvatar(url) {
@@ -984,6 +1183,7 @@ function storeAvatar(url, entry) {
 }
 
 function sendAvatar(res, entry) {
+  if (!responseCanWrite(res)) return false;
   res.writeHead(200, {
     ...securityHeaders(),
     'content-type': entry.contentType,
@@ -992,6 +1192,7 @@ function sendAvatar(res, entry) {
     etag: entry.etag,
   });
   res.end(entry.body);
+  return true;
 }
 
 async function fetchAvatar(avatar) {
@@ -1005,19 +1206,21 @@ async function fetchAvatar(avatar) {
     },
   });
   if (!response.ok) {
+    await cancelResponseBody(response);
     const error = new Error(`头像服务返回 ${response.status}`);
     error.status = response.status === 404 ? 404 : 502;
     throw error;
   }
   const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
   if (!/^image\/(avif|gif|jpeg|png|webp)$/.test(contentType)) {
+    await cancelResponseBody(response);
     const error = new Error('头像服务返回了非图片内容');
     error.status = 502;
     throw error;
   }
   const declaredLength = Number(response.headers.get('content-length') || 0);
   if (declaredLength > avatarProxyMaxBytes) {
-    await response.body?.cancel().catch(() => {});
+    await cancelResponseBody(response);
     const error = new Error('头像文件过大');
     error.status = 413;
     throw error;
@@ -1068,6 +1271,26 @@ async function pathExists(filePath) {
 
 const hasBuiltFrontend = await pathExists(path.join(distDir, 'index.html'));
 const staticDir = hasBuiltFrontend ? distDir : publicDir;
+const staticRootRealPath = await fs.realpath(staticDir).catch(() => path.resolve(staticDir));
+const adminRootRealPath = await fs.realpath(adminDir).catch(() => path.resolve(adminDir));
+
+function isPathWithin(rootPath, candidatePath) {
+  const relative = path.relative(rootPath, candidatePath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function staticPathForbiddenError() {
+  const error = new Error('静态资源路径无效');
+  error.code = 'STATIC_PATH_FORBIDDEN';
+  error.status = 403;
+  return error;
+}
+
+async function resolvePathWithin(rootPath, filePath) {
+  const realPath = await fs.realpath(filePath);
+  if (!isPathWithin(rootPath, realPath)) throw staticPathForbiddenError();
+  return realPath;
+}
 
 // Draw records
 
@@ -1103,35 +1326,62 @@ function isWeiboUrlHost(hostname) {
 }
 
 function canonicalStatusUrl(statusId) {
-  const id = String(statusId || '').trim();
+  const id = normalizeStoredStatusId(statusId);
   return id ? `https://weibo.com/detail/${id}` : '';
 }
 
 function extractStatusId(input) {
   const token = statusTokenFromReference(input);
-  return token ? bidToMid(token) : '';
+  return normalizeStoredStatusId(token ? bidToMid(token) : '');
 }
 
 function normalizeStatusUrl(input, statusId) {
   const fallback = canonicalStatusUrl(statusId);
+  if (fallback) return fallback;
   const text = String(input || '').trim();
-  if (!text) return fallback;
+  if (!text || text.length > 2048) return '';
   try {
     const url = new URL(text);
-    if (!['http:', 'https:'].includes(url.protocol) || !isWeiboUrlHost(url.hostname)) return fallback;
+    if (!['http:', 'https:'].includes(url.protocol) || !isWeiboUrlHost(url.hostname)) return '';
     url.protocol = 'https:';
+    url.port = '';
     url.username = '';
     url.password = '';
+    url.search = '';
     url.hash = '';
     return url.toString();
   } catch {
-    return fallback;
+    return '';
+  }
+}
+
+async function readTextFileTail(filePath, maxBytes) {
+  const { handle, stat } = await openRegularStorageFile(filePath);
+  try {
+    const size = stat.size;
+    const length = Math.min(size, maxBytes);
+    const position = Math.max(0, size - length);
+    const buffer = Buffer.allocUnsafe(length);
+    let offset = 0;
+    while (offset < length) {
+      const { bytesRead } = await handle.read(buffer, offset, length - offset, position + offset);
+      if (!bytesRead) break;
+      offset += bytesRead;
+    }
+    let content = buffer.subarray(0, offset);
+    if (position > 0) {
+      const firstLineEnd = content.indexOf(0x0a);
+      content = firstLineEnd < 0 ? Buffer.alloc(0) : content.subarray(firstLineEnd + 1);
+    }
+    return content.toString('utf8');
+  } finally {
+    await handle.close();
   }
 }
 
 async function listDrawAttempts(limit = maxDrawAttempts) {
   try {
-    const text = await fs.readFile(drawAttemptsFile, 'utf8');
+    const text = await readTextFileTail(drawAttemptsFile, maxDrawAttemptBytes);
     return text
       .split(/\r?\n/)
       .map((line) => line.trim())
@@ -1154,11 +1404,14 @@ async function listDrawAttempts(limit = maxDrawAttempts) {
 async function appendDrawAttempt(item) {
   drawAttemptWrite = drawAttemptWrite.catch(() => {}).then(async () => {
     const items = await listDrawAttempts(maxDrawAttempts - 1);
-    items.push(item);
+    const lines = retainLatestLines(
+      [...items.map((entry) => JSON.stringify(entry)), JSON.stringify(item)],
+      { maxLines: maxDrawAttempts, maxBytes: maxDrawAttemptBytes },
+    );
     await fs.mkdir(path.dirname(drawAttemptsFile), { recursive: true, mode: 0o700 });
     const temporary = `${drawAttemptsFile}.${process.pid}.${crypto.randomUUID()}.tmp`;
     try {
-      await fs.writeFile(temporary, `${items.map((entry) => JSON.stringify(entry)).join('\n')}\n`, {
+      await fs.writeFile(temporary, lines.length ? `${lines.join('\n')}\n` : '', {
         encoding: 'utf8',
         mode: 0o600,
       });
@@ -1171,13 +1424,17 @@ async function appendDrawAttempt(item) {
 }
 
 function drawStatusIdFromPayload(payload) {
-  return String(
-    payload?.statusId
-      || payload?.sourceMeta?.statusId
-      || payload?.sourceMeta?.weibo?.statusId
-      || payload?.audit?.statusId
-      || '',
-  ).trim();
+  const candidates = [
+    payload?.statusId,
+    payload?.sourceMeta?.statusId,
+    payload?.sourceMeta?.weibo?.statusId,
+    payload?.audit?.statusId,
+  ];
+  for (const candidate of candidates) {
+    const statusId = normalizeStoredStatusId(candidate);
+    if (statusId) return statusId;
+  }
+  return '';
 }
 
 function drawIndexEntry(record, file = '') {
@@ -1185,10 +1442,15 @@ function drawIndexEntry(record, file = '') {
   const winnerCount = results.reduce((total, group) => (
     total + (Array.isArray(group?.winners) ? group.winners.length : 0)
   ), 0) || (Array.isArray(record?.winners) ? record.winners.length : 0);
+  const statusId = drawStatusIdFromPayload(record);
+  const statusUrl = normalizeStatusUrl(
+    record?.statusUrl || record?.audit?.statusUrl || record?.sourceMeta?.statusUrl,
+    statusId,
+  );
   return {
     file,
-    statusId: drawStatusIdFromPayload(record),
-    statusUrl: String(record?.statusUrl || record?.sourceMeta?.statusUrl || ''),
+    statusId,
+    statusUrl,
     auditHash: String(record?.auditHash || ''),
     drawNumber: storedPositiveInteger(record?.drawNumber),
     drawnAt: String(record?.drawnAt || record?.audit?.drawnAt || record?.savedAt || ''),
@@ -1201,24 +1463,40 @@ function emptyDrawSequenceStore() {
   return { version: 1, sequences: Object.create(null) };
 }
 
+function isSafeStoredSequenceKey(value) {
+  const key = String(value || '');
+  return key !== '__proto__'
+    && key !== 'constructor'
+    && key !== 'prototype'
+    && /^[A-Za-z0-9._:-]{1,200}$/.test(key);
+}
+
+function isValidSequenceNumber(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
 function validDrawSequenceStore(value) {
   if (!isPlainObject(value) || value.version !== 1 || !isPlainObject(value.sequences)) return false;
-  return Object.entries(value.sequences).every(([statusId, number]) => (
-    statusId.length > 0
-    && statusId.length <= 200
-    && Number.isSafeInteger(number)
-    && number > 0
-  ));
+  return Object.values(value.sequences).every(isValidSequenceNumber);
 }
 
 function normalizeDrawSequenceStore(value) {
   const sequences = Object.create(null);
-  for (const [statusId, number] of Object.entries(value.sequences)) sequences[statusId] = number;
+  for (const [statusId, number] of Object.entries(value.sequences)) {
+    if (!isSafeStoredSequenceKey(statusId) || !isValidSequenceNumber(number)) continue;
+    const normalized = normalizeStoredStatusId(statusId) || statusId;
+    if (Object.prototype.hasOwnProperty.call(sequences, normalized)) delete sequences[normalized];
+    sequences[normalized] = number;
+  }
+  const keys = Object.keys(sequences);
+  for (const key of keys.slice(0, Math.max(0, keys.length - maxDrawSequences))) {
+    delete sequences[key];
+  }
   return { version: 1, sequences };
 }
 
 function touchDrawSequence(store, statusId, drawNumber) {
-  const key = String(statusId || '').trim();
+  const key = normalizeStoredStatusId(statusId);
   if (!key) return;
   delete store.sequences[key];
   store.sequences[key] = drawNumber;
@@ -1240,9 +1518,13 @@ async function readDrawSequenceStore() {
   }
   if (!sequenceFilePresent) {
     try {
-      const prefix = `${path.basename(drawSequenceFile)}.corrupt-`;
+      const baseName = path.basename(drawSequenceFile);
+      const recoveryPrefixes = [
+        `${baseName}.corrupt-`,
+        `${baseName}.oversized-`,
+      ];
       const entries = await fs.readdir(path.dirname(drawSequenceFile));
-      if (entries.some((name) => name.startsWith(prefix))) {
+      if (entries.some((name) => recoveryPrefixes.some((prefix) => name.startsWith(prefix)))) {
         const error = new Error('开奖编号记录曾损坏，需人工确认后再恢复开奖');
         error.status = 500;
         throw error;
@@ -1255,7 +1537,11 @@ async function readDrawSequenceStore() {
     drawSequenceFile,
     emptyDrawSequenceStore,
     validDrawSequenceStore,
-    { rejectCorrupt: true },
+    {
+      maxBytes: maxDrawSequenceFileBytes,
+      rejectCorrupt: true,
+      rejectOversize: true,
+    },
   );
   return normalizeDrawSequenceStore(stored);
 }
@@ -1279,8 +1565,9 @@ function withDrawSequenceLock(task) {
 }
 
 function maxPersistedDrawNumber(records, statusId) {
+  const target = normalizeStoredStatusId(statusId);
   return (Array.isArray(records) ? records : []).reduce((maximum, record) => {
-    if (String(record?.statusId || '') !== String(statusId || '')) return maximum;
+    if (drawStatusIdFromPayload(record) !== target) return maximum;
     const number = Number(record?.drawNumber);
     return Number.isSafeInteger(number) && number > maximum ? number : maximum;
   }, 0);
@@ -1288,13 +1575,22 @@ function maxPersistedDrawNumber(records, statusId) {
 
 async function persistDrawRecord({ statusId, auditHash, file, payload }) {
   const persist = async () => {
-    const records = statusId ? await listCompletedDrawRecords() : [];
+    const records = await listCompletedDrawRecords();
     const currentStats = statusId
       ? completedDrawStats(records, statusId, auditHash)
       : { count: null, drawNumber: null, lastDrawnAt: '' };
-    const existing = statusId
-      ? records.find((item) => item.auditHash === auditHash)
-      : null;
+    const existing = records.find((item) => item.auditHash === auditHash);
+
+    if (existing && !statusId) {
+      return {
+        duplicate: true,
+        savedAt: existing.savedAt || payload.savedAt,
+        drawNumber: existing.drawNumber || null,
+        drawCount: null,
+        lastDrawnAt: existing.drawnAt || existing.savedAt || '',
+        file: existing.file || '',
+      };
+    }
 
     if (currentStats.drawNumber) {
       return {
@@ -1330,7 +1626,21 @@ async function persistDrawRecord({ statusId, auditHash, file, payload }) {
 
     if (statusId && drawNumber) {
       touchDrawSequence(sequenceStore, statusId, drawNumber);
-      await writeDrawSequenceStore(sequenceStore);
+      try {
+        await writeDrawSequenceStore(sequenceStore);
+      } catch (error) {
+        recordRuntimeEvent({
+          category: 'records',
+          action: 'sequence-write',
+          status: 'error',
+          message: '开奖记录已保存，但开奖序号账本更新失败',
+          details: {
+            file: path.basename(file),
+            statusId,
+            error: safeError(error).message,
+          },
+        });
+      }
     }
 
     return {
@@ -1357,7 +1667,7 @@ async function listCompletedDrawRecords() {
   if (completedDrawIndexLoad) return await completedDrawIndexLoad;
   const revision = completedDrawIndexRevision;
   const operation = (async () => {
-    const files = await listDrawFiles();
+    const files = await scanCompletedDrawIndexFiles();
     const records = [];
     for (const file of files) {
       try {
@@ -1380,8 +1690,44 @@ async function listCompletedDrawRecords() {
   }
 }
 
+function drawRecordTimestamp(value) {
+  const timestamp = Date.parse(String(value || ''));
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function compareDrawRecordsLatest(left, right) {
+  const leftNumber = storedPositiveInteger(left?.drawNumber);
+  const rightNumber = storedPositiveInteger(right?.drawNumber);
+  if ((leftNumber !== null) !== (rightNumber !== null)) return rightNumber !== null ? 1 : -1;
+  if (leftNumber && rightNumber && leftNumber !== rightNumber) return rightNumber - leftNumber;
+
+  const leftDrawnAt = drawRecordTimestamp(left?.drawnAt);
+  const rightDrawnAt = drawRecordTimestamp(right?.drawnAt);
+  if ((leftDrawnAt !== null) !== (rightDrawnAt !== null)) return rightDrawnAt !== null ? 1 : -1;
+  if (leftDrawnAt !== null && rightDrawnAt !== null && leftDrawnAt !== rightDrawnAt) {
+    return rightDrawnAt - leftDrawnAt;
+  }
+
+  const drawnAtOrder = String(right?.drawnAt || '').localeCompare(String(left?.drawnAt || ''));
+  if (drawnAtOrder) return drawnAtOrder;
+
+  const leftSavedAt = drawRecordTimestamp(left?.savedAt);
+  const rightSavedAt = drawRecordTimestamp(right?.savedAt);
+  if ((leftSavedAt !== null) !== (rightSavedAt !== null)) return rightSavedAt !== null ? 1 : -1;
+  if (leftSavedAt !== null && rightSavedAt !== null && leftSavedAt !== rightSavedAt) {
+    return rightSavedAt - leftSavedAt;
+  }
+
+  const savedAtOrder = String(right?.savedAt || '').localeCompare(String(left?.savedAt || ''));
+  if (savedAtOrder) return savedAtOrder;
+  const hashOrder = String(right?.auditHash || '').localeCompare(String(left?.auditHash || ''));
+  if (hashOrder) return hashOrder;
+  return String(right?.file || '').localeCompare(String(left?.file || ''));
+}
+
 async function getDrawCountForStatus(statusId, auditHash = '') {
-  if (!statusId) {
+  const targetStatusId = normalizeStoredStatusId(statusId);
+  if (!targetStatusId) {
     return {
       statusId: '',
       statusUrl: '',
@@ -1391,14 +1737,17 @@ async function getDrawCountForStatus(statusId, auditHash = '') {
     };
   }
   const records = await listCompletedDrawRecords();
-  const stats = completedDrawStats(records, statusId, auditHash);
+  const stats = completedDrawStats(records, targetStatusId, auditHash);
   const latest = records
-    .filter((record) => drawStatusIdFromPayload(record) === statusId)
-    .sort((left, right) => String(right.drawnAt || '').localeCompare(String(left.drawnAt || '')))
+    .filter((record) => drawStatusIdFromPayload(record) === targetStatusId)
+    .sort(compareDrawRecordsLatest)
     .at(0);
   return {
-    statusId,
-    statusUrl: String(latest?.statusUrl || latest?.sourceMeta?.statusUrl || ''),
+    statusId: targetStatusId,
+    statusUrl: normalizeStatusUrl(
+      latest?.statusUrl || latest?.audit?.statusUrl || latest?.sourceMeta?.statusUrl,
+      targetStatusId,
+    ),
     ...stats,
   };
 }
@@ -1547,9 +1896,29 @@ function safeError(error) {
   const rawStatus = Number(error?.status);
   const status = Number.isInteger(rawStatus) && rawStatus >= 400 && rawStatus <= 599 ? rawStatus : 500;
   return {
-    message: redactSensitiveText(error?.message || '未知错误'),
+    message: safeErrorMessage(error),
     status,
   };
+}
+
+function safeErrorMessage(error, maxChars = maxErrorMessageChars) {
+  const value = error instanceof Error ? error.message : error;
+  return safeText(value, maxChars, '未知错误');
+}
+
+function safeText(value, maxChars = maxErrorMessageChars, fallback = '') {
+  const cleaned = redactSensitiveText(value || fallback)
+    .replace(/\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\)?)/g, '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ')
+    .replace(/\s*\r?\n\s*/g, ' · ')
+    .replace(/[\t ]+/g, ' ')
+    .trim() || fallback;
+  if (!cleaned) return '';
+  const limit = Math.max(16, Math.floor(Number(maxChars) || maxErrorMessageChars));
+  const characters = [...cleaned];
+  return characters.length <= limit
+    ? cleaned
+    : `${characters.slice(0, limit - 1).join('')}…`;
 }
 
 function redactSensitiveText(value) {
@@ -1649,6 +2018,7 @@ async function readCookieStore() {
     cookieStoreFile,
     () => ({ version: 2, activeId: '', updatedAt: '', cookies: [] }),
     isPlainObject,
+    { maxBytes: maxCookieStoreFileBytes },
   );
   const cookies = normalizeCookieEntries(payload);
   return {
@@ -1724,12 +2094,15 @@ function cookieStoreSummary(store, extra = {}) {
 }
 
 function cookieAvailability(store) {
-  const available = usableStoredCookies(store.cookies || []);
-  const counts = cookiePoolCounts(available);
+  pruneCookieAuthQuarantine();
+  const counts = cookiePoolStatusCounts(store.cookies || [], {
+    quarantinedIds: cookieAuthQuarantine.keys(),
+  });
   return {
-    availableCookieCount: counts.cookieCount,
-    availableAccountCount: counts.accountCount,
-    quarantinedCount: quarantinedCookieCount(),
+    ...counts,
+    availableCookieCount: counts.tryableCookieCount,
+    availableAccountCount: counts.tryableAccountCount,
+    quarantinedCount: counts.quarantinedCookieCount,
   };
 }
 
@@ -1920,6 +2293,7 @@ async function readWeiboLoginState() {
     weiboLoginStateFile,
     () => emptyWeiboLoginState(),
     isPlainObject,
+    { maxBytes: maxWeiboLoginStateFileBytes },
   );
   return emptyWeiboLoginState(payload);
 }
@@ -1996,7 +2370,9 @@ async function publicWeiboLoginState(extra = {}) {
     refreshing: weiboKeepaliveRunning,
     browserOperation: weiboBrowserOperation
       ? { label: weiboBrowserOperation.label, startedAt: weiboBrowserOperation.startedAt }
-      : null,
+      : weiboBrowserCleanupOperation
+        ? { label: weiboBrowserCleanupOperation.label, startedAt: weiboBrowserCleanupOperation.startedAt }
+        : null,
     status: weiboLoginSession?.status || state.lastStatus || 'idle',
     message: weiboLoginSession?.message || state.lastMessage || '',
     sessionId: weiboLoginSession?.id || '',
@@ -2034,6 +2410,11 @@ async function runWeiboBrowserOperation(label, task) {
     error.status = 409;
     throw error;
   }
+  if (weiboBrowserCleanupOperation) {
+    const error = new Error('微博浏览器正在清理上一次启动，请稍后再试。');
+    error.status = 409;
+    throw error;
+  }
   const operation = {
     label,
     startedAt: new Date().toISOString(),
@@ -2048,6 +2429,36 @@ async function runWeiboBrowserOperation(label, task) {
   } finally {
     if (weiboBrowserOperation === operation) weiboBrowserOperation = null;
   }
+}
+
+function trackWeiboBrowserCleanup(promise) {
+  const operation = {
+    label: '上一次启动清理',
+    startedAt: new Date().toISOString(),
+    promise: null,
+  };
+  const tracked = Promise.resolve(promise).finally(() => {
+    if (weiboBrowserCleanupOperation === operation) weiboBrowserCleanupOperation = null;
+  });
+  operation.promise = tracked;
+  weiboBrowserCleanupOperation = operation;
+  tracked.catch(() => {});
+  return tracked;
+}
+
+async function waitForBrowserTask(promise, { signal, timeoutMs, message }) {
+  const outcome = await settlePromiseWithin(
+    waitForPromiseOrAbort(promise, signal),
+    timeoutMs,
+  );
+  if (outcome.timedOut) {
+    const error = new Error(message);
+    error.code = 'WEIBO_BROWSER_TASK_TIMEOUT';
+    error.status = 504;
+    throw error;
+  }
+  if (!outcome.fulfilled) throw outcome.error;
+  return outcome.value;
 }
 
 async function launchWeiboBrowserContext({ signal } = {}) {
@@ -2088,6 +2499,7 @@ async function launchWeiboBrowserContext({ signal } = {}) {
   try {
     launchPromise = chromium.launchPersistentContext(weiboLoginProfileDir, {
       headless: true,
+      chromiumSandbox: weiboBrowserSandbox,
       locale: 'zh-CN',
       timezoneId: 'Asia/Shanghai',
       userAgent: DESKTOP_UA,
@@ -2095,7 +2507,7 @@ async function launchWeiboBrowserContext({ signal } = {}) {
       timeout: weiboBrowserLaunchTimeoutMs,
       env: browserEnv,
       args: [
-        '--no-sandbox',
+        ...(!weiboBrowserSandbox ? ['--no-sandbox'] : []),
         '--disable-dev-shm-usage',
         '--disable-gpu',
         `--disk-cache-dir=${runtime.chromiumCache}`,
@@ -2111,19 +2523,64 @@ async function launchWeiboBrowserContext({ signal } = {}) {
         const cleanupOptions = {
           ownerToken: profile.ownerToken,
           closeTimeoutMs: weiboBrowserAbortCleanupMs,
+          graceMs: 0,
         };
-        const lateCleanup = Promise.resolve(launchPromise)
-          .then((lateContext) => closePersistentBrowserContext(
-            lateContext,
+        const outcome = await settlePromiseWithin(launchPromise, weiboBrowserAbortCleanupMs);
+        if (outcome.timedOut) {
+          const lateCleanup = Promise.resolve(launchPromise)
+            .then((lateContext) => closePersistentBrowserContext(
+              lateContext,
+              weiboLoginProfileDir,
+              cleanupOptions,
+            ))
+            .catch(() => closePersistentBrowserContext(null, weiboLoginProfileDir, cleanupOptions))
+            .catch(() => {});
+
+          const watchdogDelayMs = Math.min(
+            2_147_000_000,
+            Math.max(
+              weiboBrowserLaunchTimeoutMs + weiboBrowserAbortCleanupMs + 1000,
+              weiboBrowserAbortCleanupMs * 2,
+            ),
+          );
+          let watchdog;
+          const watchdogCleanup = new Promise((resolve) => {
+            watchdog = setTimeout(() => {
+              closePersistentBrowserContext(null, weiboLoginProfileDir, {
+                ...cleanupOptions,
+                closeTimeoutMs: 0,
+                removeLocks: true,
+              }).catch(() => {}).finally(resolve);
+            }, watchdogDelayMs);
+            watchdog.unref?.();
+          });
+          trackWeiboBrowserCleanup(Promise.race([lateCleanup, watchdogCleanup]));
+          lateCleanup.finally(() => clearTimeout(watchdog)).catch(() => {});
+
+          await closePersistentBrowserContext(
+            null,
+            weiboLoginProfileDir,
+            {
+              ...cleanupOptions,
+              closeTimeoutMs: 0,
+              graceMs: 0,
+              releaseOwner: false,
+              removeLocks: false,
+            },
+          ).catch(() => {});
+        } else if (outcome.fulfilled) {
+          await closePersistentBrowserContext(
+            outcome.value,
             weiboLoginProfileDir,
             cleanupOptions,
-          ))
-          .catch(() => closePersistentBrowserContext(
+          ).catch(() => {});
+        } else {
+          await closePersistentBrowserContext(
             null,
             weiboLoginProfileDir,
             cleanupOptions,
-          ).catch(() => {}));
-        await lateCleanup;
+          ).catch(() => {});
+        }
       }
       throw error;
     }
@@ -2245,8 +2702,11 @@ async function takeWeiboLoginScreenshot(page) {
   return await page.screenshot({ type: 'png', fullPage: false });
 }
 
-async function cookieHeaderFromBrowserContext(context) {
-  const cookies = await context.cookies(['https://weibo.com', 'https://m.weibo.cn', 'https://weibo.cn']);
+async function cookieHeaderFromBrowserContext(context, signal) {
+  const cookies = await waitForBrowserTask(
+    context.cookies(['https://weibo.com', 'https://m.weibo.cn', 'https://weibo.cn']),
+    { signal, timeoutMs: weiboLoginCookieTimeoutMs, message: '读取微博登录 Cookie 超时' },
+  );
   const byName = new Map();
   for (const cookie of cookies) {
     const domain = String(cookie.domain || '');
@@ -2260,7 +2720,7 @@ async function cookieHeaderFromBrowserContext(context) {
 async function saveBrowserCookieToPool(context, reason = 'manual', meta = {}) {
   const signal = meta.signal;
   throwIfTaskCancelled(signal);
-  const cookie = cleanCookieHeader(await cookieHeaderFromBrowserContext(context));
+  const cookie = cleanCookieHeader(await cookieHeaderFromBrowserContext(context, signal));
   throwIfTaskCancelled(signal);
   if (!/(?:^|;\s*)SUB=/.test(cookie)) {
     const error = new Error('还没有检测到微博登录 Cookie，请扫码并确认登录。');
@@ -2305,6 +2765,10 @@ async function saveBrowserCookieToPool(context, reason = 'manual', meta = {}) {
 }
 
 async function closeWeiboLoginSession(message = '扫码窗口已关闭', { waitForRefresh = true } = {}) {
+  if (weiboLoginCloseOperation) {
+    await weiboLoginCloseOperation;
+    return;
+  }
   weiboLoginStopRevision += 1;
   const session = weiboLoginSession;
   const refreshOperation = waitForRefresh
@@ -2312,21 +2776,36 @@ async function closeWeiboLoginSession(message = '扫码窗口已关闭', { waitF
     : null;
   session?.controller?.abort();
   weiboLoginSession = null;
+  const refreshWait = refreshOperation
+    ? settlePromiseWithin(refreshOperation, weiboBrowserAbortCleanupMs)
+    : null;
   if (!session) {
-    if (refreshOperation) await Promise.allSettled([refreshOperation]);
+    if (refreshWait) await refreshWait;
     return;
   }
   clearTimeout(session.timer);
-  const closeOperation = closePersistentBrowserContext(
-    session.context,
-    weiboLoginProfileDir,
-  ).catch(() => {});
-  await Promise.allSettled([closeOperation, refreshOperation].filter(Boolean));
-  await writeWeiboLoginState({
-    lastStatus: session.status === 'logged_in' ? 'ok' : 'idle',
-    lastMessage: message,
-    lastError: session.status === 'error' ? session.error || '' : '',
-  }).catch(() => {});
+  const operation = (async () => {
+    const closeOperation = closePersistentBrowserContext(
+      session.context,
+      weiboLoginProfileDir,
+    ).catch(() => {});
+    await Promise.allSettled([closeOperation, refreshWait].filter(Boolean));
+    if (refreshOperation && weiboLoginRefreshOperation === refreshOperation) {
+      weiboLoginRefreshOperation = null;
+    }
+    if (session.refreshOperation === refreshOperation) session.refreshOperation = null;
+    await writeWeiboLoginState({
+      lastStatus: session.status === 'logged_in' ? 'ok' : 'idle',
+      lastMessage: message,
+      lastError: session.status === 'error' ? session.error || '' : '',
+    }).catch(() => {});
+  })();
+  weiboLoginCloseOperation = operation;
+  try {
+    await operation;
+  } finally {
+    if (weiboLoginCloseOperation === operation) weiboLoginCloseOperation = null;
+  }
 }
 
 async function performWeiboLoginSessionRefresh({ includeScreenshot = true } = {}) {
@@ -2354,6 +2833,9 @@ async function performWeiboLoginSessionRefresh({ includeScreenshot = true } = {}
         lastMessage: session.message,
         lastError: session.error,
       });
+      if (error.code === 'WEIBO_BROWSER_TASK_TIMEOUT') {
+        await closeWeiboLoginSession(session.message, { waitForRefresh: false });
+      }
       return await publicWeiboLoginState();
     }
     session.status = 'waiting_scan';
@@ -2365,11 +2847,26 @@ async function performWeiboLoginSessionRefresh({ includeScreenshot = true } = {}
   let screenshot = '';
   if (includeScreenshot && session.page) {
     try {
-      await openWeiboQrLoginPage(session.page);
-      const image = await takeWeiboLoginScreenshot(session.page);
+      await waitForBrowserTask(openWeiboQrLoginPage(session.page), {
+        signal,
+        timeoutMs: weiboLoginPageTimeoutMs,
+        message: '微博扫码登录页加载超时',
+      });
+      const image = await waitForBrowserTask(takeWeiboLoginScreenshot(session.page), {
+        signal,
+        timeoutMs: weiboLoginScreenshotTimeoutMs,
+        message: '微博二维码截图生成超时',
+      });
       screenshot = `data:image/png;base64,${Buffer.from(image).toString('base64')}`;
     } catch (error) {
-      session.message = `二维码截图生成失败：${safeError(error).message}`;
+      const message = `二维码截图生成失败：${safeError(error).message}`;
+      session.message = message;
+      if (error.code === 'WEIBO_BROWSER_TASK_TIMEOUT') {
+        session.status = 'error';
+        session.error = message;
+        await closeWeiboLoginSession(message, { waitForRefresh: false });
+        return await publicWeiboLoginState();
+      }
     }
   }
   return await publicWeiboLoginState({ screenshot });
@@ -2390,6 +2887,11 @@ async function refreshWeiboLoginSession(options = {}) {
 }
 
 async function startWeiboLoginSession() {
+  if (weiboLoginCloseOperation) {
+    const error = new Error('上一次扫码浏览器正在清理，请稍后再试。');
+    error.status = 409;
+    throw error;
+  }
   if (weiboLoginSession) return await refreshWeiboLoginSession();
   return await runWeiboBrowserOperation('扫码登录', async (operation) => {
     if (weiboLoginSession) return await refreshWeiboLoginSession();
@@ -2442,7 +2944,11 @@ async function startWeiboLoginSession() {
     session.timer.unref?.();
 
     try {
-      await openWeiboQrLoginPage(page);
+      await waitForBrowserTask(openWeiboQrLoginPage(page), {
+        signal: operation.controller.signal,
+        timeoutMs: weiboLoginPageTimeoutMs,
+        message: '微博扫码登录页加载超时',
+      });
       if (weiboLoginSession !== session || stopRevision !== weiboLoginStopRevision) {
         await closePersistentBrowserContext(context, weiboLoginProfileDir).catch(() => {});
         return await publicWeiboLoginState({ message: '扫码窗口已关闭。' });
@@ -2517,27 +3023,27 @@ async function refreshCookieFromBrowserProfile(reason = 'manual-refresh') {
     const signal = operation.controller.signal;
     if (shutdownStarted) return await publicWeiboLoginState({ message: '服务正在停止，本次保活已跳过。' });
     weiboKeepaliveRunning = true;
-    await collectSystemSample(`${reason}:before`).catch(() => {});
-    await appendWeiboLoginEvent({
-      at: startedAtIso,
-      status: 'refreshing',
-      reason,
-      message: '正在打开微博页面刷新服务器登录态。',
-    }, {
-      lastStatus: 'refreshing',
-      lastMessage: '正在打开微博页面刷新服务器登录态。',
-      lastAttemptAt: startedAtIso,
-      lastError: '',
-      lastReason: reason,
-    });
     let context;
     try {
+      await collectSystemSample(`${reason}:before`).catch(() => {});
+      await appendWeiboLoginEvent({
+        at: startedAtIso,
+        status: 'refreshing',
+        reason,
+        message: '正在打开微博页面刷新服务器登录态。',
+      }, {
+        lastStatus: 'refreshing',
+        lastMessage: '正在打开微博页面刷新服务器登录态。',
+        lastAttemptAt: startedAtIso,
+        lastError: '',
+        lastReason: reason,
+      });
       context = await launchWeiboBrowserContext({ signal });
       weiboKeepaliveContext = context;
       const page = context.pages()[0] || await context.newPage();
-      await waitForPromiseOrAbort(
+      await waitForBrowserTask(
         page.goto('https://weibo.com/', { waitUntil: 'domcontentloaded', timeout: 30_000 }),
-        signal,
+        { signal, timeoutMs: 35_000, message: '微博保活页面载入超时' },
       );
       await sleep(2500, signal);
       const saved = await saveBrowserCookieToPool(context, reason, {
@@ -2567,6 +3073,8 @@ async function refreshCookieFromBrowserProfile(reason = 'manual-refresh') {
         lastFailureAt: failedAt,
         lastError: normalized.message,
         lastReason: reason,
+      }).catch((eventError) => {
+        console.warn(`Weibo keepalive event write failed: ${safeError(eventError).message}`);
       });
       console.warn(`Weibo keepalive failed (${reason}): ${normalized.message}`);
       if (reason === 'scheduled-refresh') return await publicWeiboLoginState();
@@ -2728,7 +3236,7 @@ async function fetchCookieRepostsWithPool({ statusId, body, reportProgress, allo
       return result;
     } catch (error) {
       throwIfTaskCancelled(signal);
-      failures.push(`${entry.transient ? '备用 Cookie' : `服务器登录态 ${serverCandidateIndex}`}不可用：${error.message}`);
+      failures.push(`${entry.transient ? '备用 Cookie' : `服务器登录态 ${serverCandidateIndex}`}不可用：${safeErrorMessage(error, 800)}`);
       if (isCookieAuthError(error)) {
         if (!entry.transient && allowCookieStoreWrite) await removeStoredCookie(entry.id);
         else if (!entry.transient) quarantineStoredCookie(entry.id);
@@ -2833,13 +3341,13 @@ async function fetchJson(url, options = {}) {
     });
   } catch (error) {
     if (signal?.aborted) throw taskCancelledError();
-    const wrapped = new Error(`请求微博接口失败或超时：${error.message}`);
+    const wrapped = new Error(`请求微博接口失败或超时：${safeErrorMessage(error, 800)}`);
     wrapped.status = error.name === 'TimeoutError' || error.name === 'AbortError' ? 504 : 502;
     throw wrapped;
   }
   const declaredLength = Number(response.headers.get('content-length') || 0);
   if (declaredLength > maxWeiboResponseBytes) {
-    await response.body?.cancel().catch(() => {});
+    await cancelResponseBody(response);
     const error = new Error('微博接口返回内容过大');
     error.status = 502;
     throw error;
@@ -2861,13 +3369,16 @@ async function fetchJson(url, options = {}) {
 
   const businessFailed = json?.ok === 0 || json?.ok === false;
   if (!response.ok || businessFailed || json.error || json.error_code) {
-    const error = new Error(json.error || json.msg || `微博接口返回 ${response.status}`);
+    const error = new Error(safeErrorMessage(
+      json.error || json.msg || `微博接口返回 ${response.status}`,
+      1200,
+    ));
     error.status = /频繁|风控|too many/i.test(error.message)
       ? 429
       : /(未登录|登录已失效|请先登录)/i.test(error.message) ? 401 : response.ok ? 502 : response.status || 502;
     error.weibo = {
-      errorCode: json.error_code,
-      request: json.request,
+      errorCode: safeText(json.error_code, 120),
+      request: safeText(json.request, 500),
     };
     throw error;
   }
@@ -2889,13 +3400,13 @@ async function fetchText(url, options = {}) {
     });
   } catch (error) {
     if (signal?.aborted) throw taskCancelledError();
-    const wrapped = new Error(`请求微博页面失败或超时：${error.message}`);
+    const wrapped = new Error(`请求微博页面失败或超时：${safeErrorMessage(error, 800)}`);
     wrapped.status = error.name === 'TimeoutError' || error.name === 'AbortError' ? 504 : 502;
     throw wrapped;
   }
   const declaredLength = Number(response.headers.get('content-length') || 0);
   if (declaredLength > maxWeiboResponseBytes) {
-    await response.body?.cancel().catch(() => {});
+    await cancelResponseBody(response);
     const error = new Error('微博页面返回内容过大');
     error.status = 502;
     throw error;
@@ -2952,7 +3463,7 @@ async function fetchWeiboResponse(url, options = {}) {
       baseMs: weiboThrottleBackoffMs,
       maxMs: weiboThrottleMaxWaitMs,
     });
-    await response.body?.cancel().catch(() => {});
+    await cancelResponseBody(response);
     onThrottle?.({
       status: response.status,
       delayMs,
@@ -3006,6 +3517,27 @@ function cookieRequired(mobileCookie) {
   return cookie;
 }
 
+function normalizeOfficialAccessToken(value) {
+  if (typeof value !== 'string') {
+    throw invalidDrawRequest('官方访问凭据必须是文本');
+  }
+  if (Buffer.byteLength(value, 'utf8') > maxAccessTokenBytes) {
+    const error = invalidDrawRequest(`官方访问凭据不能超过 ${maxAccessTokenBytes} 字节`);
+    error.code = 'ACCESS_TOKEN_TOO_LARGE';
+    throw error;
+  }
+  const token = value.trim();
+  if (!token) {
+    throw invalidDrawRequest('官方接口需要在页面输入本次使用的访问凭据');
+  }
+  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(token)) {
+    const error = invalidDrawRequest('官方访问凭据包含不允许的控制字符');
+    error.code = 'ACCESS_TOKEN_INVALID_CHARACTERS';
+    throw error;
+  }
+  return token;
+}
+
 function desktopHeaders(cookie, referer = 'https://weibo.com/') {
   const xsrfToken = xsrfTokenFromCookie(cookie);
   return {
@@ -3056,12 +3588,7 @@ function reportPageProgress(reportProgress, { phase, label, start, end, page, to
 }
 
 async function fetchOfficialReposts({ statusId, accessToken, reportProgress, signal }) {
-  const token = String(accessToken || '').trim();
-  if (!token) {
-    const error = new Error('官方接口需要在页面输入本次使用的访问凭据');
-    error.status = 400;
-    throw error;
-  }
+  const token = normalizeOfficialAccessToken(accessToken);
 
   const candidates = [];
   const candidateCollection = createCandidateCollection(candidates);
@@ -3904,20 +4431,25 @@ function queuedJobCount() {
 
 function clientRepostJobCount(clientKey) {
   if (!clientKey) return 0;
-  return Array.from(jobs.values()).filter((job) => (
-    job.clientKey === clientKey && (job.status === 'queued' || job.status === 'running')
-  )).length;
+  let count = 0;
+  for (const job of jobs.values()) {
+    if (job.status !== 'queued' && job.status !== 'running') continue;
+    for (const subscriber of job.subscribers.values()) {
+      if (subscriber.clientKey === clientKey) count += 1;
+    }
+  }
+  return count;
 }
 
 function jobQueuePosition(job) {
   return jobQueue.findIndex((item) => item.id === job.id) + 1;
 }
 
-function subscribeRepostJob(job) {
+function subscribeRepostJob(job, clientKey) {
   if (job.subscribers.size >= maxJobSubscribers) return '';
   const readToken = crypto.randomBytes(24).toString('base64url');
   const cancelToken = crypto.randomBytes(24).toString('base64url');
-  job.subscribers.set(readToken, { cancelToken });
+  job.subscribers.set(readToken, { cancelToken, clientKey });
   return { readToken, cancelToken };
 }
 
@@ -3961,6 +4493,35 @@ function findRepostSubscriber(job, token, field = 'readToken') {
     }
   }
   return null;
+}
+
+function cancelRepostSubscription(job, subscriber) {
+  if (!job || !subscriber?.readToken || !job.subscribers.has(subscriber.readToken)) {
+    return { detached: false, cancelled: false };
+  }
+  job.subscribers.delete(subscriber.readToken);
+  if (job.subscribers.size) return { detached: true, cancelled: false };
+  if (job.status === 'queued') {
+    finishQueuedJob(job, '候选载入已取消', 'cancelled');
+    drainJobQueue();
+    return { detached: false, cancelled: true };
+  }
+  if (job.status === 'running') {
+    job.progress = { ...job.progress, phase: 'cancelling', message: '正在取消候选载入' };
+    job.updatedAt = new Date().toISOString();
+    job.controller.abort();
+    return { detached: false, cancelled: true };
+  }
+  return { detached: false, cancelled: false };
+}
+
+function cancelSubscriptionIfResponseCloses(res, job, subscriber) {
+  const onClose = () => {
+    if (!res.writableFinished) cancelRepostSubscription(job, subscriber);
+  };
+  const onFinish = () => res.removeListener('close', onClose);
+  res.once('close', onClose);
+  res.once('finish', onFinish);
 }
 
 function clearJobCredentials(job) {
@@ -4115,6 +4676,9 @@ async function handleStartRepostsJob(req, res) {
   }
   const body = await readJsonBody(req, maxRepostJobBodyBytes);
   body.source = normalizeRepostSource(body.source);
+  if (body.source === 'official') {
+    body.accessToken = normalizeOfficialAccessToken(body.accessToken);
+  }
   body.allowCookieStoreWrite = canWriteCookieStore(req);
   const statusId = extractStatusId(body.statusUrl || body.statusId);
   if (!statusId) return sendJson(res, 400, { ok: false, error: '请输入微博链接、mid 或 bid' });
@@ -4126,7 +4690,13 @@ async function handleStartRepostsJob(req, res) {
   const sharedJob = shareKey ? sharedRepostJobs.get(shareKey) : null;
 
   if (sharedJob && (sharedJob.status === 'queued' || sharedJob.status === 'running')) {
-    const subscriber = subscribeRepostJob(sharedJob);
+    if (clientRepostJobCount(clientKey) >= maxClientRepostJobs) {
+      return sendJson(res, 429, {
+        ok: false,
+        error: '当前页面已有候选载入任务，请等待完成后再试',
+      });
+    }
+    const subscriber = subscribeRepostJob(sharedJob, clientKey);
     if (!subscriber) {
       return sendJson(res, 429, {
         ok: false,
@@ -4134,6 +4704,7 @@ async function handleStartRepostsJob(req, res) {
       });
     }
     repostTaskStats.sharedRunning += 1;
+    cancelSubscriptionIfResponseCloses(res, sharedJob, subscriber);
     return sendJson(res, 202, repostJobResponse(
       sharedJob,
       'shared-running',
@@ -4189,13 +4760,14 @@ async function handleStartRepostsJob(req, res) {
   const job = createJob(clientKey);
   job.shareKey = shareKey;
   if (shareKey) sharedRepostJobs.set(shareKey, job);
-  const subscriber = subscribeRepostJob(job);
+  const subscriber = subscribeRepostJob(job, clientKey);
   if (!subscriber) {
     discardJob(job);
     return sendJson(res, 429, { ok: false, error: '当前载入任务订阅已满，请稍后再试' });
   }
   repostTaskStats.fresh += 1;
   enqueueRepostsJob(job, body);
+  cancelSubscriptionIfResponseCloses(res, job, subscriber);
   return sendJson(res, 202, repostJobResponse(job, 'fresh', subscriber));
 }
 
@@ -4228,49 +4800,56 @@ async function handleCancelRepostsJob(req, res, jobId) {
   if (job.status === 'done' && job.responseBody) {
     return sendJsonBody(res, 200, job.responseBody);
   }
-  job.subscribers.delete(subscriber.readToken);
-  if (job.subscribers.size) {
+  const cancellation = cancelRepostSubscription(job, subscriber);
+  if (cancellation.detached) {
     return sendJson(res, 200, {
       ...repostJobResponse(job, job.delivery, subscriber),
       detached: true,
       message: '已停止当前页面等待，服务器继续为其他页面载入候选',
     });
   }
-  if (job.status === 'queued') {
-    finishQueuedJob(job, '候选载入已取消', 'cancelled');
-    drainJobQueue();
-  } else if (job.status === 'running') {
-    job.progress = { ...job.progress, phase: 'cancelling', message: '正在取消候选载入' };
-    job.updatedAt = new Date().toISOString();
-    job.controller.abort();
-  }
   return sendJson(res, 200, repostJobResponse(job, job.delivery, subscriber));
 }
 
 async function handleCookieStatus(req, res, url) {
-  const shouldCheck = url.searchParams.get('check') === '1';
-  const canCheck = !shouldCheck || canWriteCookieStore(req);
-  const store = await readCookieStore();
-  const summary = shouldCheck && canCheck
-    ? await validateStoredCookies()
-    : cookieStoreSummary(store);
-  const availability = cookieAvailability(shouldCheck && canCheck ? await readCookieStore() : store);
-  return sendJson(res, 200, {
-    ok: true,
-    hasCookie: Boolean(summary.hasCookie),
-    cookieCount: Number(summary.cookieCount || 0),
-    accountCount: Number(summary.accountCount || 0),
-    lastValidAt: String(summary.lastValidAt || ''),
-    ...availability,
-    cookieStoreWriteProtected: Boolean(cookieWriteKey),
-    checkSkipped: shouldCheck && !canCheck,
-  });
+  const request = createRequestAbortSignal(req, res);
+  try {
+    const shouldCheck = url.searchParams.get('check') === '1';
+    const canCheck = !shouldCheck || canWriteCookieStore(req);
+    const store = await waitForPromiseOrAbort(readCookieStore(), request.signal);
+    const summary = shouldCheck && canCheck
+      ? await validateStoredCookies(undefined, request.signal)
+      : cookieStoreSummary(store);
+    const currentStore = shouldCheck && canCheck
+      ? await waitForPromiseOrAbort(readCookieStore(), request.signal)
+      : store;
+    if (request.signal.aborted) return;
+    const availability = cookieAvailability(currentStore);
+    return sendJson(res, 200, {
+      ok: true,
+      hasCookie: Boolean(summary.hasCookie),
+      cookieCount: Number(summary.cookieCount || 0),
+      accountCount: Number(summary.accountCount || 0),
+      lastValidAt: String(summary.lastValidAt || ''),
+      ...availability,
+      cookieStoreWriteProtected: Boolean(cookieWriteKey),
+      checkSkipped: shouldCheck && !canCheck,
+    });
+  } finally {
+    request.cleanup();
+  }
 }
 
 async function handleDrawCount(req, res, url) {
   const statusId = extractStatusId(url.searchParams.get('statusId') || url.searchParams.get('statusUrl'));
   if (!statusId) {
-    return sendJson(res, 200, { ok: true, statusId: '', drawCount: null, lastDrawnAt: '' });
+    return sendJson(res, 200, {
+      ok: true,
+      statusId: '',
+      statusUrl: '',
+      drawCount: null,
+      lastDrawnAt: '',
+    });
   }
   const result = await getDrawCountForStatus(statusId);
   return sendJson(res, 200, {
@@ -4298,11 +4877,7 @@ async function handleSaveDraw(req, res) {
       }
       throw error;
     }
-    if (request.signal.aborted) return;
-    return await drawWriteGate.run(async () => {
-      if (request.signal.aborted) return;
-      return await saveDrawRecord(body, res);
-    }, { signal: request.signal });
+    return await drawWriteGate.run(() => saveDrawRecord(body, res));
   } finally {
     request.cleanup();
   }
@@ -4455,7 +5030,19 @@ async function saveDrawRecord(body, res) {
       prunedFiles: 0,
     });
   }
-  const retention = await pruneSavedDrawFiles();
+  let prunedFiles = 0;
+  try {
+    const retention = await pruneSavedDrawFiles();
+    prunedFiles = retention.removedCount;
+  } catch (error) {
+    recordRuntimeEvent({
+      category: 'records',
+      action: 'retention',
+      status: 'error',
+      message: '开奖记录已保存，但历史记录清理失败',
+      details: { error: safeError(error).message },
+    });
+  }
   await appendDrawAttempt({
     attemptId: auditHash,
     drawnAt: stableDrawnAt,
@@ -4478,7 +5065,7 @@ async function saveDrawRecord(body, res) {
     drawCount: persisted.drawCount,
     lastDrawnAt: persisted.lastDrawnAt,
     file: persisted.file,
-    prunedFiles: retention.removedCount,
+    prunedFiles,
   });
 }
 
@@ -4555,10 +5142,19 @@ async function removeDrawFilesInBatches(files, maxAttempts = drawCleanupBatchSiz
   return result;
 }
 
-async function scanDrawFiles({ limit = maxSavedDraws, scanMaxEntries = drawFileScanMaxEntries } = {}) {
+async function scanDrawFiles({
+  limit = maxSavedDraws,
+  scanMaxEntries = drawFileScanMaxEntries,
+  scanBudgetMs = drawFileScanBudgetMs,
+  signal,
+} = {}) {
+  throwIfRequestAborted(signal);
   const collectLimit = Math.max(0, Math.floor(Number(limit) || 0));
   const entryLimit = Number.isFinite(Number(scanMaxEntries))
     ? Math.max(0, Math.floor(Number(scanMaxEntries)))
+    : Number.POSITIVE_INFINITY;
+  const timeBudget = Number.isFinite(Number(scanBudgetMs))
+    ? Math.max(1, Math.floor(Number(scanBudgetMs)))
     : Number.POSITIVE_INFINITY;
   const files = [];
   const scanStartedAt = Date.now();
@@ -4585,7 +5181,8 @@ async function scanDrawFiles({ limit = maxSavedDraws, scanMaxEntries = drawFileS
   }
 
   for await (const entry of directory) {
-    if (scannedEntries >= entryLimit) {
+    throwIfRequestAborted(signal);
+    if (scannedEntries >= entryLimit || Date.now() - scanStartedAt >= timeBudget) {
       truncated = true;
       break;
     }
@@ -4594,6 +5191,7 @@ async function scanDrawFiles({ limit = maxSavedDraws, scanMaxEntries = drawFileS
       if (!entry.isFile() || !/^draw-[0-9A-Za-z._-]+\.json$/.test(entry.name)) continue;
       const filePath = path.join(drawsDir, entry.name);
       const stat = await fs.stat(filePath);
+      throwIfRequestAborted(signal);
       matchedFiles += 1;
       totalBytes += stat.size;
       if (collectLimit) {
@@ -4619,60 +5217,22 @@ async function scanDrawFiles({ limit = maxSavedDraws, scanMaxEntries = drawFileS
   };
 }
 
-async function removeDrawFilesOutsideKeep(keepNames, {
-  snapshotAt = 0,
-  maxAttempts = drawCleanupBatchSize,
-} = {}) {
-  const result = emptyFileRemoval();
-  const protectedNames = keepNames instanceof Set ? keepNames : new Set(keepNames || []);
-  const attemptLimit = Math.max(0, Math.floor(Number(maxAttempts)));
-  const batch = [];
-  let directory;
-  try {
-    directory = await fs.opendir(drawsDir);
-  } catch (error) {
-    if (error.code === 'ENOENT') return result;
-    throw error;
-  }
+async function scanCompletedDrawIndexFiles() {
+  let scan = await scanDrawFiles({ limit: maxSavedDraws });
+  if (!scan.truncated) return scan.files;
 
-  for await (const entry of directory) {
-    result.scannedEntries += 1;
-    if (!/^draw-[0-9A-Za-z._-]+\.json$/.test(entry.name)) continue;
-    try {
-      if (!entry.isFile()) continue;
-      const filePath = path.join(drawsDir, entry.name);
-      const stat = await fs.stat(filePath);
-      result.matchedFiles += 1;
-      if (protectedNames.has(entry.name)) continue;
-      if (snapshotAt && stat.mtimeMs > snapshotAt) {
-        result.skippedRecent += 1;
-        result.pending = true;
-        continue;
-      }
-      if (result.attempted + batch.length >= attemptLimit) {
-        result.pending = true;
-        break;
-      }
-      batch.push({ file: entry.name, filePath, mtimeMs: stat.mtimeMs, size: stat.size });
-      if (batch.length >= Math.min(drawCleanupBatchSize, Math.max(1, attemptLimit - result.attempted))) {
-        mergeFileRemoval(result, await removeDrawFileBatch(batch.splice(0)));
-        if (result.attempted >= attemptLimit) {
-          result.pending = true;
-          break;
-        }
-      }
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
-  }
-  if (batch.length && result.attempted < attemptLimit) {
-    mergeFileRemoval(result, await removeDrawFileBatch(batch.splice(0)));
-  }
-  return result;
-}
+  scan = await scanDrawFiles({
+    limit: maxSavedDraws,
+    scanMaxEntries: drawRecoveryScanMaxEntries,
+    scanBudgetMs: drawFileScanBudgetMs,
+  });
+  if (!scan.truncated) return scan.files;
 
-async function listDrawFiles() {
-  return (await scanDrawFiles()).files;
+  pruneSavedDrawFiles().catch(() => {});
+  const error = new Error('开奖记录正在分批整理，请稍后重试');
+  error.code = 'DRAW_INDEX_INCOMPLETE';
+  error.status = 503;
+  throw error;
 }
 
 async function performSavedDrawPrune() {
@@ -4682,32 +5242,25 @@ async function performSavedDrawPrune() {
   let recoveryScan = false;
   let removal = emptyFileRemoval();
   let cleanupPending = initialScan.truncated;
-  let retention;
 
   if (initialScan.truncated) {
     recoveryScan = true;
-    scan = await scanDrawFiles({ limit: maxSavedDraws, scanMaxEntries: Number.POSITIVE_INFINITY });
-    retention = selectFilesToPrune(scan.files, {
-      maxFiles: maxSavedDraws,
-      maxBytes: maxSavedDrawBytes,
-      maxAgeMs: maxSavedDrawAgeMs,
+    scan = await scanDrawFiles({
+      limit: drawRecoveryScanMaxEntries,
+      scanMaxEntries: drawRecoveryScanMaxEntries,
+      scanBudgetMs: drawFileScanBudgetMs,
     });
-    mergeFileRemoval(removal, await removeDrawFilesInBatches(retention.removals));
-    const protectedNames = new Set(scan.files.map((item) => item.file));
-    const remainingAttempts = Math.max(0, drawCleanupBatchSize - removal.attempted);
-    if (scan.matchedFiles > scan.files.length) {
-      if (remainingAttempts) {
-        mergeFileRemoval(removal, await removeDrawFilesOutsideKeep(protectedNames, {
-          snapshotAt: scan.startedAt,
-          maxAttempts: remainingAttempts,
-        }));
-      } else {
-        removal.pending = true;
-      }
+    if (!scan.truncated) {
+      const retention = selectFilesToPrune(scan.files, {
+        maxFiles: maxSavedDraws,
+        maxBytes: maxSavedDrawBytes,
+        maxAgeMs: maxSavedDrawAgeMs,
+      });
+      mergeFileRemoval(removal, await removeDrawFilesInBatches(retention.removals));
     }
-    cleanupPending = cleanupPending || removal.pending || scan.truncated;
+    cleanupPending = scan.truncated || removal.pending;
   } else {
-    retention = selectFilesToPrune(initialScan.files, {
+    const retention = selectFilesToPrune(initialScan.files, {
       maxFiles: maxSavedDraws,
       maxBytes: maxSavedDrawBytes,
       maxAgeMs: maxSavedDrawAgeMs,
@@ -4778,7 +5331,24 @@ function pruneSavedDrawFiles() {
   return operation;
 }
 
-async function readDrawFile(fileName) {
+function drawFileReadError(message, code, status) {
+  const error = new Error(message);
+  error.code = code;
+  error.status = status;
+  return error;
+}
+
+async function readDrawText(filePath, signal) {
+  try {
+    return await readTextFileWithinLimit(filePath, maxSavedDrawFileBytes, signal);
+  } catch (error) {
+    if (error?.code !== 'JSON_FILE_TOO_LARGE') throw error;
+    throw drawFileReadError('开奖记录文件过大，已跳过读取', 'DRAW_RECORD_TOO_LARGE', 413);
+  }
+}
+
+async function readDrawFile(fileName, { signal } = {}) {
+  throwIfRequestAborted(signal);
   const safeName = safeDrawFileName(fileName);
   const filePath = path.join(drawsDir, safeName);
   const relativePath = path.relative(drawsDir, filePath);
@@ -4789,8 +5359,9 @@ async function readDrawFile(fileName) {
   }
   let text;
   try {
-    text = await fs.readFile(filePath, 'utf8');
+    text = await readDrawText(filePath, signal);
   } catch (error) {
+    if (signal?.aborted) throwIfRequestAborted(signal);
     if (error.code === 'ENOENT') {
       error.status = 404;
       error.message = '开奖记录不存在';
@@ -4804,7 +5375,11 @@ async function readDrawFile(fileName) {
     return { file: safeName, filePath, record };
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
-    const isolatedPath = await isolateCorruptJsonFile(filePath, text);
+    const isolatedPath = await isolateCorruptJsonFile(
+      filePath,
+      text,
+      maxSavedDrawFileBytes,
+    );
     invalidateCompletedDrawIndex();
     recordRuntimeEvent({
       category: 'records',
@@ -4874,13 +5449,18 @@ function drawRecordPublic(record, file, detail = false) {
   })));
   const savedAt = String(record.savedAt || record.drawnAt || record.audit?.drawnAt || '');
   const drawnAt = String(record.drawnAt || record.audit?.drawnAt || savedAt);
+  const statusId = drawStatusIdFromPayload(record);
+  const statusUrl = normalizeStatusUrl(
+    record.statusUrl || record.audit?.statusUrl || record.sourceMeta?.statusUrl,
+    statusId,
+  ).slice(0, 500);
   const summary = {
     file,
     savedAt,
     drawnAt,
     source: String(record.source || record.sourceMeta?.provider || '').slice(0, 80),
-    statusId: String(record.statusId || record.audit?.statusId || record.sourceMeta?.statusId || '').slice(0, 80),
-    statusUrl: String(record.statusUrl || record.audit?.statusUrl || record.sourceMeta?.statusUrl || '').slice(0, 500),
+    statusId,
+    statusUrl,
     drawNumber: storedPositiveInteger(record.drawNumber),
     auditHash: String(record.auditHash || '').slice(0, 80),
     prizeCount: results.length,
@@ -4919,13 +5499,52 @@ function drawRecordPublic(record, file, detail = false) {
   };
 }
 
-async function listSavedDraws({ limit = 100, search = '' } = {}) {
-  const files = await listDrawFiles();
+function parseDrawListCursor(value) {
+  const encoded = String(value || '').trim();
+  if (!encoded) return null;
+  try {
+    if (encoded.length > 512) throw new Error('cursor too long');
+    const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+    const mtimeMs = Number(parsed?.[0]);
+    const file = String(parsed?.[1] || '');
+    if (!Number.isFinite(mtimeMs) || mtimeMs < 0 || !/^draw-[0-9A-Za-z._-]+\.json$/.test(file)) {
+      throw new Error('invalid cursor values');
+    }
+    return { mtimeMs, file };
+  } catch {
+    const error = new Error('开奖记录分页位置无效，请刷新后重试');
+    error.code = 'INVALID_DRAW_CURSOR';
+    error.status = 400;
+    throw error;
+  }
+}
+
+function encodeDrawListCursor(fileInfo) {
+  if (!fileInfo) return '';
+  return Buffer.from(JSON.stringify([fileInfo.mtimeMs, fileInfo.file]), 'utf8').toString('base64url');
+}
+
+function drawFileIsOlderThanCursor(fileInfo, cursor) {
+  if (fileInfo.mtimeMs !== cursor.mtimeMs) return fileInfo.mtimeMs < cursor.mtimeMs;
+  return fileInfo.file.localeCompare(cursor.file) < 0;
+}
+
+async function listSavedDraws({ limit = 100, offset = 0, cursor = null, search = '', signal } = {}) {
+  throwIfRequestAborted(signal);
+  const scan = await scanDrawFiles({ signal });
+  const files = scan.files;
   const normalizedSearch = String(search || '').trim().toLowerCase();
+  const pageOffset = Math.max(0, Math.floor(Number(offset) || 0));
+  const pageLimit = Math.max(1, Math.floor(Number(limit) || 1));
   const items = [];
+  let matched = 0;
+  let hasMore = false;
+  let lastFileInfo = null;
   for (const fileInfo of files) {
+    throwIfRequestAborted(signal);
     try {
-      const { record } = await readDrawFile(fileInfo.file);
+      const { record } = await readDrawFile(fileInfo.file, { signal });
+      throwIfRequestAborted(signal);
       const item = drawRecordPublic(record, fileInfo.file, false);
       const fullResults = drawResultGroups(record);
       const haystack = [
@@ -4940,16 +5559,36 @@ async function listSavedDraws({ limit = 100, search = '' } = {}) {
         ))),
       ].join(' ').toLowerCase();
       if (!normalizedSearch || haystack.includes(normalizedSearch)) {
-        items.push({ ...item, size: fileInfo.size });
+        const followsCursor = !cursor || drawFileIsOlderThanCursor(fileInfo, cursor);
+        if (followsCursor && (cursor || matched >= pageOffset)) {
+          if (items.length >= pageLimit) {
+            hasMore = true;
+            break;
+          }
+          items.push({ ...item, size: fileInfo.size });
+          lastFileInfo = fileInfo;
+        }
+        if (!cursor) matched += 1;
       }
-      if (items.length >= limit) break;
     } catch (error) {
+      if (signal?.aborted) throwIfRequestAborted(signal);
+      if (error?.name === 'AbortError' || error?.code === 'REQUEST_ABORTED') throw error;
       if (error?.code !== 'ENOENT' && error?.code !== 'CORRUPT_DRAW_RECORD') {
         console.warn(`Saved draw list skipped ${fileInfo.file}: ${safeError(error).message}`);
       }
     }
   }
-  return items;
+  return {
+    items,
+    hasMore,
+    nextOffset: pageOffset + items.length,
+    nextCursor: hasMore ? encodeDrawListCursor(lastFileInfo) : '',
+    scanTruncated: scan.truncated,
+    scannedEntries: scan.scannedEntries,
+    matchedFiles: scan.matchedFiles,
+    totalBytes: scan.totalBytes,
+    retainedLimit: maxSavedDraws,
+  };
 }
 
 function bytesToMb(bytes) {
@@ -5029,8 +5668,19 @@ async function diskDiagnostic() {
   }
 }
 
-async function readJsonArray(filePath) {
-  return await readStoredJson(filePath, () => [], Array.isArray);
+function jsonArrayMaxBytes(filePath) {
+  const resolved = path.resolve(filePath);
+  if (resolved === path.resolve(systemMetricsFile)) return maxSystemMetricsFileBytes;
+  if (resolved === path.resolve(adminEventsFile)) return maxAdminEventsFileBytes;
+  if (resolved === path.resolve(feedbackFile)) return maxFeedbackFileBytes;
+  return maxGenericStoredJsonBytes;
+}
+
+async function readJsonArray(filePath, options = {}) {
+  return await readStoredJson(filePath, () => [], Array.isArray, {
+    ...options,
+    maxBytes: options.maxBytes ?? jsonArrayMaxBytes(filePath),
+  });
 }
 
 async function writeJsonArray(filePath, items) {
@@ -5169,11 +5819,30 @@ function sourceFingerprint(req) {
     .slice(0, 12);
 }
 
+function boundedRuntimeValue(value, depth = 0) {
+  if (typeof value === 'string') return safeText(value, 1200);
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'boolean' || value === null) return value;
+  if (depth >= 3) return safeText(String(value ?? ''), 300);
+  if (Array.isArray(value)) {
+    return value.slice(0, 20).map((item) => boundedRuntimeValue(item, depth + 1));
+  }
+  if (!value || typeof value !== 'object') return safeText(String(value ?? ''), 300);
+  const result = {};
+  for (const key of Object.keys(value).slice(0, 30)) {
+    result[safeText(key, 80)] = boundedRuntimeValue(value[key], depth + 1);
+  }
+  return result;
+}
+
 function recordRuntimeEvent(event) {
+  const value = boundedRuntimeValue(event);
+  const normalized = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
   runtimeEvents.push({
+    ...normalized,
     at: new Date().toISOString(),
-    status: 'info',
-    ...event,
+    status: safeText(normalized?.status, 32, 'info'),
+    message: safeText(normalized?.message, maxErrorMessageChars),
   });
   if (runtimeEvents.length > 50) runtimeEvents.splice(0, runtimeEvents.length - 50);
 }
@@ -5194,11 +5863,14 @@ async function appendAdminEvent(event) {
     .catch(() => {})
     .then(async () => {
       const stored = await readJsonArray(adminEventsFile);
+      const value = boundedRuntimeValue(event);
+      const normalized = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
       stored.push({
+        ...normalized,
         at: new Date().toISOString(),
-        category: 'admin',
-        status: 'info',
-        ...event,
+        category: safeText(normalized?.category, 80, 'admin'),
+        status: safeText(normalized?.status, 32, 'info'),
+        message: safeText(normalized?.message, maxErrorMessageChars),
       });
       await writeJsonArray(adminEventsFile, stored.slice(-100));
     });
@@ -5650,19 +6322,29 @@ async function adminSystemSummary() {
       completedJobReleaseMs,
       completedJobReleaseText: formatDurationMs(completedJobReleaseMs),
       maxCandidates,
+      maxAccessTokenBytes,
       rateLimitMax,
       jobCreateRateLimitMax,
       drawSaveRateLimitMax,
       drawBodyReadConcurrency,
       maxQueuedDrawBodyReads,
       maxQueuedDrawWrites,
+      maxDrawAttempts,
+      maxDrawAttemptBytes,
       maxSavedDraws,
       maxSavedDrawBytes,
+      maxSavedDrawFileBytes,
       maxDrawSequences,
       maxSavedDrawAgeDays,
       drawFileScanMaxEntries,
       drawCleanupBatchSize,
       fileCleanupConcurrency,
+      maxCookieStoreFileBytes,
+      maxWeiboLoginStateFileBytes,
+      maxDrawSequenceFileBytes,
+      maxSystemMetricsFileBytes,
+      maxAdminEventsFileBytes,
+      maxFeedbackFileBytes,
       maxFeedbackEntries,
       maxFeedbackAgeDays,
       feedbackSourceDailyMax,
@@ -5924,11 +6606,23 @@ async function handleAdminWeiboLoginRefresh(req, res) {
 }
 
 async function handleAdminDraws(req, res, url) {
-  const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '', 10);
-  const limit = Math.min(500, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 100));
-  const search = String(url.searchParams.get('search') || '').slice(0, 200);
-  const items = await listSavedDraws({ limit, search });
-  return sendJson(res, 200, { ok: true, items });
+  const request = createRequestAbortSignal(req, res);
+  try {
+    const requestedLimit = Number.parseInt(url.searchParams.get('limit') || '', 10);
+    const limit = Math.min(200, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 100));
+    const requestedOffset = Number.parseInt(url.searchParams.get('offset') || '', 10);
+    const offset = Math.min(
+      maxSavedDraws,
+      Math.max(0, Number.isFinite(requestedOffset) ? requestedOffset : 0),
+    );
+    const cursor = parseDrawListCursor(url.searchParams.get('cursor'));
+    const search = String(url.searchParams.get('search') || '').slice(0, 200);
+    const page = await listSavedDraws({ limit, offset, cursor, search, signal: request.signal });
+    if (request.signal.aborted) return;
+    return sendJson(res, 200, { ok: true, ...page });
+  } finally {
+    request.cleanup();
+  }
 }
 
 async function handleFeedback(req, res) {
@@ -6008,8 +6702,14 @@ async function handleAdminDeleteFeedback(req, res, feedbackId) {
 }
 
 async function handleAdminDrawDetail(req, res, fileName) {
-  const { file, record } = await readDrawFile(fileName);
-  return sendJson(res, 200, { ok: true, item: drawRecordPublic(record, file, true) });
+  const request = createRequestAbortSignal(req, res);
+  try {
+    const { file, record } = await readDrawFile(fileName, { signal: request.signal });
+    if (request.signal.aborted) return;
+    return sendJson(res, 200, { ok: true, item: drawRecordPublic(record, file, true) });
+  } finally {
+    request.cleanup();
+  }
 }
 
 async function handleAdminDeleteDraw(req, res, fileName) {
@@ -6058,6 +6758,7 @@ function adminAssetName(pathname) {
   if (pathname === '/admin/admin.css') return 'admin.css';
   if (pathname === '/admin/admin.js') return 'admin.js';
   if (pathname === '/admin/admin-list-state.js') return 'admin-list-state.js';
+  if (pathname === '/admin/api-response.js') return 'api-response.js';
   return '';
 }
 
@@ -6070,16 +6771,17 @@ async function serveAdminAsset(req, res, pathname) {
   }
   const filePath = path.join(adminDir, assetName);
   try {
-    const content = await fs.readFile(filePath);
+    const safePath = await resolvePathWithin(adminRootRealPath, filePath);
+    const content = await fs.readFile(safePath);
     res.writeHead(200, {
       ...securityHeaders(),
-      'content-type': MIME[path.extname(filePath)] || 'application/octet-stream',
+      'content-type': MIME[path.extname(safePath)] || 'application/octet-stream',
       'cache-control': assetName === 'admin.html' ? 'no-store' : 'no-cache',
       'x-robots-tag': 'noindex, nofollow',
     });
     res.end(content);
-  } catch {
-    sendText(res, 404, 'Not Found');
+  } catch (error) {
+    sendText(res, error?.code === 'STATIC_PATH_FORBIDDEN' ? 403 : 404, error?.code === 'STATIC_PATH_FORBIDDEN' ? 'Forbidden' : 'Not Found');
   }
   return true;
 }
@@ -6112,16 +6814,27 @@ async function serveStatic(req, res) {
   }
 
   try {
-    const stat = await fs.stat(requested);
-    const filePath = stat.isDirectory() ? path.join(requested, 'index.html') : requested;
-    const content = await fs.readFile(filePath);
+    const safeRequested = await resolvePathWithin(staticRootRealPath, requested);
+    const stat = await fs.stat(safeRequested);
+    const filePath = stat.isDirectory() ? path.join(safeRequested, 'index.html') : safeRequested;
+    const safeFilePath = await resolvePathWithin(staticRootRealPath, filePath);
+    const fileStat = await fs.stat(safeFilePath);
+    if (!fileStat.isFile()) {
+      const error = new Error('静态资源不是文件');
+      error.code = 'ENOENT';
+      throw error;
+    }
+    const content = await fs.readFile(safeFilePath);
     res.writeHead(200, {
       ...securityHeaders(),
-      'content-type': MIME[path.extname(filePath)] || 'application/octet-stream',
-      ...staticCacheHeaders(filePath),
+      'content-type': MIME[path.extname(safeFilePath)] || 'application/octet-stream',
+      ...staticCacheHeaders(safeFilePath),
     });
     res.end(content);
-  } catch {
+  } catch (error) {
+    if (error?.code === 'STATIC_PATH_FORBIDDEN') {
+      return sendText(res, 403, 'Forbidden');
+    }
     if (!hasBuiltFrontend && (pathname === '/index.html' || !path.extname(pathname))) {
       const fallback = Buffer.from(missingBuildHtml(), 'utf8');
       res.writeHead(200, {
@@ -6135,9 +6848,16 @@ async function serveStatic(req, res) {
       return sendText(res, 404, 'Not Found');
     }
     const indexFile = path.join(staticDir, 'index.html');
-    const fallback = await pathExists(indexFile)
-      ? await fs.readFile(indexFile)
-      : Buffer.from(missingBuildHtml(), 'utf8');
+    let fallback;
+    try {
+      const safeIndexFile = await resolvePathWithin(staticRootRealPath, indexFile);
+      fallback = await fs.readFile(safeIndexFile);
+    } catch (fallbackError) {
+      if (fallbackError?.code === 'STATIC_PATH_FORBIDDEN') {
+        return sendText(res, 403, 'Forbidden');
+      }
+      fallback = Buffer.from(missingBuildHtml(), 'utf8');
+    }
     res.writeHead(200, {
       ...securityHeaders(),
       'content-type': 'text/html; charset=utf-8',
@@ -6317,6 +7037,7 @@ async function shutdown(signal) {
 
   const jobOperations = [];
   const browserOperation = weiboBrowserOperation?.promise;
+  const browserCleanupOperation = weiboBrowserCleanupOperation?.promise;
   for (const job of jobs.values()) {
     if (job.status === 'queued') {
       finishQueuedJob(job, '服务器正在重启，候选载入已取消', 'cancelled');
@@ -6331,21 +7052,18 @@ async function shutdown(signal) {
     server.close(() => resolve());
     server.closeIdleConnections?.();
   });
+  const keepaliveContext = weiboKeepaliveContext;
   await Promise.all([
     httpClosed,
     Promise.allSettled(jobOperations),
     closeWeiboLoginSession('服务器正在重启，扫码窗口已关闭。').catch(() => {}),
     closePersistentBrowserContext(
-      weiboKeepaliveContext,
+      keepaliveContext,
       weiboLoginProfileDir,
     ).catch(() => {}),
     browserOperation?.catch(() => {}),
+    browserCleanupOperation?.catch(() => {}),
   ]);
-  await closeWeiboLoginSession('服务器正在重启，扫码窗口已关闭。').catch(() => {});
-  await closePersistentBrowserContext(
-    weiboKeepaliveContext,
-    weiboLoginProfileDir,
-  ).catch(() => {});
   weiboKeepaliveContext = null;
   clearTimeout(forceExit);
 }

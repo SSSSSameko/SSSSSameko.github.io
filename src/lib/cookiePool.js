@@ -28,6 +28,32 @@ export function cookiePoolCounts(entries) {
   };
 }
 
+export function cookiePoolStatusCounts(entries, options = {}) {
+  const list = Array.isArray(entries) ? entries : [];
+  const quarantinedIds = new Set(options.quarantinedIds || []);
+  const countsFor = (predicate) => cookiePoolCounts(list.filter(predicate));
+  const tryable = countsFor((entry) => !quarantinedIds.has(entry?.id));
+  const verified = countsFor((entry) => (
+    !quarantinedIds.has(entry?.id) && Boolean(entry?.lastValidAt) && !entry?.lastError
+  ));
+  const pending = countsFor((entry) => !entry?.lastCheckedAt);
+  const checkFailed = countsFor((entry) => Boolean(entry?.lastCheckedAt) && Boolean(entry?.lastError));
+  const quarantined = countsFor((entry) => quarantinedIds.has(entry?.id));
+
+  return {
+    tryableCookieCount: tryable.cookieCount,
+    tryableAccountCount: tryable.accountCount,
+    verifiedCookieCount: verified.cookieCount,
+    verifiedAccountCount: verified.accountCount,
+    pendingCookieCount: pending.cookieCount,
+    pendingAccountCount: pending.accountCount,
+    checkFailedCookieCount: checkFailed.cookieCount,
+    checkFailedAccountCount: checkFailed.accountCount,
+    quarantinedCookieCount: quarantined.cookieCount,
+    quarantinedAccountCount: quarantined.accountCount,
+  };
+}
+
 export function cookieCandidatesWithFallback(entries, fallback) {
   const stored = Array.isArray(entries) ? [...entries] : [];
   if (!fallback?.cookie || stored.some((entry) => entry?.id === fallback.id)) return stored;

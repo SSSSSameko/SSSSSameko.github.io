@@ -27,6 +27,9 @@ import useSheetDrag from '../hooks/useSheetDrag.js';
 import useDialogStack from '../hooks/useDialogStack.js';
 import CandidateAvatar from './CandidateAvatar.jsx';
 
+const WINNERS_PER_GROUP = 12;
+const WINNER_BATCH_SIZE = 50;
+
 function formatReceiptDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '时间未记录';
@@ -91,6 +94,8 @@ export default function DrawResultSheet({
   const [isClosing, setIsClosing] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [announcementTemplate, setAnnouncementTemplate] = useState('concise');
+  const [visiblePrizeCounts, setVisiblePrizeCounts] = useState(() => new Map());
+  const prizeControlRefs = useRef(new Map());
   const receipt = useMemo(
     () => (receiptInput ? normalizeDrawReceipt(receiptInput) : null),
     [receiptInput],
@@ -100,6 +105,7 @@ export default function DrawResultSheet({
 
   useEffect(() => {
     setAnnouncementTemplate('concise');
+    setVisiblePrizeCounts(new Map());
   }, [receipt?.id]);
 
   const announcementText = useMemo(
@@ -254,6 +260,7 @@ export default function DrawResultSheet({
             </div>
             <div
               className={`receipt-avatar-stack ${singleWinner ? 'is-single' : ''}`}
+              role="group"
               aria-label="中奖用户摘要"
             >
               {displayedWinners.map((winner, index) => (
@@ -294,24 +301,73 @@ export default function DrawResultSheet({
           </div>
 
           <div className="receipt-prize-list">
-            {receipt.results.map((group, groupIndex) => (
-              <section
-                className="receipt-prize"
-                key={`${group.prize.name}-${groupIndex}`}
-                style={{
-                  '--receipt-accent': group.prize.color || '#ee8fa1',
-                  '--receipt-group-delay': `${130 + Math.min(groupIndex, 6) * 55}ms`,
-                }}
-              >
-                <header>
-                  <span className="receipt-prize-mark">{groupIndex + 1}</span>
-                  <div>
-                    <strong>{group.prize.name}</strong>
-                    <small>{group.winners.length} 名</small>
-                  </div>
-                </header>
-                <div className="receipt-winner-list">
-                  {group.winners.map((winner, winnerIndex) => {
+            {receipt.results.map((group, groupIndex) => {
+              const visibleCount = Math.min(
+                group.winners.length,
+                visiblePrizeCounts.get(groupIndex) || WINNERS_PER_GROUP,
+              );
+              const expanded = visibleCount > WINNERS_PER_GROUP;
+              const hasMore = visibleCount < group.winners.length;
+              const visibleGroupWinners = group.winners.slice(0, visibleCount);
+              const showNextBatch = () => setVisiblePrizeCounts((current) => {
+                const next = new Map(current);
+                next.set(groupIndex, Math.min(group.winners.length, visibleCount + WINNER_BATCH_SIZE));
+                return next;
+              });
+              const collapseGroup = () => setVisiblePrizeCounts((current) => {
+                const next = new Map(current);
+                next.delete(groupIndex);
+                return next;
+              });
+              const collapseAndRestoreFocus = () => {
+                collapseGroup();
+                requestAnimationFrame(() => {
+                  prizeControlRefs.current.get(groupIndex)?.focus({ preventScroll: true });
+                });
+              };
+              return (
+                <section
+                  className="receipt-prize"
+                  key={`${group.prize.name}-${groupIndex}`}
+                  style={{
+                    '--receipt-accent': group.prize.color || '#ee8fa1',
+                    '--receipt-group-delay': `${130 + Math.min(groupIndex, 6) * 55}ms`,
+                  }}
+                >
+                  <header>
+                    <span className="receipt-prize-mark">{groupIndex + 1}</span>
+                    <div>
+                      <strong>{group.prize.name}</strong>
+                      <small>{expanded ? `已显示 ${visibleCount} / ${group.winners.length} 名` : `${group.winners.length} 名`}</small>
+                    </div>
+                    {group.winners.length > WINNERS_PER_GROUP && (
+                      <span className="receipt-prize-controls">
+                        <button
+                          type="button"
+                          ref={(node) => {
+                            if (node) prizeControlRefs.current.set(groupIndex, node);
+                            else prizeControlRefs.current.delete(groupIndex);
+                          }}
+                          className={!hasMore ? 'is-collapse' : undefined}
+                          aria-expanded={expanded}
+                          aria-label={hasMore
+                            ? `${expanded ? '继续显示' : '查看'}${group.prize.name}中奖名单，共 ${group.winners.length} 人`
+                            : `收起${group.prize.name}中奖名单`}
+                          onClick={hasMore ? showNextBatch : collapseGroup}
+                        >
+                          {hasMore ? (expanded ? '继续' : '查看') : '收起'}
+                          <ChevronDown />
+                        </button>
+                        {expanded && hasMore && (
+                          <button type="button" onClick={collapseAndRestoreFocus} aria-label={`收起${group.prize.name}中奖名单`}>
+                            收起
+                          </button>
+                        )}
+                      </span>
+                    )}
+                  </header>
+                  <div className="receipt-winner-list">
+                    {visibleGroupWinners.map((winner, winnerIndex) => {
                     const motionIndex = winnerMotionIndex;
                     winnerMotionIndex += 1;
                     return (
@@ -329,9 +385,10 @@ export default function DrawResultSheet({
                       </div>
                     );
                   })}
-                </div>
-              </section>
-            ))}
+                  </div>
+                </section>
+              );
+            })}
           </div>
 
           <section className="receipt-audit">

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isWeiboStatusReference, statusTokenFromReference } from './weiboStatus.js';
+import {
+  isWeiboStatusReference,
+  normalizeStoredStatusId,
+  statusTokenFromReference,
+} from './weiboStatus.js';
 
 test('recognizes supported Weibo status references', () => {
   assert.equal(statusTokenFromReference('https://weibo.com/2715025067/PAbC12345'), 'PAbC12345');
@@ -38,4 +42,12 @@ test('keeps strict host and route checks for shared text', () => {
   assert.equal(statusTokenFromReference('链接 evilweibo.com/2715025067/PAbC12345'), '');
   assert.equal(statusTokenFromReference('个人主页 https://weibo.com/u/2715025067'), '');
   assert.equal(statusTokenFromReference('链接 https://user@weibo.com/2715025067/PAbC12345'), '');
+});
+
+test('normalizes stored status identifiers before using them in record links', () => {
+  assert.equal(normalizeStoredStatusId(' 900000000001 '), '900000000001');
+  assert.equal(normalizeStoredStatusId('PAbC12345'), 'PAbC12345');
+  assert.equal(normalizeStoredStatusId('900000/001'), '');
+  assert.equal(normalizeStoredStatusId('900000\r\n/001'), '');
+  assert.equal(normalizeStoredStatusId('x'.repeat(65)), '');
 });

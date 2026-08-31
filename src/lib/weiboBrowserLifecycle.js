@@ -38,6 +38,27 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+export async function settlePromiseWithin(promise, timeoutMs) {
+  const timeout = Math.max(0, Number(timeoutMs) || 0);
+  const guarded = Promise.resolve(promise);
+  guarded.catch(() => {});
+  let timer;
+  const timeoutResult = new Promise((resolve) => {
+    timer = setTimeout(() => resolve({ timedOut: true }), timeout);
+  });
+  try {
+    return await Promise.race([
+      guarded.then(
+        (value) => ({ timedOut: false, fulfilled: true, value }),
+        (error) => ({ timedOut: false, fulfilled: false, error }),
+      ),
+      timeoutResult,
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function currentPlatform(options = {}) {
   return options.platform || process.platform;
 }
@@ -532,8 +553,9 @@ export async function preparePersistentProfile(profileDir, options = {}) {
 }
 
 export async function closePersistentBrowserContext(context, profileDir, options = {}) {
-  const wait = options.wait || sleep;
   const closeTimeoutMs = Math.max(0, Number(options.closeTimeoutMs ?? 5000));
+  const releaseOwner = options.releaseOwner !== false;
+  const removeLocks = options.removeLocks !== false && releaseOwner;
   const platform = currentPlatform(options);
   const resolved = resolveProfileDir(profileDir, platform);
   const local = owners.get(profileKey(resolved, platform));
@@ -544,16 +566,17 @@ export async function closePersistentBrowserContext(context, profileDir, options
   let ownerCanBeReleased = false;
 
   if (context?.close) {
-    const closePromise = Promise.resolve().then(() => context.close()).catch(() => {});
+    let closeResult = null;
+    try {
+      closeResult = context.close();
+    } catch {
+      closeResult = null;
+    }
     if (closeTimeoutMs) {
-      await Promise.race([
-        closePromise,
-        wait(closeTimeoutMs).then(() => {
-          closeTimedOut = true;
-        }),
-      ]);
+      const closeOutcome = await settlePromiseWithin(closeResult, closeTimeoutMs);
+      closeTimedOut = closeOutcome.timedOut;
     } else {
-      await closePromise;
+      await Promise.resolve(closeResult).catch(() => {});
     }
   }
 
@@ -564,7 +587,7 @@ export async function closePersistentBrowserContext(context, profileDir, options
       ownerCanBeReleased = remaining.available
         && remaining.pids.length === 0
         && await ownerMatches(resolved, token, options);
-      if (ownerCanBeReleased) {
+      if (ownerCanBeReleased && removeLocks) {
         await removeProfileLocks(resolved);
         profileLocksRemoved = true;
       }
@@ -572,7 +595,7 @@ export async function closePersistentBrowserContext(context, profileDir, options
       ownerCanBeReleased = false;
     }
   }
-  const ownerReleased = ownerCanBeReleased
+  const ownerReleased = releaseOwner && ownerCanBeReleased
     ? await releasePersistentProfileOwner(resolved, token, options)
     : false;
   return { closeTimedOut, stoppedPids, profileLocksRemoved, ownerReleased };

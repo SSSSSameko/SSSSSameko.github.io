@@ -81,3 +81,20 @@ test('result poster caps rendered rows while preserving the actual winner total'
   assert.equal(model.omittedWinnerCount, 40);
   assert.equal(model.groups[0].totalWinnerCount, 100);
 });
+
+test('result poster also caps prize groups and extreme canvas height', () => {
+  const model = buildResultPosterModel({
+    ...sample,
+    results: Array.from({ length: 80 }, (_, index) => ({
+      prize: { name: `超长奖项名称 ${index + 1}`, count: 1 },
+      winners: [{ uid: `group-${index + 1}`, screenName: `获奖用户 ${index + 1}` }],
+    })),
+  });
+  const layout = measureResultPoster(model);
+
+  assert.equal(model.winnerCount, 80);
+  assert.equal(model.groups.length, 20);
+  assert.equal(model.displayedWinnerCount, 20);
+  assert.equal(model.omittedWinnerCount, 60);
+  assert.ok(layout.height < 7000, `unexpected poster height: ${layout.height}`);
+});

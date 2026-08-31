@@ -11,6 +11,9 @@ const GROUP_HEADER_HEIGHT = 88;
 const GROUP_BOTTOM_PADDING = 22;
 const GROUP_GAP = 22;
 const POSTER_WINNER_LIMIT = 60;
+const POSTER_GROUP_LIMIT = 20;
+const IMAGE_CACHE_LIMIT = 80;
+const imageCache = new Map();
 const TONES = [
   { fill: '#fff0f4', strong: '#df6f8d', soft: '#f7a7bc' },
   { fill: '#eef5ff', strong: '#577fd8', soft: '#9bbcf7' },
@@ -57,8 +60,9 @@ function posterDate(value) {
 }
 
 export function buildResultPosterModel(payload = {}) {
-  const sourceGroups = (Array.isArray(payload.results) ? payload.results : [])
+  const allGroups = (Array.isArray(payload.results) ? payload.results : [])
     .filter((group) => Array.isArray(group?.winners) && group.winners.length);
+  const sourceGroups = allGroups.slice(0, Math.min(POSTER_GROUP_LIMIT, POSTER_WINNER_LIMIT));
   let remaining = POSTER_WINNER_LIMIT;
   const groups = sourceGroups
     .map((group, groupIndex) => {
@@ -87,7 +91,7 @@ export function buildResultPosterModel(payload = {}) {
     })
     .filter((group) => group.winners.length);
 
-  const winnerCount = sourceGroups.reduce((total, group) => total + group.winners.length, 0);
+  const winnerCount = allGroups.reduce((total, group) => total + group.winners.length, 0);
   const displayedWinnerCount = groups.reduce((total, group) => total + group.winners.length, 0);
   const provider = friendlyProviderText(payload.providerText) || '可见转发';
 
@@ -172,6 +176,16 @@ function fillText(ctx, text, x, y, {
   ctx.fillText(text, x, y);
 }
 
+function fitText(ctx, value, maxWidth) {
+  const text = safeText(value);
+  if (!text || ctx.measureText(text).width <= maxWidth) return text;
+  const characters = Array.from(text);
+  while (characters.length && ctx.measureText(`${characters.join('')}…`).width > maxWidth) {
+    characters.pop();
+  }
+  return characters.length ? `${characters.join('')}…` : '…';
+}
+
 function wrapLines(ctx, value, maxWidth, maxLines = Infinity) {
   const text = safeText(value);
   if (!text) return [];
@@ -228,24 +242,51 @@ function drawInitialAvatar(ctx, winner, x, y, size, borderWidth = 4) {
   });
 }
 
-function loadImage(src, { crossOrigin = false } = {}) {
+function rememberImage(key, image) {
+  if (!key || !image) return;
+  imageCache.delete(key);
+  imageCache.set(key, image);
+  while (imageCache.size > IMAGE_CACHE_LIMIT) imageCache.delete(imageCache.keys().next().value);
+}
+
+function loadImage(src, { crossOrigin = false, signal, timeoutMs = 3000 } = {}) {
   return new Promise((resolve) => {
     if (!src || typeof window === 'undefined') {
       resolve(null);
       return;
     }
+    const cacheKey = `${crossOrigin ? 'cors' : 'plain'}:${src}`;
+    if (imageCache.has(cacheKey)) {
+      const cached = imageCache.get(cacheKey);
+      imageCache.delete(cacheKey);
+      imageCache.set(cacheKey, cached);
+      resolve(cached);
+      return;
+    }
     const image = new window.Image();
-    const timer = window.setTimeout(() => resolve(null), 5000);
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+      if (value) rememberImage(cacheKey, value);
+      resolve(value);
+    };
+    const abort = () => {
+      image.src = '';
+      finish(null);
+    };
+    const timer = window.setTimeout(abort, timeoutMs);
     if (crossOrigin) image.crossOrigin = 'anonymous';
     image.decoding = 'async';
-    image.onload = () => {
-      window.clearTimeout(timer);
-      resolve(image);
-    };
-    image.onerror = () => {
-      window.clearTimeout(timer);
-      resolve(null);
-    };
+    image.onload = () => finish(image);
+    image.onerror = () => finish(null);
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
     image.src = src;
   });
 }
@@ -295,16 +336,34 @@ async function loadWinnerAvatars(model, apiBase) {
     .map((winner) => safeAvatarUrl(winner.avatar))
     .filter(Boolean))];
   const imageMap = new Map();
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 9000);
   let cursor = 0;
-  const workers = Array.from({ length: Math.min(4, urls.length) }, async () => {
-    while (cursor < urls.length) {
+  const workers = Array.from({ length: Math.min(6, urls.length) }, async () => {
+    while (cursor < urls.length && !controller.signal.aborted) {
       const avatar = urls[cursor];
       cursor += 1;
-      const image = await loadImage(avatarProxyUrl(avatar, apiBase), { crossOrigin: true });
+      const proxy = avatarProxyUrl(avatar, apiBase);
+      let image = await loadImage(proxy, {
+        crossOrigin: true,
+        signal: controller.signal,
+        timeoutMs: 2500,
+      });
+      if (!image && !controller.signal.aborted && proxy !== avatar) {
+        image = await loadImage(avatar, {
+          crossOrigin: true,
+          signal: controller.signal,
+          timeoutMs: 2000,
+        });
+      }
       if (image) imageMap.set(avatar, image);
     }
   });
-  await Promise.all(workers);
+  try {
+    await Promise.all(workers);
+  } finally {
+    window.clearTimeout(timeout);
+  }
   return imageMap;
 }
 
@@ -356,7 +415,8 @@ function drawBrandHeader(ctx, model, y, brandImage) {
   const pillWidth = 210;
   const pillX = POSTER_WIDTH - POSTER_PADDING - pillWidth - 22;
   roundedRect(ctx, pillX, y + 39, pillWidth, 54, 27, 'rgba(245,241,255,0.88)', 'rgba(255,255,255,0.96)');
-  fillText(ctx, model.drawLabel, pillX + pillWidth / 2, y + 52, {
+  ctx.font = `650 19px ${FONT_STACK}`;
+  fillText(ctx, fitText(ctx, model.drawLabel, pillWidth - 24), pillX + pillWidth / 2, y + 52, {
     color: '#6655cc',
     font: `650 19px ${FONT_STACK}`,
     align: 'center',
@@ -475,7 +535,8 @@ function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
     font: `720 22px ${FONT_STACK}`,
     align: 'center',
   });
-  fillText(ctx, group.name, POSTER_PADDING + 98, y + 25, {
+  ctx.font = `680 27px ${FONT_STACK}`;
+  fillText(ctx, fitText(ctx, group.name, POSTER_INNER_WIDTH - 230), POSTER_PADDING + 98, y + 25, {
     font: `680 27px ${FONT_STACK}`,
   });
   fillText(ctx, `${group.totalWinnerCount} 名`, POSTER_WIDTH - POSTER_PADDING - 26, y + 34, {
@@ -491,10 +552,13 @@ function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
       ctx.fillRect(POSTER_PADDING + 104, rowY, POSTER_INNER_WIDTH - 132, 1.5);
     }
     drawAvatar(ctx, winner, avatarImages, POSTER_PADDING + 24, rowY + 13, 66);
-    fillText(ctx, winner.name, POSTER_PADDING + 112, rowY + 16, {
+    ctx.font = `650 24px ${FONT_STACK}`;
+    fillText(ctx, fitText(ctx, winner.name, POSTER_INNER_WIDTH - 220), POSTER_PADDING + 112, rowY + 16, {
       font: `650 24px ${FONT_STACK}`,
     });
-    fillText(ctx, winner.uid === 'UID 未记录' ? winner.uid : `UID ${winner.uid}`, POSTER_PADDING + 112, rowY + 52, {
+    ctx.font = `500 16px ${FONT_STACK}`;
+    const uid = winner.uid === 'UID 未记录' ? winner.uid : `UID ${winner.uid}`;
+    fillText(ctx, fitText(ctx, uid, POSTER_INNER_WIDTH - 220), POSTER_PADDING + 112, rowY + 52, {
       color: '#8b909b',
       font: `500 16px ${FONT_STACK}`,
     });
@@ -507,9 +571,9 @@ function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
   return height;
 }
 
-function drawOmittedWinners(ctx, count, y) {
+function drawOmittedWinners(ctx, displayedCount, omittedCount, y) {
   glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 62, 22, 'rgba(255,255,255,0.72)');
-  fillText(ctx, `结果图展示前 ${POSTER_WINNER_LIMIT} 位，另有 ${count} 位请在开奖记录中查看`, POSTER_WIDTH / 2, y + 19, {
+  fillText(ctx, `结果图展示 ${displayedCount} 位，另有 ${omittedCount} 位请在开奖记录中查看`, POSTER_WIDTH / 2, y + 19, {
     color: '#737884',
     font: `520 17px ${FONT_STACK}`,
     align: 'center',
@@ -619,7 +683,7 @@ export async function createResultPoster(payload, {
     y += drawWinnerGroup(ctx, group, index, y, avatarImages) + GROUP_GAP;
   });
   if (model.omittedWinnerCount) {
-    drawOmittedWinners(ctx, model.omittedWinnerCount, y);
+    drawOmittedWinners(ctx, model.displayedWinnerCount, model.omittedWinnerCount, y);
     y += 84;
   }
   drawFairness(ctx, model, y);

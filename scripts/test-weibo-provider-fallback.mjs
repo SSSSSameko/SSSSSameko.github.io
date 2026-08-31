@@ -7,6 +7,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { stopChildProcess } from './child-process.mjs';
 import { serverTestEnv } from './server-test-env.mjs';
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
@@ -44,23 +45,6 @@ function cookieEntry(id, cookie, savedAt) {
     lastValidAt: savedAt,
     lastError: '',
   };
-}
-
-async function stopServer(server) {
-  if (server.exitCode !== null || server.signalCode !== null) return;
-  const exited = new Promise((resolve) => server.once('exit', resolve));
-  server.kill('SIGTERM');
-  const stopped = await Promise.race([
-    exited.then(() => true),
-    new Promise((resolve) => setTimeout(() => resolve(false), 500)),
-  ]);
-  if (!stopped && server.exitCode === null && server.signalCode === null) {
-    server.kill('SIGKILL');
-    await Promise.race([
-      exited,
-      new Promise((resolve) => setTimeout(resolve, 1_000)),
-    ]);
-  }
 }
 
 async function withServer(scenario, options, run) {
@@ -174,7 +158,7 @@ async function withServer(scenario, options, run) {
     }, 10_000, () => `测试服务启动超时\n${output.join('')}`);
     await run({ runJob, requests, output });
   } finally {
-    await stopServer(server);
+    await stopChildProcess(server);
     await rm(outputDir, { recursive: true, force: true });
   }
 }

@@ -155,18 +155,19 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
               <input id="searchInput" name="drawSearch" type="search" aria-label="搜索开奖记录" autocomplete="off" placeholder="搜索链接、奖项、中奖人…">
             </label>
-            <button class="secondary-button" id="exportAllBtn" type="button">导出当前列表</button>
+            <button class="secondary-button" id="exportAllBtn" type="button">导出已载入记录</button>
           </div>
         </div>
         <section class="workbench">
           <div class="records-panel">
             <div class="records-panel-head">
               <strong>全部记录</strong>
-              <span class="records-head-meta">
-                <span id="recordCount">0 条</span>
-                <span class="export-status" id="exportStatus" role="status" aria-live="polite"></span>
-              </span>
-            </div>
+                <span class="records-head-meta">
+                  <span id="recordCount">0 条</span>
+                  <span class="export-status" id="exportStatus" role="status" aria-live="polite"></span>
+                </span>
+              </div>
+              <p class="record-scan-note" id="recordScanNote" aria-live="polite"></p>
             <div class="record-list-scroll">
               <div class="record-list" id="recordList"></div>
             </div>
@@ -290,6 +291,7 @@
       <div class="confirm-dialog-copy">
         <h2 id="confirmTitle">删除开奖记录</h2>
         <p id="confirmMessage">这条记录会从服务器移除，删除后无法恢复。</p>
+        <p class="confirm-dialog-error" id="confirmError" role="alert" hidden></p>
       </div>
       <div class="confirm-dialog-actions">
         <button class="secondary-button" id="confirmCancelBtn" type="button">取消</button>

@@ -16,6 +16,13 @@ const outputDir = await mkdtemp(path.join(tmpdir(), 'sameko-browser-soak-'));
 const profileDir = path.join(outputDir, 'weibo-profile');
 const runtime = await ensureBrowserRuntimeDirs(outputDir);
 const samples = [];
+const requestedRounds = Number(process.env.SAMEKO_BROWSER_SOAK_ROUNDS || 4);
+const rounds = Number.isSafeInteger(requestedRounds) && requestedRounds >= 1 && requestedRounds <= 8
+  ? requestedRounds
+  : 4;
+const browserSandbox = !/^(0|false|no)$/i.test(String(
+  process.env.WEIBO_BROWSER_SANDBOX ?? '0',
+).trim());
 
 async function waitForNoBrowserProcesses() {
   const deadline = Date.now() + 5000;
@@ -28,18 +35,19 @@ async function waitForNoBrowserProcesses() {
 }
 
 try {
-  for (let round = 0; round < 4; round += 1) {
+  for (let round = 0; round < rounds; round += 1) {
     const prepared = await preparePersistentProfile(profileDir);
     let context;
     try {
       context = await chromium.launchPersistentContext(profileDir, {
         headless: true,
+        chromiumSandbox: browserSandbox,
         viewport: { width: 430, height: 760 },
         env: process.platform === 'linux'
           ? { ...process.env, HOME: runtime.runtimeHome, XDG_CACHE_HOME: runtime.runtimeCache }
           : process.env,
         args: [
-          '--no-sandbox',
+          ...(!browserSandbox ? ['--no-sandbox'] : []),
           '--disable-dev-shm-usage',
           '--disable-gpu',
           `--disk-cache-dir=${runtime.chromiumCache}`,
@@ -70,10 +78,16 @@ try {
 
   const warmed = samples[0];
   const final = samples.at(-1);
-  assert.ok(final.rssMb - warmed.rssMb < 64, `Chromium lifecycle RSS kept growing: ${JSON.stringify(samples)}`);
-  assert.ok(final.heapMb - warmed.heapMb < 24, `Chromium lifecycle heap kept growing: ${JSON.stringify(samples)}`);
+  if (samples.length > 1) {
+    assert.ok(final.rssMb - warmed.rssMb < 64, `Chromium lifecycle RSS kept growing: ${JSON.stringify(samples)}`);
+    assert.ok(final.heapMb - warmed.heapMb < 24, `Chromium lifecycle heap kept growing: ${JSON.stringify(samples)}`);
+  }
   assert.deepEqual(await findProfileBrowserPids(profileDir), []);
-  console.log(JSON.stringify({ samples, chromiumProcesses: 0 }));
+  console.log(JSON.stringify({
+    mode: samples.length > 1 ? 'soak' : 'smoke',
+    samples,
+    chromiumProcesses: 0,
+  }));
   console.log('BROWSER_LIFECYCLE_SOAK_OK');
 } finally {
   await rm(outputDir, { recursive: true, force: true });

@@ -210,7 +210,7 @@ try {
       result: {
         ok: true,
         statusId: '1234567890',
-        statusUrl: 'https://weibo.com/1/Example',
+        statusUrl: 'https://weibo.com/2715025067/Example',
         drawCount: 2,
         candidates,
         meta: {
@@ -235,7 +235,7 @@ try {
     },
   }));
   await linkPage.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-  await linkPage.getByRole('textbox', { name: '微博链接、mid 或 bid' }).fill('https://weibo.com/1/Example');
+  await linkPage.getByRole('textbox', { name: '微博链接、mid 或 bid' }).fill('https://weibo.com/2715025067/Example');
   await linkPage.getByRole('button', { name: /载入候选/ }).click();
   await linkPage.getByRole('button', { name: /设置奖项并确认/ }).click();
   const linkPrizeSheet = linkPage.getByRole('dialog', { name: '奖项设置' });
@@ -309,7 +309,7 @@ try {
           result: {
             ok: true,
             statusId: '9876543210',
-            statusUrl: 'https://weibo.com/9/UnknownCount',
+            statusUrl: 'https://weibo.com/2715025067/UnknownCount',
             candidates: [{
               id: 'unknown-count-candidate',
               uid: '9001',
@@ -323,7 +323,7 @@ try {
       });
     });
     await unknownCountPage.goto(baseUrl, { waitUntil: 'domcontentloaded' });
-    await unknownCountPage.getByRole('textbox', { name: '微博链接、mid 或 bid' }).fill('https://weibo.com/9/UnknownCount');
+    await unknownCountPage.getByRole('textbox', { name: '微博链接、mid 或 bid' }).fill('https://weibo.com/2715025067/UnknownCount');
     await unknownCountPage.getByRole('button', { name: /载入候选/ }).click();
     await unknownCountPage.getByText('1 名候选 · 1 个奖项 · 1 个名额', { exact: true }).waitFor();
     await unknownCountPage.getByRole('button', { name: /设置奖项并确认/ }).click();

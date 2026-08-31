@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { rmSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,6 +12,7 @@ import {
   preparePersistentProfile,
   prunePersistentProfileCaches,
   releasePersistentProfileOwner,
+  settlePromiseWithin,
   stopProfileBrowsers,
 } from './weiboBrowserLifecycle.js';
 
@@ -41,6 +43,23 @@ test('findProfileBrowserPids only matches the exact persistent profile argument'
     await findProfileBrowserPids(profileDir, { procDir, ownPid: 999 }),
     [101],
   );
+});
+
+test('settlePromiseWithin returns before a stuck promise and observes its late rejection', async () => {
+  const result = await settlePromiseWithin(
+    new Promise((resolve, reject) => {
+      setTimeout(() => reject(new Error('late launch failure')), 30);
+    }),
+    5,
+  );
+
+  assert.deepEqual(result, { timedOut: true });
+  await new Promise((resolve) => setTimeout(resolve, 45));
+});
+
+test('settlePromiseWithin reports a settled promise without waiting for the timeout', async () => {
+  const result = await settlePromiseWithin(Promise.resolve('ready'), 500);
+  assert.deepEqual(result, { timedOut: false, fulfilled: true, value: 'ready' });
 });
 
 test('findProfileBrowserPids matches quoted Windows arguments without prefix collisions', async () => {
@@ -325,23 +344,22 @@ test('profile cleanup skips caches owned by another process', async (t) => {
 
 test('closePersistentBrowserContext kills profile processes when close stalls', async (t) => {
   const root = await tempDir(t);
+  const procDir = path.join(root, 'proc');
   const profileDir = path.join(root, 'profile');
+  await fs.mkdir(procDir, { recursive: true });
   await fs.mkdir(profileDir, { recursive: true });
-  let alive = false;
   const processOptions = {
-    platform: 'win32',
+    procDir,
     ownPid: 999,
-    async listProcesses() {
-      return alive
-        ? [{
-          ProcessId: 404,
-          CommandLine: `headless_shell --user-data-dir="${path.win32.resolve(profileDir)}"`,
-        }]
-        : [];
-    },
   };
   const owner = await acquirePersistentProfileOwner(profileDir, processOptions);
-  alive = true;
+  const processDir = path.join(procDir, '404');
+  await fs.mkdir(processDir, { recursive: true });
+  await fs.writeFile(
+    path.join(processDir, 'cmdline'),
+    `headless_shell\0--user-data-dir=${path.resolve(profileDir)}\0`,
+  );
+  let alive = true;
   await fs.writeFile(path.join(profileDir, 'SingletonLock'), 'lock');
   const signals = [];
   const result = await closePersistentBrowserContext(
@@ -355,8 +373,10 @@ test('closePersistentBrowserContext kills profile processes when close stalls', 
       wait: async () => {},
       kill(pid, signal) {
         signals.push([pid, signal]);
-        if (signal === 'SIGTERM' || signal === 'SIGKILL') alive = false;
-        else if (!alive) {
+        if (signal === 'SIGTERM' || signal === 'SIGKILL') {
+          alive = false;
+          rmSync(processDir, { recursive: true, force: true });
+        } else if (!alive) {
           const error = new Error('not found');
           error.code = 'ESRCH';
           throw error;
@@ -373,6 +393,37 @@ test('closePersistentBrowserContext kills profile processes when close stalls', 
   );
   assert.equal(result.ownerReleased, true);
   await assert.rejects(fs.stat(path.join(profileDir, 'SingletonLock')), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(path.join(profileDir, OWNER_FILE)), { code: 'ENOENT' });
+});
+
+test('close can stop profile processes while keeping ownership for a late launch', async (t) => {
+  const root = await tempDir(t);
+  const procDir = path.join(root, 'proc');
+  const profileDir = path.join(root, 'profile');
+  await fs.mkdir(procDir, { recursive: true });
+  await fs.mkdir(profileDir, { recursive: true });
+  const owner = await acquirePersistentProfileOwner(profileDir, { procDir, ownPid: 999 });
+
+  const result = await closePersistentBrowserContext(null, profileDir, {
+    procDir,
+    ownPid: 999,
+    ownerToken: owner.token,
+    releaseOwner: false,
+    removeLocks: false,
+  });
+
+  assert.equal(result.ownerReleased, false);
+  assert.equal(
+    JSON.parse(await fs.readFile(path.join(profileDir, OWNER_FILE), 'utf8')).token,
+    owner.token,
+  );
+
+  const released = await closePersistentBrowserContext(null, profileDir, {
+    procDir,
+    ownPid: 999,
+    ownerToken: owner.token,
+  });
+  assert.equal(released.ownerReleased, true);
   await assert.rejects(fs.stat(path.join(profileDir, OWNER_FILE)), { code: 'ENOENT' });
 });
 
@@ -419,23 +470,25 @@ test('close without ownership never kills Chromium or removes its locks', async 
 
 test('close keeps profile ownership while a matching browser process remains', async (t) => {
   const root = await tempDir(t);
+  const procDir = path.join(root, 'proc');
   const profileDir = path.join(root, 'profile');
+  await fs.mkdir(procDir, { recursive: true });
   await fs.mkdir(profileDir, { recursive: true });
   await fs.writeFile(path.join(profileDir, 'SingletonLock'), 'lock');
   const processOptions = {
-    platform: 'win32',
+    procDir,
     ownPid: 999,
-    async listProcesses() {
-      return [{
-        ProcessId: 505,
-        CommandLine: `headless_shell --user-data-dir="${path.win32.resolve(profileDir)}"`,
-      }];
-    },
     kill() {},
     graceMs: 0,
     wait: async () => {},
   };
   const owner = await acquirePersistentProfileOwner(profileDir, processOptions);
+  const processDir = path.join(procDir, '505');
+  await fs.mkdir(processDir, { recursive: true });
+  await fs.writeFile(
+    path.join(processDir, 'cmdline'),
+    `headless_shell\0--user-data-dir=${path.resolve(profileDir)}\0`,
+  );
 
   const result = await closePersistentBrowserContext(null, profileDir, {
     ...processOptions,

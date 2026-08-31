@@ -91,6 +91,13 @@ test('retainLatestLines removes the oldest lines until the byte budget is met', 
   );
 });
 
+test('retainLatestLines never keeps a line larger than the byte budget', () => {
+  assert.deepEqual(
+    retainLatestLines(['x'.repeat(20)], { maxLines: 10, maxBytes: 10 }),
+    [],
+  );
+});
+
 test('removeFilesBestEffort only counts successful removals and keeps failed bytes', async () => {
   const result = await removeFilesBestEffort([
     { file: 'removed.json', size: 40 },

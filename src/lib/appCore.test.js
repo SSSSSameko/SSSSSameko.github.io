@@ -79,6 +79,20 @@ test('parseManualInput reads csv headers and quoted values', () => {
   assert.equal(rows[0].text, '转发内容');
 });
 
+test('parseManualInput normalizes csv header spacing, bom and common aliases', () => {
+  const rows = parseManualInput('\uFEFF User_ID , nickname , Created_At\n1001, sameko, 2026-08-31');
+  assert.equal(rows[0].uid, '1001');
+  assert.equal(rows[0].screenName, 'sameko');
+  assert.equal(rows[0].createdAt, '2026-08-31');
+});
+
+test('parseManualInput rejects an unclosed csv quote', () => {
+  assert.throws(
+    () => parseManualInput('uid,screenName\n1001,"sameko'),
+    /未闭合的引号/,
+  );
+});
+
 test('parseManualInput keeps line breaks inside quoted csv values', () => {
   const rows = parseManualInput('uid,screenName,text\n1001,sameko,"第一行\n第二行"');
   assert.equal(rows.length, 1);

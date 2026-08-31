@@ -8,6 +8,7 @@ import {
   DRAW_HISTORY_VERSION,
   drawCountCopy,
   mergeDrawHistory,
+  nextManualDrawNumber,
   normalizeDrawReceipt,
   receiptWinnerRows,
   receiptWinnerText,
@@ -77,11 +78,91 @@ test('completedDrawStats ignores unsafe or fractional persisted sequence values'
   assert.equal(completedDrawStats(records, '100', 'second').drawNumber, 2);
 });
 
+test('completedDrawStats keeps a deterministic order across legacy and numbered records', () => {
+  const records = [
+    {
+      statusId: '100',
+      auditHash: 'numbered',
+      drawNumber: 2,
+      drawnAt: '2026-08-01T02:00:00.000Z',
+      savedAt: '2026-08-01T02:00:01.000Z',
+    },
+    {
+      statusId: '100',
+      auditHash: 'legacy-late',
+      drawnAt: '2026-08-01T01:00:00.000Z',
+      savedAt: '2026-08-01T01:00:01.000Z',
+    },
+    {
+      statusId: '100',
+      auditHash: 'numbered-one',
+      drawNumber: 1,
+      drawnAt: '2026-07-01T01:00:00.000Z',
+      savedAt: '2026-07-01T01:00:01.000Z',
+    },
+    {
+      statusId: '100',
+      auditHash: 'legacy-early',
+      drawnAt: '2026-07-01T00:00:00.000Z',
+      savedAt: '2026-07-01T00:00:01.000Z',
+    },
+  ];
+  const expected = completedDrawStats(records, '100', 'legacy-late');
+  const reversed = completedDrawStats([...records].reverse(), '100', 'legacy-late');
+
+  assert.deepEqual(expected, reversed);
+  assert.equal(expected.count, 4);
+  assert.equal(expected.drawNumber, 2);
+  assert.equal(expected.lastDrawnAt, '2026-08-01T02:00:00.000Z');
+});
+
+test('completedDrawStats prefers the server copy of a duplicate hash', () => {
+  const local = {
+    statusId: '100',
+    auditHash: 'same',
+    recordState: 'local',
+    drawnAt: '2026-08-01T00:00:00.000Z',
+  };
+  const server = {
+    ...local,
+    recordState: 'server',
+    drawNumber: 7,
+    savedAt: '2026-08-01T00:00:01.000Z',
+  };
+  assert.equal(completedDrawStats([local, server], '100', 'same').drawNumber, 7);
+  assert.equal(completedDrawStats([server, local], '100', 'same').drawNumber, 7);
+});
+
 test('drawCountCopy uses completed draw wording', () => {
   assert.equal(drawCountCopy({ source: 'mobile', count: 0, completed: false }), '本链接尚无开奖记录');
   assert.equal(drawCountCopy({ source: 'mobile', count: 3, completed: false }), '此前已完成 3 次');
   assert.equal(drawCountCopy({ source: 'mobile', count: 3, completed: true }), '本链接第 3 次开奖');
   assert.equal(drawCountCopy({ source: 'manual', count: 2, completed: true }), '手动名单 · 本机第 2 次开奖');
+});
+
+test('nextManualDrawNumber uses the highest saved manual sequence', () => {
+  const history = [
+    { id: 'manual-1', source: 'manual', recordState: 'server', drawNumber: 1 },
+    { id: 'manual-7', source: 'manual', recordState: 'server', drawNumber: 7 },
+    { id: 'local-9', source: 'manual', recordState: 'local', drawNumber: 9 },
+    { id: 'weibo-12', source: 'mobile', recordState: 'server', drawNumber: 12 },
+    { id: 'invalid', source: 'manual', recordState: 'server', drawNumber: 1.5 },
+  ];
+
+  assert.equal(nextManualDrawNumber(history), 8);
+  assert.equal(nextManualDrawNumber(history, 'manual-7'), 2);
+  assert.equal(nextManualDrawNumber([], 'missing'), 1);
+});
+
+test('nextManualDrawNumber stops before an unsafe sequence value', () => {
+  assert.equal(nextManualDrawNumber([
+    {
+      id: 'manual-max',
+      source: 'manual',
+      recordState: 'server',
+      drawNumber: Number.MAX_SAFE_INTEGER,
+    },
+  ]), null);
 });
 
 test('winner exports keep prize order, rank and identity', () => {

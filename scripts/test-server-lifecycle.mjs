@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { hashAdminPassword } from '../src/lib/adminAuth.js';
+import { stopChildProcess } from './child-process.mjs';
 import { serverTestEnv } from './server-test-env.mjs';
 
 async function availablePort() {
@@ -40,6 +41,12 @@ const browserLaunchReleaseFile = path.join(outputDir, 'browser-launch-release.ma
 const browserContextClosedFile = path.join(outputDir, 'browser-context-closed.marker');
 const browserScreenshotReadyFile = path.join(outputDir, 'browser-screenshot-ready.marker');
 const browserScreenshotReleaseFile = path.join(outputDir, 'browser-screenshot-release.marker');
+const browserProfileOwnerFile = path.join(
+  outputDir,
+  'auth',
+  'weibo-login-profile',
+  '.sameko-profile-owner.json',
+);
 const adminUsername = 'lifecycle-admin';
 const adminPassword = 'lifecycle-test-password';
 const adminPasswordHash = await hashAdminPassword(adminPassword, {
@@ -82,15 +89,15 @@ const waitForFile = async (filePath) => {
 const startupReadReadyFile = process.env.MOCK_STARTUP_READ_READY_FILE;
 const startupReadReleaseFile = process.env.MOCK_STARTUP_READ_RELEASE_FILE;
 if (startupReadReadyFile && startupReadReleaseFile) {
-  const originalReadFile = fs.readFile.bind(fs);
+  const originalOpen = fs.open.bind(fs);
   let heldStartupRead = false;
-  fs.readFile = async (target, ...args) => {
+  fs.open = async (target, ...args) => {
     if (!heldStartupRead && String(target).endsWith('system-metrics.json')) {
       heldStartupRead = true;
       await fs.writeFile(startupReadReadyFile, 'startup-read', 'utf8');
       await waitForFile(startupReadReleaseFile);
     }
-    return await originalReadFile(target, ...args);
+    return await originalOpen(target, ...args);
   };
 }
 
@@ -134,7 +141,7 @@ if (launchReadyFile && launchReleaseFile && contextClosedFile) {
         evaluate: async () => true,
         screenshot: async () => {
           if (screenshotReadyFile && screenshotReleaseFile) {
-            await fs.writeFile(screenshotReadyFile, 'screenshot-started', 'utf8');
+            await fs.appendFile(screenshotReadyFile, 'screenshot-started\\n', 'utf8');
             await Promise.race([waitForFile(screenshotReleaseFile), contextClosed]);
           }
           return Buffer.from('mock-screenshot');
@@ -182,12 +189,13 @@ function spawnServer({
       WEIBO_KEEPALIVE_ENABLED: '0',
       MAX_ACTIVE_JOBS: '1',
       MAX_QUEUED_JOBS: '4',
-      MAX_CLIENT_REPOST_JOBS: '1',
+      MAX_CLIENT_REPOST_JOBS: '2',
       MAX_RETAINED_JOBS: '2',
-      MAX_JOB_SUBSCRIBERS: '2',
+      MAX_JOB_SUBSCRIBERS: '4',
       COMPLETED_JOB_RELEASE_MS: '60000',
       RUNTIME_CACHE_SCAN_MAX_ENTRIES: '1000',
       WEIBO_BROWSER_ABORT_CLEANUP_MS: '1000',
+      WEIBO_LOGIN_SCREENSHOT_TIMEOUT_MS: '1000',
       MOCK_RETIRED_RM_FAIL_ONCE_FILE: retiredRmFailureMarker,
       MOCK_BROWSER_LAUNCH_READY_FILE: browserLaunchReadyFile,
       MOCK_BROWSER_LAUNCH_RELEASE_FILE: browserLaunchReleaseFile,
@@ -207,16 +215,8 @@ function spawnServer({
 let server = spawnServer();
 
 async function stopServer(child, signal = 'SIGTERM') {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('测试服务未在 5 秒内退出')), 5000);
-    child.once('exit', (code, exitSignal) => {
-      clearTimeout(timer);
-      assert.ok(code === 0 || exitSignal === signal);
-      resolve();
-    });
-    child.kill(signal);
-  });
+  await stopChildProcess(child, { gracefulSignal: signal });
+  assert.ok(child.exitCode === 0 || child.signalCode === signal);
 }
 
 async function verifyShutdownBeforeListen() {
@@ -226,6 +226,7 @@ async function verifyShutdownBeforeListen() {
   const releaseFile = path.join(targetOutputDir, 'startup-read-release.marker');
   const targetOutput = [];
   await mkdir(targetOutputDir, { recursive: true });
+  await writeFile(path.join(targetOutputDir, 'system-metrics.json'), '[]', 'utf8');
   const child = spawnServer({
     targetPort,
     targetOutputDir,
@@ -252,7 +253,7 @@ async function verifyShutdownBeforeListen() {
     assert.doesNotMatch(targetOutput.join(''), /Sameko Weibo Lottery running at/);
   } finally {
     await writeFile(releaseFile, 'release', 'utf8').catch(() => {});
-    if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+    await stopChildProcess(child);
   }
 }
 
@@ -270,11 +271,14 @@ async function adminApi(pathname, options = {}) {
   });
 }
 
-async function startJob(statusId) {
+async function startJob(statusId, clientAddress = '', accessToken = 'test-token') {
   return await api('/api/weibo/reposts/jobs', {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ source: 'official', statusId, accessToken: 'test-token' }),
+    headers: {
+      'content-type': 'application/json',
+      ...(clientAddress ? { 'x-forwarded-for': clientAddress } : {}),
+    },
+    body: JSON.stringify({ source: 'official', statusId, accessToken }),
   });
 }
 
@@ -361,6 +365,11 @@ try {
   assert.equal(qrStartBody.active, false);
   assert.match(qrStartBody.message, /扫码窗口已关闭/);
   await access(browserContextClosedFile);
+  await waitUntil(
+    () => access(browserProfileOwnerFile).then(() => false).catch((error) => error.code === 'ENOENT'),
+    5000,
+    '迟到的浏览器 context 关闭后没有释放 Profile 所有权',
+  );
 
   await Promise.all([
     rm(browserContextClosedFile, { force: true }),
@@ -389,6 +398,35 @@ try {
   assert.equal(hangingScreenshotResponse.status, 200);
   assert.equal((await hangingScreenshotResponse.json()).active, false);
 
+  await Promise.all([
+    rm(browserContextClosedFile, { force: true }),
+    rm(browserScreenshotReadyFile, { force: true }),
+    rm(browserScreenshotReleaseFile, { force: true }),
+  ]);
+  const timedOutScreenshotStart = adminApi('/api/admin/weibo-login/start', { method: 'POST' });
+  await waitUntil(
+    () => access(browserScreenshotReadyFile).then(() => true).catch(() => false),
+    5000,
+    '扫码会话没有进入截图超时测试点',
+  );
+  const timedOutScreenshotResponse = await timedOutScreenshotStart;
+  assert.equal(timedOutScreenshotResponse.status, 200);
+  const timedOutScreenshotBody = await timedOutScreenshotResponse.json();
+  assert.equal(timedOutScreenshotBody.active, false);
+  assert.match(timedOutScreenshotBody.message, /截图生成超时/);
+  await access(browserContextClosedFile);
+  const screenshotCalls = (await readFile(browserScreenshotReadyFile, 'utf8'))
+    .split(/\r?\n/)
+    .filter(Boolean).length;
+  const statusAfterScreenshotTimeout = await adminApi('/api/admin/weibo-login/status');
+  assert.equal(statusAfterScreenshotTimeout.status, 200);
+  assert.equal((await statusAfterScreenshotTimeout.json()).active, false);
+  assert.equal(
+    (await readFile(browserScreenshotReadyFile, 'utf8')).split(/\r?\n/).filter(Boolean).length,
+    screenshotCalls,
+    '超时清理后不应继续向旧 context 发起截图命令',
+  );
+
   for (const statusId of ['100001', '100002', '100003', '100004']) {
     const response = await startJob(statusId);
     assert.equal(response.status, 202);
@@ -414,13 +452,21 @@ try {
     '挂起抓取没有开始',
   );
 
-  const sameClientOverflow = await startJob('999998');
+  const sameClientShared = await startJob('999999');
+  assert.equal(sameClientShared.status, 202);
+  assert.ok((await sameClientShared.json()).cancelToken);
+  const sameClientOverflow = await startJob('999999');
   assert.equal(sameClientOverflow.status, 429);
 
-  const shared = await startJob('999999');
+  const shared = await startJob('999999', '203.0.113.10');
   assert.equal(shared.status, 202);
   assert.ok((await shared.json()).cancelToken);
-  const overSubscribed = await startJob('999999');
+  const repeatedSharedClient = await startJob('999999', '203.0.113.10');
+  assert.equal(repeatedSharedClient.status, 202);
+  assert.ok((await repeatedSharedClient.json()).cancelToken);
+  const repeatedSharedOverflow = await startJob('999999', '203.0.113.10');
+  assert.equal(repeatedSharedOverflow.status, 429);
+  const overSubscribed = await startJob('999999', '203.0.113.11');
   assert.equal(overSubscribed.status, 429);
 
   const startedShutdownAt = Date.now();

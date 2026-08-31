@@ -13,7 +13,7 @@ const PROVIDER_LABELS = {
 export const DRAW_RANDOM_ALGORITHM = 'SHA-256 · Fisher–Yates';
 export const MAX_MANUAL_CANDIDATES = 20_000;
 export const MAX_MANUAL_FILE_BYTES = 5 * 1024 * 1024;
-export const MAX_MENTION_MIN = 10;
+const MAX_MENTION_MIN = 10;
 
 export function normalizeMentionMin(value, fallback = 0) {
   const fallbackNumber = Number(fallback);
@@ -169,9 +169,35 @@ function parseDelimitedText(text, delimiter) {
     }
   }
 
+  if (quoted) throw new Error('名单 CSV 存在未闭合的引号');
   row.push(value.trim());
   if (row.some(Boolean)) rows.push(row);
   return rows;
+}
+
+const MANUAL_HEADER_ALIASES = new Map([
+  ['uid', 'uid'],
+  ['user_id', 'uid'],
+  ['userid', 'uid'],
+  ['用户id', 'uid'],
+  ['screenname', 'screenName'],
+  ['screen_name', 'screenName'],
+  ['name', 'screenName'],
+  ['nickname', 'screenName'],
+  ['昵称', 'screenName'],
+  ['用户名', 'screenName'],
+  ['text', 'text'],
+  ['content', 'text'],
+  ['转发内容', 'text'],
+  ['createdat', 'createdAt'],
+  ['created_at', 'createdAt'],
+  ['time', 'createdAt'],
+  ['时间', 'createdAt'],
+]);
+
+function normalizeManualHeader(value) {
+  const key = String(value || '').replace(/^\uFEFF/, '').trim().toLowerCase();
+  return MANUAL_HEADER_ALIASES.get(key) || '';
 }
 
 export function parseManualInput(text) {
@@ -198,15 +224,17 @@ export function parseManualInput(text) {
   const rows = parseDelimitedText(trimmed, delimiter);
   if (!rows.length) return [];
   const first = rows[0];
-  const headerKeys = ['uid', 'UID', '昵称', 'screenName', 'name', 'text', '转发内容', 'time', '时间'];
-  const hasHeader = first.some((cell) => headerKeys.includes(cell));
-  const headers = hasHeader ? first : [];
+  const normalizedHeaders = first.map(normalizeManualHeader);
+  const hasHeader = normalizedHeaders.some(Boolean);
+  const headers = hasHeader ? normalizedHeaders : [];
   const dataRows = hasHeader ? rows.slice(1) : rows;
   if (dataRows.length > MAX_MANUAL_CANDIDATES) throw new Error('手动名单最多支持 20,000 人');
   return dataRows.map((cells, index) => {
     if (!headers.length) return normalizeManualItem(cells, index);
     const row = {};
-    headers.forEach((key, cellIndex) => { row[key] = cells[cellIndex] || ''; });
+    headers.forEach((key, cellIndex) => {
+      if (key) row[key] = cells[cellIndex] || '';
+    });
     cells.forEach((cell, cellIndex) => { row[cellIndex] = cell || ''; });
     return normalizeManualItem(row, index);
   });

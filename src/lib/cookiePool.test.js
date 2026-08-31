@@ -5,6 +5,7 @@ import {
   compactCookieEntriesByAccount,
   cookieCandidatesWithFallback,
   cookiePoolCounts,
+  cookiePoolStatusCounts,
 } from './cookiePool.js';
 
 test('compactCookieEntriesByAccount keeps one cookie per validated account', () => {
@@ -29,6 +30,43 @@ test('cookiePoolCounts separates stored cookies from unique accounts', () => {
   assert.deepEqual(counts, {
     cookieCount: 3,
     accountCount: 2,
+  });
+});
+
+test('cookiePoolStatusCounts does not describe every stored cookie as verified', () => {
+  const counts = cookiePoolStatusCounts([
+    {
+      id: 'verified',
+      user: { id: '1001' },
+      lastCheckedAt: '2026-08-31T08:00:00.000Z',
+      lastValidAt: '2026-08-31T08:00:00.000Z',
+      lastError: '',
+    },
+    { id: 'pending' },
+    {
+      id: 'network-error',
+      lastCheckedAt: '2026-08-31T08:05:00.000Z',
+      lastError: 'request timed out',
+    },
+    {
+      id: 'quarantined',
+      lastCheckedAt: '2026-08-31T08:10:00.000Z',
+      lastValidAt: '2026-08-31T08:10:00.000Z',
+      lastError: '',
+    },
+  ], { quarantinedIds: ['quarantined'] });
+
+  assert.deepEqual(counts, {
+    tryableCookieCount: 3,
+    tryableAccountCount: 3,
+    verifiedCookieCount: 1,
+    verifiedAccountCount: 1,
+    pendingCookieCount: 1,
+    pendingAccountCount: 1,
+    checkFailedCookieCount: 1,
+    checkFailedAccountCount: 1,
+    quarantinedCookieCount: 1,
+    quarantinedAccountCount: 1,
   });
 });
 

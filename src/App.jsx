@@ -49,6 +49,7 @@ import {
 } from './lib/appCore.js';
 import CandidateAvatar from './components/CandidateAvatar.jsx';
 import DrawResultSheet from './components/DrawResultSheet.jsx';
+import { avatarProxyUrl, safeAvatarUrl } from './lib/avatar.js';
 import useDialogStack from './hooks/useDialogStack.js';
 import useSheetDrag from './hooks/useSheetDrag.js';
 import {
@@ -61,6 +62,7 @@ import {
   DRAW_HISTORY_LIMIT,
   drawCountCopy,
   mergeDrawHistory,
+  nextManualDrawNumber,
   normalizeDrawReceipt,
   parseDrawHistoryBackup,
   readDrawHistory,
@@ -92,6 +94,7 @@ import {
   normalizeFeedbackSubmission,
 } from './lib/feedback.js';
 import { isWeiboStatusReference } from './lib/weiboStatus.js';
+import { isResponseBodyTimeout, readResponseTextWithin } from './lib/apiResponse.js';
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
   let timer;
@@ -122,14 +125,56 @@ const REPOST_JOB_RECONNECT_ATTEMPTS = 4;
 const REPOST_JOB_RECONNECT_BASE_MS = 900;
 const API_FETCH_TIMEOUT_MS = 45_000;
 const CANDIDATE_BATCH_SIZE = 100;
+const CANDIDATE_RENDER_LIMIT = 1000;
 const MAX_DRAW_WINNERS = 500;
 const MAX_DRAW_RESULT_GROUPS = 20;
 const MAX_HISTORY_BACKUP_BYTES = 2 * 1024 * 1024;
+const API_RESPONSE_MAX_BYTES = 24 * 1024 * 1024;
+const apiResponseLifecycles = new WeakMap();
 
 function byteLength(value) {
   const text = String(value || '');
   if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(text).byteLength;
   return new Blob([text]).size;
+}
+
+async function warmDrawAvatars(candidates, apiBase, signal) {
+  if (typeof window.Image !== 'function') return;
+  const urls = [...new Set(candidates
+    .map((candidate) => avatarProxyUrl(safeAvatarUrl(candidate?.avatar), apiBase))
+    .filter(Boolean))]
+    .slice(0, 18);
+  if (!urls.length) return;
+
+  const loads = urls.map((url) => new Promise((resolve) => {
+    const image = new window.Image();
+    let finished = false;
+    const done = () => {
+      if (finished) return;
+      finished = true;
+      window.clearTimeout(timer);
+      signal?.removeEventListener('abort', cancel);
+      resolve();
+    };
+    const cancel = () => {
+      image.src = '';
+      done();
+    };
+    const timer = window.setTimeout(done, 1500);
+    image.decoding = 'async';
+    image.onload = done;
+    image.onerror = done;
+    signal?.addEventListener('abort', cancel, { once: true });
+    if (signal?.aborted) {
+      cancel();
+      return;
+    }
+    image.src = url;
+  }));
+  await Promise.race([
+    Promise.allSettled(loads),
+    sleep(650, signal),
+  ]);
 }
 
 const historyDateFormatter = new Intl.DateTimeFormat('zh-CN', {
@@ -190,7 +235,23 @@ function isStaticHostedPage() {
 }
 
 async function readApiResponse(response, label = '服务') {
-  const text = await response.text();
+  const lifecycle = apiResponseLifecycles.get(response);
+  let text;
+  try {
+    text = await readResponseTextWithin(response, {
+      timeoutMs: API_FETCH_TIMEOUT_MS,
+      maxBytes: API_RESPONSE_MAX_BYTES,
+      signal: lifecycle?.signal,
+    });
+  } catch (error) {
+    if (lifecycle?.timedOut() || isResponseBodyTimeout(error)) {
+      throw new Error(`${label}响应超时，请稍后重试。`);
+    }
+    throw error;
+  } finally {
+    lifecycle?.cleanup();
+    apiResponseLifecycles.delete(response);
+  }
   if (!text.trim()) {
     throw new Error(`${label}暂时不可用（HTTP ${response.status}），请检查后端连接后重试。`);
   }
@@ -1385,8 +1446,14 @@ function AppleNavigationV3({ controller: c }) {
     return { ...candidateGroups, matchingCandidates, query };
   }, [candidateGroups, deferredCandidateQuery]);
   const { evaluationByCandidate, excludedCandidates, matchingCandidates, query } = candidateView;
-  const visibleCandidates = matchingCandidates.slice(0, candidateLimit);
-  const remainingCandidates = Math.max(0, matchingCandidates.length - visibleCandidates.length);
+  const browsableCandidateCount = Math.min(matchingCandidates.length, CANDIDATE_RENDER_LIMIT);
+  const visibleCandidates = matchingCandidates.slice(0, Math.min(candidateLimit, browsableCandidateCount));
+  const remainingCandidates = Math.max(0, browsableCandidateCount - visibleCandidates.length);
+  const searchOnlyCandidates = Math.max(0, matchingCandidates.length - browsableCandidateCount);
+
+  useEffect(() => {
+    setCandidateLimit(CANDIDATE_BATCH_SIZE);
+  }, [c.candidateSegment, c.candidates, deferredCandidateQuery]);
   const historySearch = String(c.historyQuery || '').trim().toLowerCase();
   const filteredHistory = useMemo(() => {
     if (!historySearch) return c.drawHistory;
@@ -1516,10 +1583,6 @@ function AppleNavigationV3({ controller: c }) {
       };
 
   useEffect(() => {
-    setCandidateLimit(CANDIDATE_BATCH_SIZE);
-  }, [c.candidateQuery, c.candidateSegment, c.candidates]);
-
-  useEffect(() => {
     if (!c.showSettings) return undefined;
     if (c.settingsTarget === 'cookie' || c.settingsTarget === 'backend') {
       setSettingsDisclosures((current) => ({ ...current, [c.settingsTarget]: true }));
@@ -1601,7 +1664,7 @@ function AppleNavigationV3({ controller: c }) {
       <div
         className="sr-only"
         role="status"
-        aria-live={c.statusTone === 'error' ? 'assertive' : 'polite'}
+        aria-live={c.notice?.tone === 'error' ? 'off' : c.statusTone === 'error' ? 'assertive' : 'polite'}
         aria-atomic="true"
         data-app-status={c.statusTone}
       >
@@ -1749,7 +1812,7 @@ function AppleNavigationV3({ controller: c }) {
                           {I.shield}
                         </header>
                         <div className="pass-identity">
-                           <CandidateAvatar candidate={stageCandidate} className="pass-avatar" apiBase={c.apiBase} loadImage={!c.isDrawing} />
+                           <CandidateAvatar candidate={stageCandidate} className="pass-avatar" apiBase={c.apiBase} priority={c.isDrawing} />
                           <span key={c.isDrawing ? candidateIdentity(stageCandidate) || stageName : `${drawState}-${c.eligible.length}`}>
                             <small>{c.isDrawing ? c.phase || '正在抽取' : '候选已载入'}</small>
                             <strong>{c.isDrawing ? stageName : c.eligible.length.toLocaleString()}</strong>
@@ -1969,7 +2032,7 @@ function AppleNavigationV3({ controller: c }) {
 
             <section className="content-section v3-source-section">
               <SectionTitle title="载入名单" action={c.hasCandidates && c.source !== 'manual' ? '刷新' : ''} onAction={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: true })} />
-              <div className="segmented-control v3-source-control" style={{ '--segment-index': sourceSegmentIndex }}>
+              <div className="segmented-control v3-source-control" role="group" aria-label="候选来源" style={{ '--segment-index': sourceSegmentIndex }}>
                 <span className="segmented-highlight" aria-hidden="true" />
                 {SOURCE_OPTIONS.map(({ value, label }) => (
                   <button
@@ -2118,7 +2181,7 @@ function AppleNavigationV3({ controller: c }) {
                   />
                   <button type="button" onClick={() => c.setShowFilters(true)} aria-label="筛选候选">{I.listChecks}</button>
                 </div>
-                <div className="segmented-control" style={{ '--segment-index': candidateSegmentIndex }}>
+                <div className="segmented-control" role="group" aria-label="候选范围" style={{ '--segment-index': candidateSegmentIndex }}>
                   <span className="segmented-highlight" aria-hidden="true" />
                   <button type="button" className={c.candidateSegment === 'eligible' ? 'is-active' : ''} aria-pressed={c.candidateSegment === 'eligible'} onClick={() => c.setCandidateSegment('eligible')}>可抽 {c.eligible.length}</button>
                   <button type="button" className={c.candidateSegment === 'all' ? 'is-active' : ''} aria-pressed={c.candidateSegment === 'all'} onClick={() => c.setCandidateSegment('all')}>全部 {c.candidates.length}</button>
@@ -2177,6 +2240,11 @@ function AppleNavigationV3({ controller: c }) {
                   >
                     继续显示 {Math.min(CANDIDATE_BATCH_SIZE, remainingCandidates).toLocaleString()} 人
                   </button>
+                </div>
+              )}
+              {!remainingCandidates && searchOnlyCandidates > 0 && (
+                <div className="candidate-load-more" role="note">
+                  <span>已显示前 {CANDIDATE_RENDER_LIMIT.toLocaleString()} 人，搜索或导出可查看完整名单</span>
                 </div>
               )}
             </section>
@@ -2344,7 +2412,7 @@ function AppleNavigationV3({ controller: c }) {
         >
           {(close) => (
             <>
-          <div className="segmented-control v3-source-control" style={{ '--segment-index': sourceSegmentIndex }}>
+          <div className="segmented-control v3-source-control" role="group" aria-label="候选来源" style={{ '--segment-index': sourceSegmentIndex }}>
             <span className="segmented-highlight" aria-hidden="true" />
             {SOURCE_OPTIONS.map(({ value, label }) => (
               <button
@@ -2533,11 +2601,21 @@ function AppleNavigationV3({ controller: c }) {
                       >
                         {I.minus}
                       </button>
-                      <input type="number" min="1" value={prize.count} onChange={(event) => c.updatePrizeCount(index, event.target.value)} aria-label={`第 ${index + 1} 个奖项中奖人数`} />
+                      <input
+                        type="number"
+                        min="1"
+                        max={MAX_DRAW_WINNERS}
+                        inputMode="numeric"
+                        value={prize.count}
+                        onChange={(event) => c.updatePrizeCount(index, event.target.value)}
+                        onBlur={() => c.commitPrizeCount(index)}
+                        aria-label={`第 ${index + 1} 个奖项中奖人数`}
+                      />
                       <button
                         type="button"
                         aria-label={`增加第 ${index + 1} 个奖项名额`}
                         onClick={() => c.updatePrizeCount(index, Number(prize.count || 1) + 1)}
+                        disabled={Number(prize.count || 1) >= MAX_DRAW_WINNERS}
                       >
                         {I.plus}
                       </button>
@@ -2724,7 +2802,6 @@ function App() {
   const [uniqueByUser, setUniqueByUser] = useState(true);
   const [excludePrevious, setExcludePrevious] = useState(true);
   const [results, setResults] = useState([]);
-  const [lastPool, setLastPool] = useState(null);
   const [lastAudit, setLastAudit] = useState(null);
   const [sourceMeta, setSourceMeta] = useState(null);
   const [loadedSource, setLoadedSource] = useState('');
@@ -2773,6 +2850,7 @@ function App() {
   const [apiBaseInput, setApiBaseInput] = useState(initialApiBase);
   const [apiKey, setApiKey] = useState('');
   const [apiHealth, setApiHealth] = useState('checking');
+  const [cookieHealth, setCookieHealth] = useState('checking');
   const firstPrizeNameRef = useRef(null);
   const homeStatusInputRef = useRef(null);
   const candidateStatusInputRef = useRef(null);
@@ -2782,6 +2860,13 @@ function App() {
   const drawTabLockRef = useRef(null);
   const repostLoadRef = useRef(null);
   const drawOperationRef = useRef(null);
+  const drawSyncControllersRef = useRef(new Set());
+  const taskRevisionRef = useRef(0);
+  const candidateLoadRevisionRef = useRef(0);
+  const mountedRef = useRef(true);
+  const selectedReceiptRef = useRef(null);
+  const drawHistoryRef = useRef(drawHistory);
+  const manualDrawSequenceRef = useRef(0);
   const candidateLoadStartRef = useRef(false);
   const drawStartRef = useRef(false);
   const manualFileReadRef = useRef(false);
@@ -2792,6 +2877,17 @@ function App() {
   const apiHealthRequestRef = useRef(0);
   const historyStorageNoticeRef = useRef('');
 
+  function invalidateDrawContext() {
+    taskRevisionRef.current += 1;
+    candidateLoadRevisionRef.current += 1;
+  }
+
+  function isCurrentCandidateLoad(revision, operation = null) {
+    return mountedRef.current
+      && candidateLoadRevisionRef.current === revision
+      && (!operation || repostLoadRef.current === operation);
+  }
+
   function focusStatusInput() {
     const preferred = showSourceEditor
       ? sourceSheetStatusInputRef.current
@@ -2801,14 +2897,46 @@ function App() {
     preferred?.focus({ preventScroll: true });
   }
 
-  useEffect(() => () => {
-    const guard = drawGuardRef.current;
-    if (guard) releaseDrawGuard(window.localStorage, guard.scope, guard.token);
-    drawTabLockRef.current?.release();
-    drawOperationRef.current?.abort();
-    repostLoadRef.current?.cancelServer?.();
-    repostLoadRef.current?.controller.abort();
-    window.clearTimeout(progressClearTimerRef.current);
+  useLayoutEffect(() => {
+    taskRevisionRef.current += 1;
+  }, [source, statusUrl, candidates]);
+
+  useLayoutEffect(() => {
+    selectedReceiptRef.current = selectedReceipt;
+  }, [selectedReceipt]);
+
+  useLayoutEffect(() => {
+    drawHistoryRef.current = drawHistory;
+  }, [drawHistory]);
+
+  useLayoutEffect(() => {
+    const next = nextManualDrawNumber(drawHistory);
+    if (next !== null) {
+      manualDrawSequenceRef.current = Math.max(manualDrawSequenceRef.current, next - 1);
+    }
+  }, [drawHistory]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      candidateLoadRevisionRef.current += 1;
+      const guard = drawGuardRef.current;
+      if (guard) releaseDrawGuard(window.localStorage, guard.scope, guard.token);
+      drawTabLockRef.current?.release();
+      drawOperationRef.current?.abort();
+      for (const controller of drawSyncControllersRef.current) controller.abort();
+      drawSyncControllersRef.current.clear();
+      const repostLoad = repostLoadRef.current;
+      if (repostLoad) {
+        repostLoad.cancelIntent = true;
+        if (repostLoad.cancelServer) {
+          repostLoad.cancelServer();
+          repostLoad.controller.abort();
+        }
+      }
+      window.clearTimeout(progressClearTimerRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -2856,7 +2984,6 @@ function App() {
     [candidateEvaluations],
   );
 
-  const displayPool = lastPool || eligible;
   const winners = results.flatMap((item) => item.winners);
   const candidateSourceReady = Boolean(
     candidates.length
@@ -2888,13 +3015,13 @@ function App() {
       statusUrl: currentStatusUrl || statusUrl,
     })).persistent;
 
-  function apiFetch(path, options = {}, baseOverride = apiBase) {
+  async function apiFetch(path, options = {}, baseOverride = apiBase) {
     const requestBase = baseOverride;
     if (!requestBase && isStaticHostedPage()) {
-      return Promise.reject(new Error('当前是静态前端，请先在设置里确认后端接口地址。'));
+      throw new Error('当前是静态前端，请先在设置里确认后端接口地址。');
     }
     if (requestBase && !isTrustedApiBase(requestBase)) {
-      return Promise.reject(new Error('后端接口地址不在可信列表里，请使用当前公开后端或本地地址。'));
+      throw new Error('后端接口地址不在可信列表里，请使用当前公开后端或本地地址。');
     }
     const headers = new Headers(options.headers || {});
     if (apiKey.trim()) headers.set('x-api-key', apiKey.trim());
@@ -2912,15 +3039,23 @@ function App() {
     const requestPath = requestBase
       ? `${requestBase}${path.startsWith('/') ? path : `/${path}`}`
       : path;
-    return fetch(requestPath, { ...options, headers, signal: controller.signal })
-      .catch((error) => {
-        if (timedOut) throw new Error('服务响应超时，请稍后重试。');
-        throw error;
-      })
-      .finally(() => {
-        window.clearTimeout(timeout);
-        options.signal?.removeEventListener('abort', relayAbort);
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      options.signal?.removeEventListener('abort', relayAbort);
+    };
+    try {
+      const response = await fetch(requestPath, { ...options, headers, signal: controller.signal });
+      apiResponseLifecycles.set(response, {
+        signal: controller.signal,
+        timedOut: () => timedOut,
+        cleanup,
       });
+      return response;
+    } catch (error) {
+      cleanup();
+      if (timedOut) throw new Error('服务响应超时，请稍后重试。');
+      throw error;
+    }
   }
   function showStatus(message, tone = 'neutral', options = {}) {
     setStatus(message);
@@ -2936,6 +3071,10 @@ function App() {
   }
   function dismissNotice() {
     setNotice(null);
+  }
+  function selectReceipt(receipt) {
+    if (receipt) setPendingReceipt(null);
+    setSelectedReceipt(receipt);
   }
   function refuseWhileBusy() {
     const drawBusy = isDrawing || drawStartRef.current;
@@ -2984,6 +3123,7 @@ function App() {
     if (value === source) {
       return true;
     }
+    invalidateDrawContext();
     setSource(value);
     setCandidates([]);
     setHistoryUids(new Set());
@@ -3004,6 +3144,7 @@ function App() {
   }
   function updateStatusInput(value) {
     if (refuseWhileBusy()) return;
+    if (value !== statusUrl) invalidateDrawContext();
     setStatusUrl(value);
     setSourceInputDirty(true);
     setCandidateLoadError('');
@@ -3011,6 +3152,7 @@ function App() {
   }
   function updateManualInput(value) {
     if (refuseWhileBusy()) return;
+    if (value !== manualInput) invalidateDrawContext();
     setManualInput(value);
     setSourceInputDirty(true);
     setCandidateLoadError('');
@@ -3114,79 +3256,144 @@ function App() {
     setApiBase(cleaned);
     return cleaned;
   }
-  function shouldForceCandidateRefresh(value) {
+  function shouldForceCandidateRefresh(value, sourceValue = source) {
     const target = String(value || '').trim();
     const loadedUrl = String(sourceMeta?.statusUrl || '').trim();
     const loadedId = String(sourceMeta?.statusId || '').trim();
     return Boolean(
       candidates.length
-      && loadedSource === source
+      && loadedSource === sourceValue
       && !sourceInputDirty
       && (target === loadedUrl || target === loadedId || (loadedId && target.includes(loadedId))),
     );
   }
+
+  function prepareCandidateLoad(sourceValue, statusValue) {
+    const nextSource = sourceValue || source;
+    const nextStatusUrl = String(statusValue || '').trim();
+    const sameLoadedContext = source === nextSource
+      && loadedSource === nextSource
+      && !sourceInputDirty
+      && (nextSource === 'manual' || nextStatusUrl === statusUrl.trim());
+
+    invalidateDrawContext();
+    setSource(nextSource);
+    setConfirmedSetup(null);
+    setCandidateLoadError('');
+    if (nextSource !== 'manual') {
+      setStatusUrl(nextStatusUrl);
+      setSourceInputDirty(true);
+    }
+
+    if (!sameLoadedContext) {
+      setCandidates([]);
+      setHistoryUids(new Set());
+      setSourceMeta(null);
+      setLoadedSource('');
+      setCurrentStatusId('');
+      setCurrentStatusUrl('');
+      setDrawCount(null);
+      setDrawCountStatus('idle');
+    }
+    clearResult();
+  }
+
+  function showInvalidStatusReference() {
+    focusStatusInput();
+    showStatus('请粘贴微博正文链接、mid 或 bid。', 'neutral', {
+      popup: true,
+      title: '微博链接格式不正确',
+    });
+  }
+
+  function showClipboardReadError(error) {
+    focusStatusInput();
+    const emptyClipboard = error?.message === 'clipboard-empty';
+    showStatus(
+      emptyClipboard
+        ? '剪贴板中没有内容，请先复制微博正文链接、mid 或 bid。'
+        : '无法读取剪贴板，请在输入框中手动粘贴微博正文链接、mid 或 bid。',
+      'neutral',
+      { popup: true, title: emptyClipboard ? '剪贴板为空' : '无法读取剪贴板' },
+    );
+  }
+
   function safeLoadCandidates(options) {
     loadCandidates(options).catch(() => {});
   }
   async function pasteAndLoadCandidates() {
-    if (isLoading || isDrawing) return;
+    if (isLoading || isDrawing || candidateLoadStartRef.current || drawStartRef.current) return;
     const existingValue = statusUrl.trim();
     if (existingValue) {
-      setSource('mobile');
+      if (!looksLikeWeiboStatusReference(existingValue)) {
+        showInvalidStatusReference();
+        return;
+      }
+      const forceRefresh = shouldForceCandidateRefresh(existingValue, 'mobile');
+      prepareCandidateLoad('mobile', existingValue);
       safeLoadCandidates({
         jumpAfterLoad: false,
         sourceOverride: 'mobile',
         statusUrlOverride: existingValue,
-        forceRefresh: shouldForceCandidateRefresh(existingValue),
+        forceRefresh,
       });
       return;
     }
+    let pastedValue;
+    let clipboardRevision;
     try {
       if (!navigator.clipboard?.readText) throw new Error('clipboard-unavailable');
-      const pastedValue = (await navigator.clipboard.readText()).trim();
-      if (!pastedValue) throw new Error('clipboard-empty');
-      setStatusUrl(pastedValue);
-      setSourceInputDirty(true);
-      setConfirmedSetup(null);
-      setSource('mobile');
-      safeLoadCandidates({
-        jumpAfterLoad: false,
-        sourceOverride: 'mobile',
-        statusUrlOverride: pastedValue,
-        forceRefresh: shouldForceCandidateRefresh(pastedValue),
-      });
-    } catch {
-      focusStatusInput();
-      showStatus('请在输入框中粘贴微博正文链接、mid 或 bid。', 'neutral', {
-        popup: true,
-        title: '粘贴微博链接',
-      });
+      clipboardRevision = candidateLoadRevisionRef.current;
+      pastedValue = (await navigator.clipboard.readText()).trim();
+    } catch (error) {
+      showClipboardReadError(error);
+      return;
     }
+    if (!pastedValue) {
+      showClipboardReadError(new Error('clipboard-empty'));
+      return;
+    }
+    if (!mountedRef.current || clipboardRevision !== candidateLoadRevisionRef.current) return;
+    if (candidateLoadStartRef.current || drawStartRef.current) {
+      showStatus('当前操作正在进行，请稍候再试。');
+      return;
+    }
+    if (!looksLikeWeiboStatusReference(pastedValue)) {
+      showInvalidStatusReference();
+      return;
+    }
+    const forceRefresh = shouldForceCandidateRefresh(pastedValue, 'mobile');
+    prepareCandidateLoad('mobile', pastedValue);
+    safeLoadCandidates({
+      jumpAfterLoad: false,
+      sourceOverride: 'mobile',
+      statusUrlOverride: pastedValue,
+      forceRefresh,
+    });
   }
   function handleStatusPaste(event) {
     const pastedText = event.clipboardData?.getData('text') || '';
-    if (!pastedText || isLoading || isDrawing) return;
+    if (!pastedText || isLoading || isDrawing || candidateLoadStartRef.current || drawStartRef.current) return;
     const input = event.currentTarget;
     const start = input.selectionStart ?? input.value.length;
     const end = input.selectionEnd ?? start;
     const pastedValue = `${input.value.slice(0, start)}${pastedText}${input.value.slice(end)}`.trim();
     if (!looksLikeWeiboStatusReference(pastedValue)) return;
-    setStatusUrl(pastedValue);
-    setSourceInputDirty(true);
-    setConfirmedSetup(null);
-    setSource('mobile');
+    event.preventDefault();
+    const forceRefresh = shouldForceCandidateRefresh(pastedValue, 'mobile');
+    prepareCandidateLoad('mobile', pastedValue);
     safeLoadCandidates({
       jumpAfterLoad: false,
       sourceOverride: 'mobile',
       statusUrlOverride: pastedValue,
-      forceRefresh: shouldForceCandidateRefresh(pastedValue),
+      forceRefresh,
     });
   }
   function clearResult(message) {
     if (isBusy) return false;
+    invalidateDrawContext();
     if (message && results.length) showStatus(message);
     setResults([]);
-    setLastPool(null);
     setLastAudit(null);
     setSelectedReceipt(null);
     setPendingReceipt(null);
@@ -3273,6 +3480,10 @@ function App() {
   }
   function requestDraw() {
     if (refuseWhileBusy()) return;
+    if (source === 'manual' && manualDrawLimitReached) {
+      showStatus('手动名单开奖次数已达到浏览器可记录的上限，请先导出并清理本机记录。', 'error');
+      return;
+    }
     if (pendingReceipt) {
       showStatus('本次结果正在准备，请稍候。', 'neutral', { popup: true, title: '请稍候' });
       return;
@@ -3325,13 +3536,28 @@ function App() {
   }
   function updatePrize(index, patch) {
     if (refuseWhileBusy()) return;
+    const current = prizes[index];
+    if (!current) return;
+    const changed = Object.entries(patch).some(([key, value]) => !Object.is(current[key], value));
+    if (!changed) return;
     setPrizes((previous) => previous.map((prize, prizeIndex) => (
       prizeIndex === index ? { ...prize, ...patch } : prize
     )));
     clearResult('奖项已更新，请重新开奖。');
   }
   function updatePrizeCount(index, nextCount) {
-    updatePrize(index, { count: Math.max(1, parseInt(nextCount, 10) || 1) });
+    if (String(nextCount) === '') {
+      updatePrize(index, { count: '' });
+      return;
+    }
+    const count = Math.floor(Number(nextCount));
+    if (!Number.isFinite(count)) return;
+    updatePrize(index, { count: Math.min(MAX_DRAW_WINNERS, Math.max(1, count)) });
+  }
+  function commitPrizeCount(index) {
+    const count = Math.floor(Number(prizes[index]?.count));
+    if (Number.isFinite(count) && count >= 1) return;
+    updatePrize(index, { count: 1 });
   }
   function addPrize() {
     if (refuseWhileBusy()) return;
@@ -3355,6 +3581,7 @@ function App() {
   async function loadCookieStatus(check = false) {
     const requestId = ++cookieStatusRequestRef.current;
     const requestBase = apiBase;
+    setCookieHealth('checking');
     try {
       const response = await apiFetch(
         `/api/weibo/cookie-status${check ? '?check=1' : ''}`,
@@ -3365,21 +3592,37 @@ function App() {
       if (!json.ok) throw new Error(json.error || '服务器 Cookie 状态读取失败');
       if (requestId !== cookieStatusRequestRef.current) return;
       setCookieInfo(json);
-      setApiHealth('ok');
+      setCookieHealth('ok');
       if (check) {
-        const accountCount = Number(json.accountCount ?? json.cookieCount ?? 0);
+        const verifiedCount = Number(json.verifiedAccountCount || 0);
         if (json.checkSkipped) {
-          showStatus('服务器 Cookie 状态受站长密钥保护，普通访客只能查看可用数量。');
+          showStatus('服务器 Cookie 校验受站长密钥保护，普通访客只能查看保存状态。');
         } else {
-          showStatus(json.hasCookie
-            ? `${accountCount || 1} 个服务器登录态通过校验，失效项会自动移除。`
-            : '暂无服务器登录态，可以展开并填写备用 Cookie。');
+          showStatus(verifiedCount > 0
+            ? `${verifiedCount} 个服务器登录态通过最近校验，失效项已自动移除。`
+            : json.hasCookie
+              ? '服务器已保存登录态，但目前没有通过最近校验的账号。'
+              : '暂无服务器登录态，可以展开并填写备用 Cookie。');
         }
       }
     } catch (error) {
       if (requestId !== cookieStatusRequestRef.current) return;
-      setApiHealth('error');
+      setCookieHealth('error');
       if (check) showStatus(error.message, 'error');
+    }
+  }
+
+  async function refreshApiHealth() {
+    const requestId = ++apiHealthRequestRef.current;
+    const requestBase = apiBase;
+    setApiHealth('checking');
+    try {
+      const response = await apiFetch('/api/health', {}, requestBase);
+      const json = await readApiResponse(response, '后端服务');
+      if (!json.ok) throw new Error(json.error || '后端没有返回 ok');
+      if (requestId === apiHealthRequestRef.current) setApiHealth('ok');
+    } catch {
+      if (requestId === apiHealthRequestRef.current) setApiHealth('error');
     }
   }
 
@@ -3432,7 +3675,7 @@ function App() {
   }
 
   useEffect(() => {
-    setApiHealth('checking');
+    refreshApiHealth().catch(() => {});
     loadCookieStatus(false).catch(() => {});
   }, [apiBase]);
   useEffect(() => {
@@ -3470,14 +3713,16 @@ function App() {
     return () => clearTimeout(timer);
   }, [statusUrl, source, apiBase]);
   useEffect(() => {
-    if (!pendingReceipt || isDrawing) return undefined;
+    if (!pendingReceipt || isDrawing || selectedReceipt) return undefined;
     const reducedMotion = shouldReduceMotion(motionPreference);
+    const receipt = pendingReceipt;
     const timer = window.setTimeout(() => {
-      setSelectedReceipt(pendingReceipt);
-      setPendingReceipt(null);
+      if (selectedReceiptRef.current) return;
+      setSelectedReceipt(receipt);
+      setPendingReceipt((current) => current?.id === receipt.id ? null : current);
     }, reducedMotion ? 220 : 680);
     return () => window.clearTimeout(timer);
-  }, [pendingReceipt, isDrawing, motionPreference]);
+  }, [pendingReceipt, isDrawing, motionPreference, selectedReceipt]);
 
   async function fetchRepostsWithProgress(payload, operation) {
     setProgress({ percent: 3, message: '创建抓取任务' });
@@ -3485,7 +3730,6 @@ function App() {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(payload),
-      signal: operation.controller.signal,
     });
     const started = await readApiResponse(startResponse, '候选载入服务');
     if (!started.ok) throw new Error(started.error || '抓取任务创建失败');
@@ -3500,8 +3744,13 @@ function App() {
           method: 'DELETE',
           headers: { 'x-job-cancel-token': operation.cancelToken },
           keepalive: true,
-        }).catch(() => {});
+        }).then((response) => readApiResponse(response, '候选取消服务')).catch(() => {});
       };
+    }
+    if (operation.cancelIntent) {
+      await operation.cancelServer?.();
+      operation.controller.abort();
+      throw new DOMException('候选载入已取消', 'AbortError');
     }
     let lastProgress = started.progress || { percent: 3, message: '任务已创建' };
     if (started.delivery === 'shared-running') {
@@ -3567,15 +3816,19 @@ function App() {
 
   function cancelCandidateLoad() {
     const operation = repostLoadRef.current;
-    if (!operation || operation.controller.signal.aborted) return;
-    operation.cancelServer?.();
-    operation.controller.abort();
+    if (!operation || operation.cancelIntent || operation.controller.signal.aborted) return;
+    candidateLoadRevisionRef.current += 1;
+    operation.cancelIntent = true;
+    if (operation.cancelServer) {
+      operation.cancelServer();
+      operation.controller.abort();
+    }
     setCandidateLoadError('候选载入已取消，请重新载入后再开奖。');
     setProgress((current) => ({
       percent: current?.percent || 0,
       message: '正在取消候选载入',
     }));
-    showStatus('正在取消候选载入。');
+    showStatus('候选载入已取消，请重新载入后再开奖。');
   }
 
   async function loadCandidates(options = {}) {
@@ -3614,10 +3867,12 @@ function App() {
         cancelToken: '',
         cancelServer: null,
         cancelRequested: false,
+        cancelIntent: false,
       };
     if (operation) repostLoadRef.current = operation;
     setIsLoading(true);
     clearResult();
+    const loadRevision = ++candidateLoadRevisionRef.current;
     try {
       if (effectiveSource === 'manual') {
         const parsed = parseManualInput(manualInput);
@@ -3657,6 +3912,7 @@ function App() {
         mobileCookie: effectiveSource === 'mobile' ? mobileCookie : '',
         forceRefresh,
       }, operation);
+      if (!isCurrentCandidateLoad(loadRevision, operation)) return null;
       if (!json.ok) throw new Error(json.error || '微博数据拉取失败');
       const loadedCandidates = json.candidates || [];
       const loadedStatusId = json.statusId || '';
@@ -3677,7 +3933,7 @@ function App() {
       setSourceInputDirty(false);
       setCandidateLoadError('');
       setHistoryUids(freshHistory);
-      if (effectiveSource === 'mobile') loadCookieStatus(false).catch(() => {});
+      if (effectiveSource === 'mobile' && mountedRef.current) loadCookieStatus(false).catch(() => {});
       const pageCount = Array.isArray(json.meta?.pages) ? json.meta.pages.length : 0;
       const totalNumber = Number(json.meta?.totalNumber);
       const totalText = Number.isFinite(totalNumber) ? `接口显示总转发约 ${totalNumber} 条。` : '';
@@ -3701,6 +3957,7 @@ function App() {
         sourceMeta: { ...(json.meta || {}), statusId: json.statusId, statusUrl: json.statusUrl },
       };
     } catch (error) {
+      if (!isCurrentCandidateLoad(loadRevision, operation)) return null;
       operation?.cancelServer?.();
       if (operation?.controller.signal.aborted || error?.name === 'AbortError') {
         const message = '候选载入已取消，请重新载入后再开奖。';
@@ -3713,13 +3970,20 @@ function App() {
       showStatus(message, 'error');
       throw error;
     } finally {
-      candidateLoadStartRef.current = false;
-      if (effectiveSource === 'mobile') setMobileCookie('');
-      if (effectiveSource === 'official') setAccessToken('');
-      if (!operation || repostLoadRef.current === operation) {
+      const ownsLoad = !operation || repostLoadRef.current === operation;
+      if (ownsLoad) {
+        candidateLoadStartRef.current = false;
+      }
+      if (mountedRef.current && effectiveSource === 'mobile') setMobileCookie('');
+      if (mountedRef.current && effectiveSource === 'official') setAccessToken('');
+      if (ownsLoad) {
         repostLoadRef.current = null;
-        setIsLoading(false);
-        progressClearTimerRef.current = window.setTimeout(() => setProgress(null), 1200);
+        if (mountedRef.current) {
+          setIsLoading(false);
+          progressClearTimerRef.current = window.setTimeout(() => {
+            if (mountedRef.current) setProgress(null);
+          }, 1200);
+        }
       }
     }
   }
@@ -3742,6 +4006,7 @@ function App() {
     const drawCandidates = candidates;
     const drawEligible = eligible;
     const drawContext = { statusId: currentStatusId, statusUrl: currentStatusUrl, sourceMeta };
+    const taskRevision = taskRevisionRef.current;
     if (totalSlots > drawEligible.length) {
       showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${drawEligible.length}。`, 'error');
       return;
@@ -3753,7 +4018,6 @@ function App() {
     let tabLock = null;
     let guard = null;
     let drawCompleted = false;
-    let syncStarted = false;
     try {
       const scope = drawCooldownScope({
         source,
@@ -3789,6 +4053,22 @@ function App() {
       throwIfAborted(signal);
       const pool = await seededShuffle(drawEligible, `${seed}:${candidateDigest}`);
       throwIfAborted(signal);
+      const rollingPool = [];
+      const rollingSeen = new Set();
+      const avatarCandidates = [
+        ...pool.slice(0, Math.min(totalSlots, 8)),
+        ...pool.filter((candidate) => safeAvatarUrl(candidate.avatar)),
+        ...pool,
+      ];
+      for (const candidate of avatarCandidates) {
+        const key = candidateIdentity(candidate);
+        if (!key || rollingSeen.has(key)) continue;
+        rollingSeen.add(key);
+        rollingPool.push(candidate);
+        if (rollingPool.length >= 18) break;
+      }
+      await warmDrawAvatars(rollingPool, apiBase, signal);
+      throwIfAborted(signal);
       const all = [];
       let offset = 0;
       for (let prizeIndex = 0; prizeIndex < normalizedPrizes.length; prizeIndex += 1) {
@@ -3805,8 +4085,10 @@ function App() {
           const startedAt = Date.now();
           let tick = 0;
           while (Date.now() - startedAt < duration) {
-            const index = pool.length ? (prizeIndex * 19 + tick * 7 + Math.floor(tick / 3)) % pool.length : 0;
-            setRollingCandidate(pool[index] || null);
+            const index = rollingPool.length
+              ? (prizeIndex * 19 + tick * 7 + Math.floor(tick / 3)) % rollingPool.length
+              : 0;
+            setRollingCandidate(rollingPool[index] || null);
             await sleep(88, signal);
             tick += 1;
           }
@@ -3819,15 +4101,6 @@ function App() {
         if (prizeIndex < normalizedPrizes.length - 1 && !reducedMotion) await sleep(260, signal);
       }
       throwIfAborted(signal);
-      if (!practice) {
-        const wonIds = new Set(historyUids);
-        all.flatMap((item) => item.winners).forEach((winner) => {
-          const identity = String(winner.uid || winner.screenName || winner.id || '').toLowerCase();
-          if (identity) wonIds.add(identity);
-        });
-        setHistoryUids(wonIds);
-      }
-      setLastPool(drawEligible);
       const audit = {
         practice,
         seed,
@@ -3871,7 +4144,15 @@ function App() {
         auditHash: '',
         recordState: practice ? 'practice' : 'local',
       });
-      if (!practice) setDrawHistory((previous) => upsertDrawReceipt(previous, receipt));
+      if (!practice) {
+        const wonIds = new Set(historyUids);
+        all.flatMap((item) => item.winners).forEach((winner) => {
+          const identity = String(winner.uid || winner.screenName || winner.id || '').toLowerCase();
+          if (identity) wonIds.add(identity);
+        });
+        setHistoryUids(wonIds);
+        setDrawHistory((previous) => upsertDrawReceipt(previous, receipt));
+      }
       setPendingReceipt(receipt);
       setConfirmedSetup(null);
       drawCompleted = true;
@@ -3882,7 +4163,8 @@ function App() {
         completeDrawGuard(window.localStorage, guard.scope, guard.token);
         setPhase('正在同步开奖记录');
         showStatus(`已抽出 ${receipt.total} 位中奖用户，正在同步开奖记录。`, 'success');
-        syncStarted = true;
+        const syncController = new AbortController();
+        drawSyncControllersRef.current.add(syncController);
         void syncDrawReceipt(receipt, {
           results: all,
           source,
@@ -3892,18 +4174,18 @@ function App() {
           totalCount: drawCandidates.length,
           eligibleCount: drawEligible.length,
           audit,
-          signal,
+          signal: syncController.signal,
+          taskRevision,
         }).finally(() => {
-          if (drawOperationRef.current === controller) drawOperationRef.current = null;
+          drawSyncControllersRef.current.delete(syncController);
         });
       }
     } catch (error) {
+      setResults([]);
+      setRollingCandidate(null);
+      setLastAudit(null);
+      setPendingReceipt(null);
       if (error?.name === 'AbortError') {
-        setResults([]);
-        setRollingCandidate(null);
-        setLastPool(null);
-        setLastAudit(null);
-        setPendingReceipt(null);
         showStatus('本次开奖已停止，未产生有效结果。');
       } else {
         showStatus(error.message, 'error');
@@ -3916,7 +4198,7 @@ function App() {
       if (drawGuardRef.current === guard) drawGuardRef.current = null;
       if (tabLock?.release) await Promise.resolve(tabLock.release()).catch(() => {});
       if (drawTabLockRef.current === tabLock) drawTabLockRef.current = null;
-      if (!syncStarted && drawOperationRef.current === controller) drawOperationRef.current = null;
+      if (drawOperationRef.current === controller) drawOperationRef.current = null;
       setPhase('');
       setIsDrawing(false);
     }
@@ -3988,17 +4270,38 @@ function App() {
     });
   }
 
+  function manualDrawNumberFromSave(value, history, excludeId = '') {
+    const persisted = Number(value);
+    if (Number.isSafeInteger(persisted) && persisted > 0) {
+      manualDrawSequenceRef.current = Math.max(manualDrawSequenceRef.current, persisted);
+      return persisted;
+    }
+
+    const historyNext = nextManualDrawNumber(history, excludeId);
+    const refNext = manualDrawSequenceRef.current >= Number.MAX_SAFE_INTEGER
+      ? null
+      : manualDrawSequenceRef.current + 1;
+    if (historyNext === null || refNext === null) return null;
+
+    const next = Math.max(historyNext, refNext);
+    if (!Number.isSafeInteger(next)) return null;
+    manualDrawSequenceRef.current = next;
+    return next;
+  }
+
   async function syncDrawReceipt(receipt, saveOptions) {
+    const { taskRevision, ...requestOptions } = saveOptions;
     setReceiptSyncing(receipt.id, true);
     try {
       const saved = await saveResult({
-        ...saveOptions,
+        ...requestOptions,
         silent: true,
         throwOnError: true,
+        updateCurrentTask: false,
       });
       if (!saved?.file) throw new Error('服务器没有返回开奖记录文件');
       const manualDrawNumber = receipt.source === 'manual'
-        ? drawHistory.filter((item) => item.source === 'manual' && item.recordState === 'server').length + 1
+        ? manualDrawNumberFromSave(saved.drawNumber, drawHistory, receipt.id)
         : null;
       const updated = normalizeDrawReceipt({
         ...receipt,
@@ -4009,17 +4312,36 @@ function App() {
         recordState: 'server',
       });
       setDrawHistory((history) => upsertDrawReceipt(history, updated));
-      setPendingReceipt((current) => current?.id === receipt.id ? updated : current);
-      setSelectedReceipt((current) => current?.id === receipt.id ? updated : current);
-      showStatus(`已抽出 ${updated.total} 位中奖用户，开奖记录已同步。`, 'success');
+      const isCurrentTask = taskRevisionRef.current === taskRevision;
+      if (isCurrentTask) {
+        setPendingReceipt((current) => current?.id === receipt.id ? updated : current);
+        setSelectedReceipt((current) => current?.id === receipt.id ? updated : current);
+        if (saved.statusId) setCurrentStatusId(saved.statusId);
+        if (saved.statusUrl) setCurrentStatusUrl(saved.statusUrl);
+        if (saved.drawCount !== null && saved.drawCount !== undefined) {
+          setDrawCount(saved.drawCount);
+          setDrawCountStatus('ready');
+        }
+        showStatus(`已抽出 ${updated.total} 位中奖用户，开奖记录已同步。`, 'success');
+      }
       return updated;
     } catch (error) {
+      if (requestOptions.signal?.aborted || error?.name === 'AbortError') return null;
       const message = historyStorageAvailable
         ? '服务器同步失败，结果已保留在当前浏览器。重新保存成功后才会计入服务器开奖次数。'
         : '服务器同步失败且本机存储不可用。关闭页面前请保存结果图或导出名单。';
-      setSelectedReceipt((current) => current?.id === receipt.id ? current : receipt);
-      setPendingReceipt((current) => current?.id === receipt.id ? null : current);
-      showStatus(`${message} ${error.message}`, 'error', { title: '开奖记录未同步' });
+      if (taskRevisionRef.current === taskRevision) {
+        setPendingReceipt((current) => current?.id === receipt.id ? null : current);
+        const viewedReceipt = selectedReceiptRef.current;
+        const canPresentFailure = !viewedReceipt || viewedReceipt.id === receipt.id;
+        if (canPresentFailure) {
+          setSelectedReceipt((current) => {
+            if (current && current.id !== receipt.id) return current;
+            return current || receipt;
+          });
+          showStatus(`${message} ${error.message}`, 'error', { title: '开奖记录未同步' });
+        }
+      }
       return null;
     } finally {
       setReceiptSyncing(receipt.id, false);
@@ -4091,20 +4413,24 @@ function App() {
       showStatus('暂无可导出的开奖记录。', 'error');
       return;
     }
-    const date = new Date().toISOString().slice(0, 10);
-    const backup = serializeDrawHistoryBackup(drawHistory, new Date().toISOString(), {
-      maxBytes: MAX_HISTORY_BACKUP_BYTES,
-    });
-    const backupInfo = JSON.parse(backup);
-    download(
-      `weibo-draw-history-${date}.json`,
-      backup,
-      'application/json;charset=utf-8',
-    );
-    showStatus(`已备份 ${backupInfo.items.length} 条开奖记录${backupInfo.omittedCount ? `，因文件大小省略较早的 ${backupInfo.omittedCount} 条` : ''}。`, 'success', {
-      popup: true,
-      title: '记录已导出',
-    });
+    try {
+      const date = new Date().toISOString().slice(0, 10);
+      const backup = serializeDrawHistoryBackup(drawHistory, new Date().toISOString(), {
+        maxBytes: MAX_HISTORY_BACKUP_BYTES,
+      });
+      const backupInfo = JSON.parse(backup);
+      download(
+        `weibo-draw-history-${date}.json`,
+        backup,
+        'application/json;charset=utf-8',
+      );
+      showStatus(`已备份 ${backupInfo.items.length} 条开奖记录${backupInfo.omittedCount ? `，因文件大小省略较早的 ${backupInfo.omittedCount} 条` : ''}。`, 'success', {
+        popup: true,
+        title: '记录已导出',
+      });
+    } catch (error) {
+      showStatus(`记录导出失败：${error.message}`, 'error');
+    }
   }
 
   async function importHistoryBackup(event) {
@@ -4113,7 +4439,7 @@ function App() {
     try {
       if (file.size > MAX_HISTORY_BACKUP_BYTES) throw new Error('备份文件不能超过 2 MB');
       const imported = parseDrawHistoryBackup(await file.text());
-      const merged = mergeDrawHistory(drawHistory, imported);
+      const merged = mergeDrawHistory(drawHistoryRef.current, imported);
       const stored = writeDrawHistory(window.localStorage, merged);
       if (!stored.ok) throw new Error('本机存储空间不足，无法保存恢复后的开奖记录。');
       setDrawHistory(stored.items);
@@ -4214,11 +4540,7 @@ function App() {
     });
     if (!saved?.file) return;
     const manualDrawNumber = receipt.source === 'manual'
-      ? drawHistory.filter((item) => (
-        item.id !== receipt.id
-        && item.source === 'manual'
-        && item.recordState === 'server'
-      )).length + 1
+      ? manualDrawNumberFromSave(saved.drawNumber, drawHistory, receipt.id)
       : null;
     const updated = normalizeDrawReceipt({
       ...receipt,
@@ -4298,11 +4620,13 @@ function App() {
 
   function addManualNames() {
     if (refuseWhileBusy()) return;
+    if (source !== 'manual') {
+      showStatus('请先选择手动名单。', 'error');
+      return;
+    }
     try {
       const parsed = parseManualInput(manualInput);
       if (!parsed.length) throw new Error('请先粘贴或导入候选名单。');
-      const switchToManual = source !== 'manual';
-      const wasExternalSource = switchToManual && candidates.length > 0;
       const seen = new Set(candidates.map((item) => candidateIdentity(item)).filter(Boolean));
       const additions = [];
       for (const item of parsed) {
@@ -4317,28 +4641,18 @@ function App() {
           ? '手动名单已达到 20,000 人上限'
           : '这些候选已经在当前名单中');
       }
-      if (switchToManual) {
-        setSource('manual');
-      }
-      if (wasExternalSource) {
-        setCurrentStatusId('');
-        setCurrentStatusUrl('');
-        setDrawCount(null);
-        setDrawCountStatus('idle');
-        setHistoryUids(new Set());
-        clearResult('名单已补充，当前任务已改为手动名单，请重新确认奖项。');
-      }
+      if (!clearResult()) return;
+      setConfirmedSetup(null);
       setCandidates((previous) => [...previous, ...additions]);
       setSourceMeta({
         provider: 'manual',
         loadedAt: new Date().toISOString(),
-        ...(wasExternalSource ? { combined: true } : {}),
       });
       setLoadedSource('manual');
       setSourceInputDirty(false);
       setManualInput('');
       const reachedLimit = candidates.length + additions.length >= MAX_MANUAL_CANDIDATES;
-      showStatus(`${wasExternalSource ? '已将微博名单转换为手动名单并补充' : '已添加'} ${additions.length} 位候选用户${reachedLimit ? '，名单已达到 20,000 人上限' : ''}。`, 'success');
+      showStatus(`已添加 ${additions.length} 位候选用户${reachedLimit ? '，名单已达到 20,000 人上限' : ''}。`, 'success');
     } catch (error) {
       showStatus(error.message, 'error');
     }
@@ -4352,11 +4666,17 @@ function App() {
       return;
     }
     manualFileReadRef.current = true;
+    const inputRevision = candidateLoadRevisionRef.current;
     try {
       if (file.size > MAX_MANUAL_FILE_BYTES) throw new Error('文件不能超过 5 MB');
       const text = await file.text();
+      if (!mountedRef.current || candidateLoadRevisionRef.current !== inputRevision) return;
       if (refuseWhileBusy()) return;
-      setSource('manual');
+      if (source !== 'manual') {
+        if (!changeSource('manual')) return;
+      } else if (!clearResult()) {
+        return;
+      }
       updateManualInput(text);
       showStatus(`已读取 ${file.name}，确认后可导入候选名单。`, 'success', { popup: true, title: '文件已读取' });
     } catch (error) {
@@ -4367,9 +4687,13 @@ function App() {
     }
   }
 
-  const manualDrawCount = drawHistory.filter((item) => (
-    item.source === 'manual' && item.recordState === 'server'
-  )).length;
+  const manualDrawCountFromHistory = nextManualDrawNumber(drawHistory);
+  const manualDrawLimitReached = manualDrawCountFromHistory === null
+    || manualDrawSequenceRef.current >= Number.MAX_SAFE_INTEGER;
+  const manualDrawCount = Math.max(
+    manualDrawCountFromHistory === null ? Number.MAX_SAFE_INTEGER : Math.max(0, manualDrawCountFromHistory - 1),
+    manualDrawSequenceRef.current,
+  );
   const drawCountKnown = source === 'manual'
     || (drawCountStatus === 'ready' && Number.isFinite(Number(drawCount)) && Number(drawCount) >= 0);
   const previousDrawCount = source === 'manual'
@@ -4378,7 +4702,9 @@ function App() {
       ? Math.max(0, Math.floor(Number(drawCount)))
       : null;
   const nextDrawText = source === 'manual'
-    ? `本机第 ${previousDrawCount + 1} 次手动开奖`
+    ? manualDrawLimitReached
+      ? '手动名单开奖次数已达上限'
+      : `本机第 ${previousDrawCount + 1} 次手动开奖`
     : previousDrawCount === null
       ? '本链接下一次开奖（次数待核实）'
       : `本链接第 ${previousDrawCount + 1} 次开奖`;
@@ -4396,7 +4722,9 @@ function App() {
       })
       : '本次结果未计入次数'
     : source === 'manual'
-      ? drawCountCopy({ source, count: manualDrawCount, completed: false })
+      ? manualDrawLimitReached
+        ? '手动名单开奖次数已达上限'
+        : drawCountCopy({ source, count: manualDrawCount, completed: false })
       : !statusUrl.trim()
         ? '输入链接后显示'
         : drawCountStatus === 'loading'
@@ -4408,18 +4736,26 @@ function App() {
               : drawCountCopy({ source, count: drawCount, completed: false });
   const hasCandidates = candidates.length > 0;
   const hasResults = results.length > 0;
-  const serverAccountCount = Number(
-    cookieInfo.availableAccountCount
+  const serverTryableAccountCount = Number(
+    cookieInfo.tryableAccountCount
+      ?? cookieInfo.availableAccountCount
       ?? cookieInfo.accountCount
       ?? cookieInfo.availableCookieCount
       ?? cookieInfo.cookieCount
       ?? 0,
   );
-  const accountStatusText = serverAccountCount > 0
-    ? `${serverAccountCount} 个服务器登录态`
-    : mobileCookie.trim()
-      ? '已填写备用 Cookie'
-      : '暂无服务器登录态';
+  const serverVerifiedAccountCount = Number(cookieInfo.verifiedAccountCount || 0);
+  const accountStatusText = cookieHealth === 'error'
+    ? '登录态状态暂不可用'
+    : cookieHealth === 'checking'
+      ? '正在读取登录态'
+      : serverVerifiedAccountCount > 0
+        ? `${serverVerifiedAccountCount} 个已验证服务器登录态`
+        : serverTryableAccountCount > 0
+          ? '服务器登录态已保存'
+        : mobileCookie.trim()
+          ? '已填写备用 Cookie'
+          : '暂无服务器登录态';
   const serviceStatusText = progress
     ? '任务运行中'
     : apiHealth === 'ok'
@@ -4468,7 +4804,6 @@ function App() {
         candidateEvaluations,
         candidateSummary,
         eligible,
-        displayPool,
         prizes,
         normalizedPrizes,
         keyword,
@@ -4546,13 +4881,8 @@ function App() {
         setAccessToken: setAccessTokenSafe,
         setMobileCookie: setMobileCookieSafe,
         updateManualInput,
-        setCandidates,
-        setPrizes,
         applyFilterDraft,
-        setResults,
-        setLastPool,
-        setDrawHistory,
-        setSelectedReceipt,
+        setSelectedReceipt: selectReceipt,
         setActiveTab: setActiveTabSafe,
         setShowSourceEditor: setShowSourceEditorSafe,
         setShowPrizeEditor: setShowPrizeEditorSafe,
@@ -4589,6 +4919,7 @@ function App() {
         clearResult,
         updatePrize,
         updatePrizeCount,
+        commitPrizeCount,
         addPrize,
         removePrize,
         confirmDrawSetup,

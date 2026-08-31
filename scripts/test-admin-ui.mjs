@@ -40,7 +40,16 @@ const summary = {
   savedDrawCount: 18,
   winnerCount: 18,
   recentAttempts: [],
-  cookie: { accountCount: 1, cookieCount: 1, hasCookie: true },
+  cookie: {
+    accountCount: 2,
+    cookieCount: 3,
+    hasCookie: true,
+    tryableAccountCount: 2,
+    verifiedAccountCount: 1,
+    pendingAccountCount: 1,
+    checkFailedAccountCount: 1,
+    quarantinedAccountCount: 0,
+  },
   queue: {
     active: 1,
     queued: 0,
@@ -141,6 +150,7 @@ const browser = await launchUiBrowser();
 try {
   {
     let authenticated = false;
+    let malformedSummaryOnce = false;
     const loginContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const loginPage = await loginContext.newPage();
     await loginPage.route('**/api/admin/**', async (route) => {
@@ -159,6 +169,11 @@ try {
         return;
       }
       if (url.pathname === '/api/admin/summary') {
+        if (malformedSummaryOnce) {
+          malformedSummaryOnce = false;
+          await route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>proxy error</title>' });
+          return;
+        }
         await route.fulfill({ json: summary });
         return;
       }
@@ -182,6 +197,10 @@ try {
     await loginPage.locator('#dashboard:not(.hidden)').waitFor();
     assert.equal(await loginPage.locator('#topbarActions').isVisible(), true);
     assert.equal(await loginPage.locator('#passwordInput').inputValue(), '');
+    malformedSummaryOnce = true;
+    await loginPage.getByRole('button', { name: '刷新数据' }).click();
+    await loginPage.locator('#adminAlert:not(.hidden)').getByText('服务器返回格式异常', { exact: false }).waitFor();
+    assert.equal(await loginPage.locator('#dashboard:not(.hidden)').isVisible(), true);
     await loginContext.close();
   }
 
@@ -189,6 +208,7 @@ try {
     const logoutContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const logoutPage = await logoutContext.newPage();
     let summaryRequests = 0;
+    let failLogoutOnce = true;
     let releaseLoginStart;
     const loginStartGate = new Promise((resolve) => {
       releaseLoginStart = resolve;
@@ -218,6 +238,11 @@ try {
         await route.fulfill({ json: { ok: true, status: 'waiting_scan', active: true } }).catch(() => {});
         return;
       }
+      if (url.pathname === '/api/admin/logout' && failLogoutOnce) {
+        failLogoutOnce = false;
+        await route.fulfill({ status: 503, json: { ok: false, error: '退出接口暂时不可用' } });
+        return;
+      }
       await route.fulfill({ json: { ok: true } });
     });
 
@@ -231,6 +256,9 @@ try {
     ));
     await logoutPage.getByRole('button', { name: '扫码登录微博' }).click();
     await loginRequest;
+    await logoutPage.locator('#logoutBtn').click();
+    await logoutPage.locator('#adminAlert:not(.hidden)').getByText('退出接口暂时不可用', { exact: true }).waitFor();
+    assert.equal(await logoutPage.locator('#dashboard:not(.hidden)').isVisible(), true);
     await logoutPage.locator('#logoutBtn').click();
     await logoutPage.locator('#loginPanel:not(.hidden)').waitFor();
     await logoutPage.locator('#toast.show').getByText('已退出后台', { exact: true }).waitFor();
@@ -246,12 +274,33 @@ try {
 
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
+  await page.addInitScript(() => {
+    const nativeFetch = window.fetch.bind(window);
+    window.__drawRequestAborts = [];
+    window.__detailRequestAborts = [];
+    window.fetch = (input, options = {}) => {
+      const url = typeof input === 'string' ? input : input.url;
+      const signal = options.signal;
+      if (url.includes('/api/admin/draws?') && signal) {
+        const recordAbort = () => window.__drawRequestAborts.push(url);
+        if (signal.aborted) recordAbort();
+        else signal.addEventListener('abort', recordAbort, { once: true });
+      }
+      if (/\/api\/admin\/draws\/[^?]+$/.test(new URL(url, window.location.href).pathname) && signal) {
+        const recordAbort = () => window.__detailRequestAborts.push(url);
+        if (signal.aborted) recordAbort();
+        else signal.addEventListener('abort', recordAbort, { once: true });
+      }
+      return nativeFetch(input, options);
+    };
+  });
   let activeDetailRequests = 0;
   let maxDetailRequests = 0;
   let activeLoginPolls = 0;
   let maxLoginPolls = 0;
   let weiboLoginActive = false;
   let failingDetailFile = '';
+  let failingDeleteFile = '';
   let detailDelayMs = 20;
   await page.route('**/api/admin/**', async (route) => {
     const url = new URL(route.request().url());
@@ -264,6 +313,49 @@ try {
       return;
     }
     if (url.pathname === '/api/admin/draws') {
+      const search = url.searchParams.get('search') || '';
+      const offset = Number(url.searchParams.get('offset') || 0);
+      if (search === '分页') {
+        const items = offset ? draws.slice(2, 4) : draws.slice(0, 2);
+        await route.fulfill({
+          json: {
+            ok: true,
+            items,
+            hasMore: offset === 0,
+            nextOffset: offset + items.length,
+            nextCursor: offset === 0 ? 'draws-page-2' : '',
+          },
+        });
+        return;
+      }
+      if (search === '分页取消') {
+        const items = offset ? draws.slice(2, 4) : draws.slice(0, 2);
+        if (offset) await new Promise((resolve) => setTimeout(resolve, 1200));
+        await route.fulfill({
+          json: {
+            ok: true,
+            items,
+            hasMore: offset === 0,
+            nextOffset: offset + items.length,
+            nextCursor: offset === 0 ? 'cancel-page-2' : '',
+          },
+        }).catch(() => {});
+        return;
+      }
+      if (search === '旧请求') {
+        await new Promise((resolve) => setTimeout(resolve, 1200));
+        await route.fulfill({ json: { ok: true, items: draws.slice(0, 2) } }).catch(() => {});
+        return;
+      }
+      if (search === '最新请求') {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        await route.fulfill({ json: { ok: true, items: draws.slice(0, 1) } });
+        return;
+      }
+      if (search === '错误请求') {
+        await route.fulfill({ status: 503, json: { ok: false, error: '记录搜索暂时不可用' } });
+        return;
+      }
       await route.fulfill({ json: { ok: true, items: draws } });
       return;
     }
@@ -301,15 +393,19 @@ try {
       return;
     }
     const file = decodeURIComponent(url.pathname.replace('/api/admin/draws/', ''));
+    if (route.request().method() === 'DELETE' && file === failingDeleteFile) {
+      await route.fulfill({ status: 503, json: { ok: false, error: '记录删除暂时不可用' } });
+      return;
+    }
     activeDetailRequests += 1;
     maxDetailRequests = Math.max(maxDetailRequests, activeDetailRequests);
     await new Promise((resolve) => setTimeout(resolve, detailDelayMs));
     activeDetailRequests -= 1;
     if (file === failingDetailFile) {
-      await route.fulfill({ status: 503, json: { ok: false, error: '记录服务暂时不可用' } });
+      await route.fulfill({ status: 503, json: { ok: false, error: '记录服务暂时不可用' } }).catch(() => {});
       return;
     }
-    await route.fulfill({ json: { ok: true, item: draws.find((item) => item.file === file) } });
+    await route.fulfill({ json: { ok: true, item: draws.find((item) => item.file === file) } }).catch(() => {});
   });
 
   await gotoUiPage(page, baseUrl);
@@ -372,6 +468,11 @@ try {
   assert.match(systemText, /最近清理 4 个旧缓存目录 · 新缓存上限 64 MB \+ 16 MB/);
   await page.getByRole('tab', { name: 'Cookie', exact: true }).click();
   assert.equal(await page.getByRole('heading', { name: 'Cookie 与保活' }).isVisible(), true);
+  const cookieText = await page.locator('#cookieBox').innerText();
+  assert.match(cookieText, /已验证账号 1 个 · 可尝试 2 个/);
+  assert.match(cookieText, /保存记录：3 条/);
+  assert.match(cookieText, /待验证：1 个账号/);
+  assert.match(cookieText, /校验异常：1 个账号/);
   await page.getByRole('button', { name: '扫码登录微博' }).click();
   assert.equal(await page.locator('#weiboLoginText').getAttribute('role'), 'status');
   await page.waitForTimeout(6000);
@@ -379,11 +480,77 @@ try {
   await page.getByRole('button', { name: '关闭扫码' }).click();
   await page.getByRole('tab', { name: '记录', exact: true }).click();
   await page.waitForTimeout(320);
-  assert.equal(await page.getByRole('searchbox', { name: '搜索开奖记录' }).isVisible(), true);
+  const searchInput = page.getByRole('searchbox', { name: '搜索开奖记录' });
+  assert.equal(await searchInput.isVisible(), true);
   assert.equal(await page.locator('.record-row').count(), draws.length);
+
+  const slowSearch = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === '/api/admin/draws' && url.searchParams.get('search') === '旧请求';
+  });
+  await searchInput.fill('旧请求');
+  await slowSearch;
+  const latestSearch = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === '/api/admin/draws' && url.searchParams.get('search') === '最新请求';
+  });
+  await searchInput.fill('最新请求');
+  await page.waitForFunction(() => window.__drawRequestAborts.some((value) => (
+    new URL(value, window.location.href).searchParams.get('search') === '旧请求'
+  )));
+  await page.waitForTimeout(50);
+  assert.equal(await page.locator('#adminAlert').isVisible(), false);
+  await latestSearch;
+  await page.waitForFunction(() => document.querySelectorAll('.record-row').length === 1);
+
+  await page.locator('#toast:not(.show)').waitFor();
+  await searchInput.fill('错误请求');
+  await page.locator('#adminAlert:not(.hidden)').getByText('记录搜索暂时不可用', { exact: true }).waitFor();
+  assert.equal(await page.locator('#toast.show').count(), 0);
+  assert.notEqual(await page.locator('#toast').innerText(), '记录搜索暂时不可用');
+  await page.locator('#adminAlertClose').click();
+  await searchInput.fill('分页');
+  await page.waitForFunction(() => document.querySelectorAll('.record-row').length === 2);
+  const appendRequest = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === '/api/admin/draws'
+      && url.searchParams.get('search') === '分页'
+      && url.searchParams.get('cursor') === 'draws-page-2';
+  });
+  const loadMoreButton = page.getByRole('button', { name: '载入更多记录' });
+  await loadMoreButton.focus();
+  await loadMoreButton.press('Enter');
+  await appendRequest;
+  await page.waitForFunction(() => document.querySelectorAll('.record-row').length === 4);
+  assert.equal(await page.locator('.record-row[data-index="2"]').evaluate((row) => row === document.activeElement), true);
+  assert.equal(await page.getByText('4 条', { exact: false }).first().isVisible(), true);
+  await searchInput.fill('分页取消');
+  await page.waitForFunction(() => document.querySelectorAll('.record-row').length === 2);
+  const delayedAppend = page.waitForRequest((request) => {
+    const url = new URL(request.url());
+    return url.pathname === '/api/admin/draws'
+      && url.searchParams.get('search') === '分页取消'
+      && url.searchParams.get('offset') === '2'
+      && url.searchParams.get('cursor') === 'cancel-page-2';
+  });
+  await page.getByRole('button', { name: '载入更多记录' }).click();
+  await delayedAppend;
+  await searchInput.fill('最新请求');
+  await page.waitForFunction(() => window.__drawRequestAborts.some((value) => {
+    const url = new URL(value, window.location.href);
+    return url.searchParams.get('search') === '分页取消'
+      && url.searchParams.get('offset') === '2';
+  }));
+  await page.waitForFunction(() => document.querySelectorAll('.record-row').length === 1);
+  await searchInput.fill('分页');
+  await page.waitForFunction(() => document.querySelectorAll('.record-row').length === 2);
+  assert.equal(await page.getByRole('button', { name: '载入更多记录' }).isEnabled(), true);
+  await searchInput.fill('');
+  await page.waitForFunction((count) => document.querySelectorAll('.record-row').length === count, draws.length);
+
   maxDetailRequests = 0;
   const download = page.waitForEvent('download');
-  await page.getByRole('button', { name: '导出当前列表' }).click();
+  await page.getByRole('button', { name: '导出已载入记录' }).click();
   await download;
   await page.locator('#exportStatus').getByText(`已导出 ${draws.length} 条记录`, { exact: true }).waitFor();
   assert.equal(maxDetailRequests, 1);
@@ -393,6 +560,19 @@ try {
   const before = await page.evaluate(() => ({ pageY: window.scrollY, detailTop: document.querySelector('#detailPanel').getBoundingClientRect().top }));
   await page.locator('.record-row').last().click();
   await page.locator('#detailContent').getByText('中奖用户 18', { exact: true }).waitFor();
+  await page.evaluate(() => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText = async () => { throw new Error('clipboard denied'); };
+    } else {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async () => { throw new Error('clipboard denied'); } },
+      });
+    }
+    document.execCommand = () => true;
+  });
+  await page.getByRole('button', { name: '复制名单', exact: true }).click();
+  await page.locator('#toast.show').getByText('中奖名单已复制', { exact: true }).waitFor();
   const after = await page.evaluate(() => ({
     pageY: window.scrollY,
     detailTop: document.querySelector('#detailPanel').getBoundingClientRect().top,
@@ -405,6 +585,11 @@ try {
   const deleteDialog = page.getByRole('dialog', { name: '删除开奖记录' });
   assert.equal(await deleteDialog.isVisible(), true);
   assert.equal(await deleteDialog.getByText('删除后无法恢复', { exact: false }).isVisible(), true);
+  failingDeleteFile = draws.at(-1).file;
+  await deleteDialog.getByRole('button', { name: '删除', exact: true }).click();
+  await deleteDialog.getByText('记录删除暂时不可用', { exact: true }).waitFor();
+  assert.equal(await page.locator('#adminAlert').isVisible(), false);
+  failingDeleteFile = '';
   await page.waitForTimeout(320);
   await page.screenshot({ path: fileURLToPath(new URL('admin-delete-confirm-desktop.png', outputDir)) });
   await deleteDialog.getByRole('button', { name: '取消', exact: true }).click();
@@ -413,6 +598,13 @@ try {
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole('button', { name: '关闭开奖记录详情' }).click();
+  detailDelayMs = 1200;
+  await page.locator('.record-row').first().click();
+  await page.locator('#detailContent .detail-state').waitFor({ state: 'visible' });
+  await page.getByRole('button', { name: '关闭开奖记录详情' }).click();
+  await page.waitForFunction((file) => window.__detailRequestAborts.some((value) => (
+    decodeURIComponent(new URL(value, window.location.href).pathname).endsWith(`/${file}`)
+  )), draws[0].file);
   detailDelayMs = 300;
   await page.locator('.record-row').first().click();
   await page.locator('#detailPanel.has-selection').waitFor({ state: 'visible' });
@@ -443,7 +635,9 @@ try {
   assert.equal(await page.evaluate(() => document.activeElement?.dataset.file), draws[0].file);
   failingDetailFile = draws[1].file;
   await page.locator('.record-row').nth(1).click();
-  await page.getByRole('alert').getByText('记录载入失败', { exact: true }).waitFor();
+  await page.locator('#detailContent[aria-busy="false"]').waitFor();
+  await page.locator('#detailContent').getByText('记录载入失败', { exact: true }).waitFor();
+  await page.locator('#adminAlert:not(.hidden)').getByText('记录载入失败', { exact: false }).waitFor();
   assert.equal(await page.getByRole('button', { name: '重新加载' }).isVisible(), true);
   failingDetailFile = '';
   await page.getByRole('button', { name: '重新加载' }).click();
