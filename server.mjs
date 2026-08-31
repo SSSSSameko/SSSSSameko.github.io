@@ -215,6 +215,7 @@ const weiboKeepaliveBusyRetryMs = envNumber(
 );
 const weiboBrowserLaunchTimeoutMs = envNumber('WEIBO_BROWSER_LAUNCH_TIMEOUT_MS', 60_000, 10_000);
 const weiboBrowserAbortCleanupMs = envNumber('WEIBO_BROWSER_ABORT_CLEANUP_MS', 5_000, 1_000);
+const shutdownResourceTimeoutMs = 8_000;
 const weiboBrowserDiskCacheBytes = envNumber('WEIBO_BROWSER_DISK_CACHE_BYTES', 32 * 1024 * 1024, 1024 * 1024);
 const weiboBrowserMediaCacheBytes = envNumber('WEIBO_BROWSER_MEDIA_CACHE_BYTES', 8 * 1024 * 1024, 1024 * 1024);
 const maxDrawSaveBodyBytes = envNumber('MAX_DRAW_SAVE_BODY_BYTES', 2 * 1024 * 1024, 64 * 1024);
@@ -7023,6 +7024,16 @@ server.on('clientError', (_error, socket) => {
 
 let shutdownStarted = false;
 
+async function settleShutdownResource(label, promise) {
+  if (!promise) return;
+  const outcome = await settlePromiseWithin(Promise.resolve(promise), shutdownResourceTimeoutMs);
+  if (outcome.timedOut) {
+    console.warn(`Shutdown resource timed out: ${label}`);
+  } else if (!outcome.fulfilled) {
+    console.warn(`Shutdown resource failed (${label}): ${safeError(outcome.error).message}`);
+  }
+}
+
 async function shutdown(signal) {
   if (shutdownStarted) return;
   shutdownStarted = true;
@@ -7058,18 +7069,24 @@ async function shutdown(signal) {
   const keepaliveContext = weiboKeepaliveContext;
   try {
     await Promise.all([
-      httpClosed,
-      Promise.allSettled(jobOperations),
-      closeWeiboLoginSession('服务器正在重启，扫码窗口已关闭。').catch(() => {}),
-      closePersistentBrowserContext(
+      settleShutdownResource('HTTP server', httpClosed),
+      ...jobOperations.map((operation, index) => (
+        settleShutdownResource(`candidate job ${index + 1}`, operation)
+      )),
+      settleShutdownResource(
+        'login session',
+        closeWeiboLoginSession('服务器正在重启，扫码窗口已关闭。'),
+      ),
+      settleShutdownResource('keepalive browser', closePersistentBrowserContext(
         keepaliveContext,
         weiboLoginProfileDir,
-      ).catch(() => {}),
-      browserOperation?.catch(() => {}),
-      browserCleanupOperation?.catch(() => {}),
+      )),
+      settleShutdownResource('browser operation', browserOperation),
+      settleShutdownResource('browser cleanup', browserCleanupOperation),
     ]);
   } finally {
     clearTimeout(httpDrainTimer);
+    server.closeAllConnections?.();
   }
   weiboKeepaliveContext = null;
   clearTimeout(forceExit);
