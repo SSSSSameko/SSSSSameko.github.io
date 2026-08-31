@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   CheckCircle2,
   ChevronDown,
@@ -96,6 +96,14 @@ export default function DrawResultSheet({
   const [announcementTemplate, setAnnouncementTemplate] = useState('concise');
   const [visiblePrizeCounts, setVisiblePrizeCounts] = useState(() => new Map());
   const prizeControlRefs = useRef(new Map());
+  const pendingPrizeFocusRef = useRef(null);
+
+  useLayoutEffect(() => {
+    const groupIndex = pendingPrizeFocusRef.current;
+    if (groupIndex === null) return;
+    pendingPrizeFocusRef.current = null;
+    prizeControlRefs.current.get(groupIndex)?.focus({ preventScroll: true });
+  }, [visiblePrizeCounts]);
   const receipt = useMemo(
     () => (receiptInput ? normalizeDrawReceipt(receiptInput) : null),
     [receiptInput],
@@ -320,10 +328,8 @@ export default function DrawResultSheet({
                 return next;
               });
               const collapseAndRestoreFocus = () => {
+                pendingPrizeFocusRef.current = groupIndex;
                 collapseGroup();
-                requestAnimationFrame(() => {
-                  prizeControlRefs.current.get(groupIndex)?.focus({ preventScroll: true });
-                });
               };
               return (
                 <section
