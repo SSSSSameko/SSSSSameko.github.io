@@ -60,6 +60,7 @@ const receipt = {
 const cases = [
   { name: '390x844', viewport: { width: 390, height: 844 }, reducedMotion: 'no-preference' },
   { name: '320x700', viewport: { width: 320, height: 700 }, reducedMotion: 'no-preference' },
+  { name: '320x256', viewport: { width: 320, height: 256 }, reducedMotion: 'reduce' },
   { name: 'reduced-motion', viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' },
   { name: 'desktop-1440x900', viewport: { width: 1440, height: 900 }, reducedMotion: 'no-preference' },
 ];
@@ -88,7 +89,12 @@ try {
     await gotoUiPage(page, baseUrl);
     if (item.name === 'desktop-1440x900') {
       const shell = await page.locator('.app-shell').boundingBox();
-      assert.ok(shell && shell.width >= 390 && shell.width <= 430);
+      assert.ok(
+        shell
+          && shell.width >= 900
+          && shell.width <= 1180,
+        JSON.stringify({ shell }),
+      );
       assert.ok(shell.height > 600);
     }
     await page.locator('.root-tabbar button').filter({ hasText: '记录' }).click();
@@ -96,6 +102,12 @@ try {
 
     const dialog = page.getByRole('dialog', { name: /开奖结果/ });
     await dialog.waitFor({ state: 'visible' });
+    if (item.name === 'desktop-1440x900') {
+      await page.waitForTimeout(450);
+      const receiptSheet = await dialog.boundingBox();
+      assert.ok(receiptSheet && receiptSheet.width <= 680, JSON.stringify({ receiptSheet }));
+      assert.ok(Math.abs((receiptSheet.x + receiptSheet.width / 2) - 720) <= 1, JSON.stringify({ receiptSheet }));
+    }
     assert.equal(await dialog.getByText('本链接第 2 次开奖').first().isVisible(), true);
     assert.equal(await dialog.getByText('筛选规则').first().isVisible(), true);
     assert.equal(await dialog.getByText('SHA-256 · Fisher–Yates').first().isVisible(), true);
@@ -165,6 +177,53 @@ try {
       actionBox && actionBox.y + actionBox.height <= item.viewport.height + 1,
       JSON.stringify({ actionBox, layout, viewport: item.viewport }),
     );
+    if (item.name === '320x256') {
+      const actionNames = ['复制文案', '导出 CSV'];
+      for (const actionName of actionNames) {
+        const action = dialog.getByRole('button', { name: actionName });
+        await action.scrollIntoViewIfNeeded();
+        assert.equal(await action.isVisible(), true, `${actionName} 在极短视口下应可见`);
+        const box = await action.boundingBox();
+        assert.ok(box && box.y + box.height <= item.viewport.height + 1, `${actionName} 不应被视口裁切：${JSON.stringify(box)}`);
+      }
+      const scrollState = await page.evaluate(() => {
+        const content = document.querySelector('.receipt-content');
+        const copyDetails = document.querySelector('.receipt-copy-details pre');
+        return {
+          contentOverflow: getComputedStyle(content).overflowY,
+          contentScrolls: content.scrollHeight > content.clientHeight,
+          copyOverflow: getComputedStyle(copyDetails).overflowY,
+        };
+      });
+      assert.equal(scrollState.contentOverflow, 'auto', JSON.stringify(scrollState));
+      assert.equal(scrollState.contentScrolls, true, JSON.stringify(scrollState));
+      assert.notEqual(scrollState.copyOverflow, 'auto', JSON.stringify(scrollState));
+    }
+    const actionGrid = await page.evaluate(() => {
+      const container = document.querySelector('.receipt-actions');
+      const containerBox = container?.getBoundingClientRect();
+      const secondary = [...document.querySelectorAll('.receipt-action-secondary')].map((button) => {
+        const box = button.getBoundingClientRect();
+        return { left: box.left, top: box.top, width: box.width };
+      });
+      return {
+        container: containerBox && { left: containerBox.left, width: containerBox.width },
+        secondary,
+      };
+    });
+    const secondaryActions = actionGrid.secondary;
+    assert.ok(actionGrid.container && secondaryActions.length >= 3, JSON.stringify(actionGrid));
+    if (secondaryActions.length % 2 === 0) {
+      assert.equal(
+        secondaryActions.at(-1).top,
+        secondaryActions.at(-2).top,
+        `成对的二级操作应位于同一行：${JSON.stringify(actionGrid)}`,
+      );
+    } else {
+      const lastAction = secondaryActions.at(-1);
+      assert.equal(lastAction.left, actionGrid.container.left, JSON.stringify(actionGrid));
+      assert.equal(lastAction.width, actionGrid.container.width, JSON.stringify(actionGrid));
+    }
     if (item.name === '390x844') {
       await dialog.locator('.receipt-audit').scrollIntoViewIfNeeded();
       await page.screenshot({
@@ -265,6 +324,29 @@ try {
     await largeContext.close();
   }
 
+  const recoveryContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    reducedMotion: 'reduce',
+  });
+  try {
+    const malformedHistory = '{not-json';
+    await recoveryContext.addInitScript(({ key, value }) => {
+      localStorage.setItem(key, value);
+      localStorage.setItem('weibo-draw-motion', 'system');
+    }, { key: historyKey, value: malformedHistory });
+    const page = await recoveryContext.newPage();
+    page.setDefaultTimeout(8_000);
+    await gotoUiPage(page, baseUrl);
+    await page.waitForTimeout(100);
+
+    assert.equal(
+      await page.evaluate((key) => localStorage.getItem(key), historyKey),
+      malformedHistory,
+    );
+  } finally {
+    await recoveryContext.close();
+  }
+
   const singleReceipt = {
     ...receipt,
     id: 'receipt-ui-single-winner',
@@ -332,6 +414,35 @@ try {
     assert.deepEqual(initialScreen, { avatar: true, name: true, uid: true });
   } finally {
     await singleContext.close();
+  }
+
+  const crossTabContext = await browser.newContext({
+    viewport: { width: 1280, height: 720 },
+    reducedMotion: 'reduce',
+  });
+  try {
+    const writerPage = await crossTabContext.newPage();
+    const readerPage = await crossTabContext.newPage();
+    writerPage.setDefaultTimeout(8_000);
+    readerPage.setDefaultTimeout(8_000);
+    await Promise.all([
+      gotoUiPage(writerPage, baseUrl),
+      gotoUiPage(readerPage, baseUrl),
+    ]);
+    await readerPage.locator('.root-tabbar button').filter({ hasText: '记录' }).click();
+    await readerPage.locator('.v3-history-empty strong').waitFor({ state: 'visible' });
+
+    await writerPage.evaluate(({ key, value }) => {
+      localStorage.setItem(key, JSON.stringify({ version: 2, items: [value] }));
+    }, { key: historyKey, value: receipt });
+    await readerPage.locator('.history-list > button').first().waitFor({ state: 'visible' });
+    assert.equal(await readerPage.locator('.history-list > button').count(), 1);
+
+    await writerPage.evaluate((key) => localStorage.removeItem(key), historyKey);
+    await readerPage.locator('.v3-history-empty strong').waitFor({ state: 'visible' });
+    assert.equal(await readerPage.locator('.history-list > button').count(), 0);
+  } finally {
+    await crossTabContext.close();
   }
 } finally {
   await browser.close();

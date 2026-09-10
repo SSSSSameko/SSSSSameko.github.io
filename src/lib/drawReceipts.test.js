@@ -3,22 +3,89 @@ import test from 'node:test';
 
 import {
   buildFairnessSummary,
+  clearDrawHistoryStorage,
   completedDrawStats,
   DRAW_HISTORY_KEY,
+  DRAW_HISTORY_LOCK_NAME,
+  DRAW_HISTORY_MIGRATION_KEY,
   DRAW_HISTORY_VERSION,
   drawCountCopy,
   mergeDrawHistory,
+  mutateDrawHistory,
   nextManualDrawNumber,
   normalizeDrawReceipt,
   receiptWinnerRows,
   receiptWinnerText,
   parseDrawHistoryBackup,
   readDrawHistory,
+  readDrawHistoryState,
   serializeDrawHistoryBackup,
   upsertDrawReceipt,
+  withDrawHistoryLock,
   winnerIdsForStatus,
   writeDrawHistory,
 } from './drawReceipts.js';
+
+function memoryStorage() {
+  const values = new Map();
+  return {
+    getItem: (key) => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
+  };
+}
+
+function serializedLockManager() {
+  let tail = Promise.resolve();
+  return {
+    request(name, options, task) {
+      assert.equal(name, DRAW_HISTORY_LOCK_NAME);
+      assert.deepEqual(options, { mode: 'exclusive' });
+      const operation = tail.then(() => task({ name, mode: 'exclusive' }));
+      tail = operation.catch(() => {});
+      return operation;
+    },
+  };
+}
+
+test('mutateDrawHistory serializes cross-tab read/merge/write transactions', async () => {
+  const storage = memoryStorage();
+  const locks = serializedLockManager();
+  let signalFirstStarted;
+  let releaseFirst;
+  let secondEntered = false;
+  const firstStarted = new Promise((resolve) => { signalFirstStarted = resolve; });
+  const firstRelease = new Promise((resolve) => { releaseFirst = resolve; });
+  const receipt = (id, drawnAt) => ({
+    id,
+    source: 'manual',
+    drawnAt,
+    results: [{ id: `prize-${id}`, name: '测试奖项', winners: [{ uid: id, screenName: id }] }],
+  });
+
+  const first = mutateDrawHistory(storage, async (history) => {
+    signalFirstStarted();
+    await firstRelease;
+    return upsertDrawReceipt(history, receipt('first', '2026-09-07T01:00:00.000Z'));
+  }, locks);
+  await firstStarted;
+  const second = mutateDrawHistory(storage, (history) => {
+    secondEntered = true;
+    return upsertDrawReceipt(history, receipt('second', '2026-09-07T02:00:00.000Z'));
+  }, locks);
+
+  await Promise.resolve();
+  assert.equal(secondEntered, false);
+  releaseFirst();
+  const results = await Promise.all([first, second]);
+
+  assert.ok(results.every((result) => result.ok));
+  assert.deepEqual(readDrawHistory(storage).map((item) => item.id), ['second', 'first']);
+});
+
+test('withDrawHistoryLock falls back when the Web Locks API is unavailable', async () => {
+  assert.equal(await withDrawHistoryLock(async (lock) => lock === null ? 'fallback' : 'locked', null), 'fallback');
+});
 
 test('completedDrawStats counts unique saved records for one status', () => {
   const records = [
@@ -230,6 +297,238 @@ test('history storage rejects malformed data and caps records at 50', () => {
   assert.equal(readDrawHistory(storage).length, 50);
 });
 
+test('history storage migrates the legacy key when the current key is empty', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  values.set('weibo-lottery-history', JSON.stringify([
+    normalizeDrawReceipt({ id: 'legacy-old', drawnAt: '2026-07-24T01:00:00.000Z' }),
+    normalizeDrawReceipt({ id: 'legacy-new', drawnAt: '2026-07-24T02:00:00.000Z' }),
+  ]));
+
+  assert.deepEqual(readDrawHistory(storage).map((item) => item.id), ['legacy-new', 'legacy-old']);
+});
+
+test('history storage persists a successful legacy migration back to the current key', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  values.set('weibo-lottery-history', JSON.stringify([
+    normalizeDrawReceipt({ id: 'legacy-persist', drawnAt: '2026-07-24T01:00:00.000Z' }),
+  ]));
+
+  assert.deepEqual(readDrawHistory(storage).map((item) => item.id), ['legacy-persist']);
+  assert.deepEqual(JSON.parse(values.get(DRAW_HISTORY_KEY)).items.map((item) => item.id), ['legacy-persist']);
+});
+
+test('history storage migrates the legacy winner and backup shape without losing audit fields', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  values.set('weibo-lottery-history', JSON.stringify([{
+    time: '2026-08-27T03:04:05.000Z',
+    seed: 'legacy-seed',
+    hash: 'legacy-hash',
+    total: 42,
+    winners: ['甲', '乙'],
+    backups: ['丙'],
+  }]));
+
+  const state = readDrawHistoryState(storage);
+  const receipt = state.items[0];
+
+  assert.equal(state.safeToPersist, true);
+  assert.equal(receipt.drawnAt, '2026-08-27T03:04:05.000Z');
+  assert.equal(receipt.seed, 'legacy-seed');
+  assert.equal(receipt.auditHash, 'legacy-hash');
+  assert.equal(receipt.candidateCount, 42);
+  assert.equal(receipt.eligibleCount, 42);
+  assert.equal(receipt.sourceMeta.legacyCountsIncomplete, true);
+  assert.equal(receipt.recordState, 'local');
+  assert.deepEqual(receipt.results[0].winners.map((winner) => winner.screenName), ['甲', '乙']);
+  assert.deepEqual(receipt.backups.map((winner) => winner.screenName), ['丙']);
+});
+
+test('history storage skips malformed records inside valid JSON without crashing', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  values.set(DRAW_HISTORY_KEY, JSON.stringify([
+    null,
+    'not-an-object',
+    normalizeDrawReceipt({ id: 'valid-record', drawnAt: '2026-07-24T01:00:00.000Z' }),
+  ]));
+
+  assert.deepEqual(readDrawHistory(storage).map((item) => item.id), ['valid-record']);
+});
+
+test('history storage treats valid empty current wrappers as missing instead of corrupt', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  values.set(DRAW_HISTORY_KEY, JSON.stringify({}));
+  values.set('weibo-lottery-history', JSON.stringify([
+    normalizeDrawReceipt({ id: 'legacy-empty-wrapper', drawnAt: '2026-07-24T01:00:00.000Z' }),
+  ]));
+
+  assert.deepEqual(readDrawHistory(storage).map((item) => item.id), ['legacy-empty-wrapper']);
+  assert.equal(values.has(`${DRAW_HISTORY_KEY}.corrupt`), false);
+});
+
+test('history storage isolates unknown current object shapes before legacy migration', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  values.set(DRAW_HISTORY_KEY, JSON.stringify({ version: 2, unexpected: 'shape' }));
+  values.set('weibo-lottery-history', JSON.stringify([
+    normalizeDrawReceipt({ id: 'legacy-after-shape', drawnAt: '2026-07-24T01:00:00.000Z' }),
+  ]));
+
+  assert.deepEqual(readDrawHistory(storage).map((item) => item.id), ['legacy-after-shape']);
+  assert.equal(values.has(`${DRAW_HISTORY_KEY}.corrupt`), true);
+});
+
+test('history storage protects an oversized current payload from migration and overwrite', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  values.set(DRAW_HISTORY_KEY, `[${'0'.repeat(4_000_100)}]`);
+  values.set('weibo-lottery-history', JSON.stringify([
+    normalizeDrawReceipt({ id: 'legacy-after-oversized', drawnAt: '2026-07-24T01:00:00.000Z' }),
+  ]));
+
+  const state = readDrawHistoryState(storage);
+  assert.deepEqual(state.items, []);
+  assert.equal(state.recoveryProtected, true);
+  assert.equal(state.safeToPersist, false);
+  assert.equal(state.reason, 'oversized-current');
+  assert.equal(values.has(`${DRAW_HISTORY_KEY}.corrupt`), true);
+  assert.equal(values.has('weibo-lottery-history'), true);
+  assert.equal(values.has(DRAW_HISTORY_MIGRATION_KEY), false);
+});
+
+test('history storage preserves corrupt current data and still migrates legacy data', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  values.set(DRAW_HISTORY_KEY, '{not-json');
+  values.set('weibo-lottery-history', JSON.stringify([
+    normalizeDrawReceipt({ id: 'legacy-record', drawnAt: '2026-07-24T01:00:00.000Z' }),
+  ]));
+
+  assert.equal(readDrawHistory(storage)[0].id, 'legacy-record');
+  assert.equal(values.get(`${DRAW_HISTORY_KEY}.corrupt`), '{not-json');
+});
+
+test('history storage never overwrites corrupt current data when recovery backup fails', () => {
+  const corruptValue = '{not-json';
+  const recoveryKey = `${DRAW_HISTORY_KEY}.corrupt`;
+  const values = new Map([[DRAW_HISTORY_KEY, corruptValue]]);
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem(key, value) {
+      if (key === recoveryKey) {
+        const error = new Error('Quota exceeded');
+        error.name = 'QuotaExceededError';
+        throw error;
+      }
+      values.set(key, String(value));
+    },
+  };
+
+  const state = readDrawHistoryState(storage);
+  assert.equal(state.recoveryProtected, true);
+  assert.equal(state.safeToPersist, false);
+  assert.equal(values.get(DRAW_HISTORY_KEY), corruptValue);
+
+  const result = writeDrawHistory(storage, []);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'recovery');
+  assert.equal(result.attempts, 0);
+  assert.equal(values.get(DRAW_HISTORY_KEY), corruptValue);
+});
+
+test('history storage can replace corrupt current data after a verified recovery backup', () => {
+  const corruptValue = '{not-json';
+  const recoveryKey = `${DRAW_HISTORY_KEY}.corrupt`;
+  const values = new Map([[DRAW_HISTORY_KEY, corruptValue]]);
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+  };
+
+  const state = readDrawHistoryState(storage);
+  assert.equal(state.recoveryProtected, false);
+  assert.equal(state.safeToPersist, true);
+  assert.equal(values.get(recoveryKey), corruptValue);
+
+  const result = writeDrawHistory(storage, [{ id: 'replacement' }]);
+  assert.equal(result.ok, true);
+  assert.equal(JSON.parse(values.get(DRAW_HISTORY_KEY)).items[0].id, 'replacement');
+  assert.equal(values.get(recoveryKey), corruptValue);
+});
+
+test('history storage preserves corrupt legacy data instead of silently discarding it', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) || null,
+    setItem: (key, value) => values.set(key, value),
+  };
+  values.set('weibo-lottery-history', '{legacy-not-json');
+
+  assert.deepEqual(readDrawHistory(storage), []);
+  assert.equal(values.get('weibo-lottery-history.corrupt'), '{legacy-not-json');
+});
+
+test('history storage survives a storage read error', () => {
+  const storage = {
+    getItem() {
+      throw new Error('blocked');
+    },
+  };
+  assert.deepEqual(readDrawHistory(storage), []);
+  assert.deepEqual(readDrawHistoryState(storage), {
+    items: [],
+    recoveryProtected: true,
+    safeToPersist: false,
+    reason: 'unavailable',
+  });
+});
+
+test('history cleanup removes current, legacy, migration and recovery copies', () => {
+  const keys = [
+    DRAW_HISTORY_KEY,
+    'weibo-lottery-history',
+    `${DRAW_HISTORY_KEY}.corrupt`,
+    'weibo-lottery-history.corrupt',
+    DRAW_HISTORY_MIGRATION_KEY,
+  ];
+  const values = new Map(keys.map((key) => [key, 'stored']));
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    removeItem: (key) => values.delete(key),
+  };
+
+  assert.deepEqual(clearDrawHistoryStorage(storage), { ok: true, reason: '', remaining: [] });
+  assert.deepEqual(keys.map((key) => storage.getItem(key)), keys.map(() => null));
+});
+
 test('history storage trims oldest records to stay below the byte budget', () => {
   const values = new Map();
   const storage = {
@@ -244,7 +543,7 @@ test('history storage trims oldest records to stay below the byte budget', () =>
       winners: [{ uid: `${index}-${'x'.repeat(900)}` }],
     }],
   }));
-  const result = writeDrawHistory(storage, list, { maxBytes: 700 });
+  const result = writeDrawHistory(storage, list, { maxBytes: 1000 });
 
   assert.equal(result.ok, true);
   assert.ok(result.dropped > 0);
@@ -252,8 +551,8 @@ test('history storage trims oldest records to stay below the byte budget', () =>
   assert.equal(readDrawHistory(storage).length, result.stored);
 });
 
-test('a successful history write calls setItem once and verifies the stored payload', () => {
-  const values = new Map();
+test('history storage rejects one oversized record without replacing the previous value', () => {
+  const values = new Map([[DRAW_HISTORY_KEY, '{previous-value']]);
   let writes = 0;
   const storage = {
     getItem: (key) => values.get(key) ?? null,
@@ -262,11 +561,41 @@ test('a successful history write calls setItem once and verifies the stored payl
       values.set(key, String(value));
     },
   };
+  const oversized = normalizeDrawReceipt({
+    id: 'oversized-single-record',
+    results: [{
+      prize: { name: '超'.repeat(600_000), count: 0 },
+      winners: [],
+    }],
+  });
+  const result = writeDrawHistory(storage, [oversized]);
+
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'size');
+  assert.equal(result.attempts, 0);
+  assert.equal(result.stored, 0);
+  assert.equal(writes, 0);
+  assert.equal(values.get(DRAW_HISTORY_KEY), '{previous-value');
+});
+
+test('a successful history write verifies the payload and records migration completion', () => {
+  const values = new Map();
+  let historyWrites = 0;
+  let migrationWrites = 0;
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem(key, value) {
+      if (key === DRAW_HISTORY_KEY) historyWrites += 1;
+      if (key === DRAW_HISTORY_MIGRATION_KEY) migrationWrites += 1;
+      values.set(key, String(value));
+    },
+  };
   const result = writeDrawHistory(storage, [{ id: 'single-write' }]);
 
   assert.equal(result.ok, true);
   assert.equal(result.attempts, 1);
-  assert.equal(writes, 1);
+  assert.equal(historyWrites, 1);
+  assert.equal(migrationWrites, 1);
   assert.equal(JSON.parse(values.get(DRAW_HISTORY_KEY)).version, DRAW_HISTORY_VERSION);
 });
 
@@ -276,11 +605,13 @@ test('history writes retry trimming only for quota errors', () => {
   const quotaStorage = {
     getItem: (key) => values.get(key) ?? null,
     setItem(key, value) {
-      quotaWrites += 1;
-      if (JSON.parse(value).items.length > 1) {
-        const error = new Error('Quota exceeded');
-        error.name = 'QuotaExceededError';
-        throw error;
+      if (key === DRAW_HISTORY_KEY) {
+        quotaWrites += 1;
+        if (JSON.parse(value).items.length > 1) {
+          const error = new Error('Quota exceeded');
+          error.name = 'QuotaExceededError';
+          throw error;
+        }
       }
       values.set(key, String(value));
     },
@@ -359,6 +690,34 @@ test('history backup rejects unrelated json', () => {
     () => parseDrawHistoryBackup('{"items":[]}'),
     /请选择由本应用导出的开奖记录备份/,
   );
+});
+
+test('normalizeDrawReceipt tolerates non-object input', () => {
+  for (const value of [null, undefined, 0, 'text', []]) {
+    const receipt = normalizeDrawReceipt(value);
+    assert.equal(typeof receipt.id, 'string');
+    assert.ok(receipt.id.length > 0);
+    assert.equal(receipt.drawnAt, '');
+    assert.deepEqual(receipt.results, []);
+  }
+});
+
+test('history backup skips null entries instead of throwing', () => {
+  const restored = parseDrawHistoryBackup(JSON.stringify({
+    kind: 'sameko-weibo-draw-history',
+    version: 1,
+    exportedAt: '2026-08-27T03:00:00.000Z',
+    items: [
+      null,
+      {
+        id: 'backup-ok',
+        drawnAt: '2026-08-27T02:00:00.000Z',
+        results: [{ prize: { name: '奖项' }, winners: [{ uid: '1' }] }],
+      },
+    ],
+  }));
+  assert.equal(restored.length, 1);
+  assert.equal(restored[0].id, 'backup-ok');
 });
 
 test('history merge deduplicates records and keeps server state', () => {

@@ -799,6 +799,14 @@ import { readJsonResponse } from './api-response.js';
         : drawRetention.lastRunAt
           ? '已检查'
           : '等待首次检查';
+    const retentionDeferReason = {
+      'policy-initialization': '首次初始化保留策略',
+      'retention-shortened': '保留期缩短后的保护期',
+      'policy-write-failed': '保留策略暂未写入成功',
+    }[drawRetention.retentionDeferReason] || plain(drawRetention.retentionDeferReason, '保护期');
+    const retentionDeferralNote = drawRetention.timeCleanupDeferred
+      ? `时间清理延期至 ${formatDate(drawRetention.retentionDeferUntil)}（${retentionDeferReason}）`
+      : '';
     const cgroupMemoryText = memory.cgroupAvailable
       ? formatPercent(serviceMemoryPercent)
       : '-';
@@ -854,7 +862,7 @@ import { readJsonResponse } from './api-response.js';
         ${diagnosticRow('抓取复用', `${formatNumber(queue.sharedTasks)} 个共享任务`, `快照 ${formatNumber(queue.recentSnapshots)} / ${formatNumber(queue.maxSnapshots)} · 时效 ${formatDurationMs(queue.snapshotTtlMs)} · 新抓取 ${formatNumber(queue.deliveries?.fresh)} · 合并 ${formatNumber(queue.deliveries?.sharedRunning)} · 命中 ${formatNumber(queue.deliveries?.recentSnapshot)}`)}
         ${diagnosticRow('抓取任务上限', config.jobRunTimeoutText || '-', `排队最多 ${plain(config.jobQueueTimeoutText)} · 结果保留 ${plain(config.completedJobReleaseText)} · 候选最多 ${formatNumber(config.maxCandidates)} 人`)}
         ${diagnosticRow('开奖记录保留', `${formatNumber(config.maxSavedDraws)} 条`, `序号账本最多 ${formatNumber(config.maxDrawSequences)} 个链接 · 保存 ${formatNumber(config.maxSavedDrawAgeDays)} 天`)}
-        ${diagnosticRow('开奖记录回收', retentionState, `${drawRetention.scanComplete === false ? '扫描达到保护上限' : `扫描 ${formatNumber(drawRetention.scannedEntries)} 项，匹配 ${formatNumber(drawRetention.matchedFiles)} 个文件`}${drawRetention.recoveryScan ? ' · 已执行恢复扫描' : ''} · 保留 ${formatFileSize(drawRetention.retainedBytes)} / ${formatFileSize(drawRetention.totalBytes)} · 最近释放 ${formatFileSize(drawRetention.freedBytes)} · 移除 ${formatNumber(drawRetention.removedCount)} 项${drawRetention.missingCount ? ` · 已不存在 ${formatNumber(drawRetention.missingCount)} 项` : ''}${drawRetention.skippedRecent ? ` · 跳过新文件 ${formatNumber(drawRetention.skippedRecent)} 项` : ''}${drawRetention.cleanupPending ? ' · 仍有待回收项目' : ''}${drawRetention.lastError ? ` · ${drawRetention.lastError}` : ''}`)}
+        ${diagnosticRow('开奖记录回收', retentionState, `${drawRetention.scanComplete === false ? '扫描达到保护上限' : `扫描 ${formatNumber(drawRetention.scannedEntries)} 项，匹配 ${formatNumber(drawRetention.matchedFiles)} 个文件`}${drawRetention.recoveryScan ? ' · 已执行恢复扫描' : ''} · 保留 ${formatFileSize(drawRetention.retainedBytes)} / ${formatFileSize(drawRetention.totalBytes)} · 最近释放 ${formatFileSize(drawRetention.freedBytes)} · 移除 ${formatNumber(drawRetention.removedCount)} 项${drawRetention.missingCount ? ` · 已不存在 ${formatNumber(drawRetention.missingCount)} 项` : ''}${drawRetention.skippedRecent ? ` · 跳过新文件 ${formatNumber(drawRetention.skippedRecent)} 项` : ''}${drawRetention.cleanupPending ? ' · 仍有待回收项目' : ''}${retentionDeferralNote ? ` · ${retentionDeferralNote}` : ''}${drawRetention.lastError ? ` · ${drawRetention.lastError}` : ''}`)}
         ${diagnosticRow('内存高水位', formatPercent(highWaterPercent), `${formatMemoryMb(service.memoryHighMb)} / ${formatMemoryMb(memoryLimit)} · 超过后由系统施加内存回收压力`)}
         ${diagnosticRow('周期回收', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 重启服务进程`)}
         ${diagnosticRow('磁盘空间', disk.available ? formatPercent(numericValue(disk.usedPercent)) : '-', disk.available ? `已用 ${formatMemoryMb(disk.usedMb)} · 可用 ${formatMemoryMb(disk.availableMb)}` : plain(disk.error))}

@@ -1,36 +1,45 @@
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   --system-background: #f5f6f8;
   --content-background: #ffffff;
   --label-primary: #17181d;
   --label-secondary: #616570;
   --label-tertiary: #6b717d;
   --separator: rgba(31, 31, 38, 0.09);
-  --system-blue: #087cff;
-  --system-pink: #f34f83;
-  --system-coral: #f56f55;
-  --system-mint: #167a6d;
-  --system-lilac: #7667ed;
-  --system-red: #e5484d;
-  --system-green: #248a3d;
+  --system-blue: #0062c4;
+  --system-pink: #b81b58;
+  --system-coral: #b8432b;
+  --system-mint: #0f675d;
+  --system-lilac: #5b48c9;
+  --system-red: #c92a2f;
+  --system-green: #1d7330;
+  --focus-ring: #0a7aff;
+  --focus-ring-lilac: #5b48c9;
+  --focus-halo: rgba(255, 255, 255, 0.92);
   --blue-soft: #e8f2ff;
   --pink-soft: #ffedf3;
   --coral-soft: #fff0eb;
   --mint-soft: #e8f8f4;
   --lilac-soft: #f0edff;
-  --gray-soft: #eeeeF2;
-  --glass-fill: rgba(255, 255, 255, 0.68);
-  --glass-border: rgba(255, 255, 255, 0.9);
+  --gray-soft: #eef0f4;
+  --glass-fill: rgba(255, 255, 255, 0.92);
+  --glass-border: rgba(255, 255, 255, 0.86);
   --glass-shadow:
     0 18px 42px rgba(39, 46, 62, 0.12),
     0 3px 10px rgba(39, 46, 62, 0.055),
     inset 0 1px 0 rgba(255, 255, 255, 0.9);
+  --ambient-blue: rgba(0, 98, 196, 0.1);
+  --ambient-pink: rgba(184, 27, 88, 0.07);
+  --ambient-lilac: rgba(91, 72, 201, 0.07);
   --control-shadow:
     0 11px 26px rgba(70, 82, 112, 0.14),
     inset 0 1px 0 rgba(255, 255, 255, 0.34);
   --content-shadow:
     0 16px 42px rgba(39, 46, 62, 0.07),
-    0 2px 6px rgba(39, 46, 62, 0.035);
+    0 2px 6px rgba(39, 46, 62, 0.035),
+    0 32px 80px rgba(39, 46, 62, 0.05);
+  --scrollbar-thumb: rgba(97, 101, 112, 0.38);
+  --scrollbar-thumb-hover: rgba(97, 101, 112, 0.58);
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
   --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
@@ -38,10 +47,18 @@
   --safe-bottom: max(10px, env(safe-area-inset-bottom));
   --shell-width: 430px;
   --nav-height: 62px;
-  --tab-height: 72px;
+  --tab-height: 70px;
   --page-padding: 18px;
-  --radius-section: 20px;
+  --radius-section: 22px;
   --hairline: 0.5px;
+  --z-content: 1;
+  --z-nav: 20;
+  --z-chrome-fade: 23;
+  --z-tabbar: 24;
+  --z-sheet: 110;
+  --z-notice: 120;
+  --z-dialog: 130;
+  --z-skip: 1000;
   font-family:
     -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
     "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
@@ -126,8 +143,9 @@ textarea:focus-visible,
 select:focus-visible,
 summary:focus-visible,
 a[href]:focus-visible {
-  outline: 3px solid rgba(10, 122, 255, 0.38);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
+  box-shadow: 0 0 0 6px var(--focus-halo);
 }
 
 input,
@@ -156,21 +174,130 @@ svg {
   border: 0;
 }
 
+.skip-link {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  z-index: var(--z-skip);
+  transform: translateY(-160%);
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: var(--label-primary);
+  color: var(--system-background);
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: var(--control-shadow);
+}
+
+.skip-link:focus {
+  transform: translateY(0);
+}
+
 ::selection {
   color: #fff;
   background: var(--system-blue);
 }
 
 @media (min-width: 700px) {
+  :root {
+    --shell-width: 560px;
+    --page-padding: 22px;
+  }
+
   body {
     display: grid;
     min-height: 100vh;
     place-items: center;
     padding: 24px;
-    background: #e9e9ee;
+    background:
+      radial-gradient(1100px 520px at 12% -6%, var(--ambient-blue), transparent 62%),
+      radial-gradient(900px 460px at 92% 2%, var(--ambient-pink), transparent 64%),
+      radial-gradient(760px 420px at 50% 106%, var(--ambient-lilac), transparent 66%),
+      #e9e9ee;
+    background-attachment: fixed;
   }
 
   #root {
     min-height: 0;
+  }
+}
+
+@media (min-width: 900px) {
+  :root {
+    --shell-width: min(1180px, calc(100vw - 48px));
+    --page-padding: 28px;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --system-background: #0b0d12;
+    --content-background: #15181f;
+    --label-primary: #f4f6fb;
+    --label-secondary: #aab1bd;
+    --label-tertiary: #8e96a3;
+    --separator: rgba(255, 255, 255, 0.11);
+    --system-blue: #409cff;
+    --system-pink: #ff6ea0;
+    --system-coral: #ff7a5c;
+    --system-mint: #5dd6c0;
+    --system-lilac: #a99bff;
+    --system-red: #ff6b6b;
+    --system-green: #6bd48a;
+    --focus-ring: #5ea9ff;
+    --focus-ring-lilac: #b3a7ff;
+    --focus-halo: rgba(94, 169, 255, 0.22);
+    --blue-soft: rgba(64, 156, 255, 0.16);
+    --pink-soft: rgba(255, 110, 160, 0.16);
+    --coral-soft: rgba(255, 122, 92, 0.16);
+    --mint-soft: rgba(93, 214, 192, 0.15);
+    --lilac-soft: rgba(169, 155, 255, 0.18);
+    --gray-soft: rgba(255, 255, 255, 0.1);
+    --glass-fill: rgba(22, 25, 32, 0.86);
+    --glass-border: rgba(255, 255, 255, 0.1);
+    --glass-shadow:
+      0 18px 42px rgba(0, 0, 0, 0.45),
+      0 3px 10px rgba(0, 0, 0, 0.32),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    --ambient-blue: rgba(64, 156, 255, 0.16);
+    --ambient-pink: rgba(255, 110, 160, 0.1);
+    --ambient-lilac: rgba(169, 155, 255, 0.12);
+    --control-shadow:
+      0 11px 26px rgba(0, 0, 0, 0.42),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    --content-shadow:
+      0 16px 42px rgba(0, 0, 0, 0.36),
+      0 2px 6px rgba(0, 0, 0, 0.24),
+      0 32px 80px rgba(0, 0, 0, 0.45);
+    --scrollbar-thumb: rgba(170, 177, 189, 0.3);
+    --scrollbar-thumb-hover: rgba(170, 177, 189, 0.48);
+  }
+
+  body {
+    color: var(--label-primary);
+  }
+
+  .skip-link {
+    color: var(--system-background);
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  textarea:focus-visible,
+  select:focus-visible,
+  summary:focus-visible,
+  a[href]:focus-visible {
+    box-shadow: 0 0 0 6px var(--focus-halo);
+  }
+
+  @media (min-width: 700px) {
+    body {
+      background:
+        radial-gradient(1100px 520px at 12% -6%, var(--ambient-blue), transparent 62%),
+        radial-gradient(900px 460px at 92% 2%, var(--ambient-pink), transparent 64%),
+        radial-gradient(760px 420px at 50% 106%, var(--ambient-lilac), transparent 66%),
+        #07090d;
+      background-attachment: fixed;
+    }
   }
 }

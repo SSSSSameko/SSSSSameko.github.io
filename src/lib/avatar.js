@@ -1,5 +1,10 @@
 const WEIBO_AVATAR_HOSTS = ['sinaimg.cn', 'weibo.cn', 'weibo.com', 'sina.com.cn'];
 
+function staticHostedPage() {
+  return typeof location !== 'undefined'
+    && (/\.github\.io$/i.test(location.hostname) || location.protocol === 'file:');
+}
+
 function allowedAvatarHost(hostname) {
   const host = String(hostname || '').toLowerCase();
   return WEIBO_AVATAR_HOSTS.some((suffix) => host === suffix || host.endsWith(`.${suffix}`));
@@ -26,6 +31,7 @@ export function avatarProxyUrl(value, apiBase = '') {
   const avatar = safeAvatarUrl(value);
   if (!avatar) return '';
   const base = String(apiBase || '').trim().replace(/\/+$/, '');
+  if (!base && staticHostedPage()) return '';
   return `${base}/api/weibo/avatar?url=${encodeURIComponent(avatar)}`;
 }
 

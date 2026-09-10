@@ -2,7 +2,7 @@ import { safeWeiboUrl } from './appCore.js';
 
 export const DRAW_COOLDOWN_MS = 60_000;
 const DRAW_GUARD_TTL_MS = 3 * 60_000;
-const DRAW_COOLDOWN_KEY = 'weibo-draw-cooldowns-v1';
+export const DRAW_COOLDOWN_KEY = 'weibo-draw-cooldowns-v1';
 
 const DRAW_LOCK_PREFIX = 'sameko-weibo-draw:';
 const memoryByStorage = new WeakMap();
@@ -35,6 +35,7 @@ function normalizeRecord(record) {
   const startedAt = timestamp(record.startedAt);
   const expiresAt = timestamp(record.expiresAt);
   const completedAt = timestamp(record.completedAt);
+  const suppressUntil = timestamp(record.suppressUntil);
   if (state === 'running' && (!token || !expiresAt)) return null;
   if (state === 'completed' && !completedAt) return null;
   return {
@@ -43,6 +44,7 @@ function normalizeRecord(record) {
     ...(startedAt ? { startedAt } : {}),
     ...(expiresAt ? { expiresAt } : {}),
     ...(completedAt ? { completedAt } : {}),
+    ...(suppressUntil ? { suppressUntil } : {}),
   };
 }
 
@@ -83,6 +85,10 @@ function recordIsActive(record, now) {
   return Boolean(record) && recordExpiry(record) > now;
 }
 
+function recordRetentionExpiry(record) {
+  return Math.max(recordExpiry(record), timestamp(record?.suppressUntil));
+}
+
 function memoryRecordIsActive(record, now) {
   if (record?.state === 'released') return timestamp(record.suppressUntil) > now;
   return Math.max(recordExpiry(record), timestamp(record?.suppressUntil)) > now;
@@ -95,13 +101,18 @@ function recordTime(record) {
 }
 
 function pruneRecords(records, now) {
-  return new Map(
-    [...records.entries()]
-      .map(([scope, record]) => [scope, normalizeRecord(record)])
-      .filter(([, record]) => recordIsActive(record, now))
-      .sort(([, left], [, right]) => recordTime(right) - recordTime(left))
-      .slice(0, 50),
-  );
+  const retained = [...records.entries()]
+    .map(([scope, record]) => [scope, normalizeRecord(record)])
+    .filter(([, record]) => recordRetentionExpiry(record) > now);
+  const newestFirst = ([, left], [, right]) => recordTime(right) - recordTime(left);
+  const active = retained
+    .filter(([, record]) => recordIsActive(record, now))
+    .sort(newestFirst);
+  const suppressionOnly = retained
+    .filter(([, record]) => !recordIsActive(record, now))
+    .sort(newestFirst)
+    .slice(0, Math.max(0, 50 - active.length));
+  return new Map([...active, ...suppressionOnly]);
 }
 
 function writePersistentRecords(storage, records, now) {
@@ -275,6 +286,21 @@ export function drawCooldownScope({ source, statusId, statusUrl } = {}) {
   if (id) return `weibo:${id}`;
   const url = safeWeiboUrl(statusUrl);
   return url ? `weibo-url:${url}` : '';
+}
+
+export function clearDrawCooldownStorage(storage = globalThis.localStorage) {
+  memoryRecords(storage).clear();
+  if (typeof storage?.removeItem !== 'function' || typeof storage?.getItem !== 'function') {
+    return { ok: false, reason: 'unavailable' };
+  }
+  try {
+    storage.removeItem(DRAW_COOLDOWN_KEY);
+    return storage.getItem(DRAW_COOLDOWN_KEY) === null
+      ? { ok: true, reason: '' }
+      : { ok: false, reason: 'verify' };
+  } catch {
+    return { ok: false, reason: 'unavailable' };
+  }
 }
 
 export function drawCooldownStatus(storage, scope, now = Date.now()) {

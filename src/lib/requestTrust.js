@@ -3,10 +3,18 @@ export function firstHeaderValue(value) {
 }
 
 export function isLoopbackAddress(value) {
-  const address = String(value || '').trim().toLowerCase();
+  const rawAddress = String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  let address = rawAddress;
+  if (rawAddress.includes(':')) {
+    try {
+      address = new URL(`http://[${rawAddress}]/`).hostname.replace(/^\[|\]$/g, '');
+    } catch {
+      return false;
+    }
+  }
   return address === '::1'
     || address.startsWith('127.')
-    || address.startsWith('::ffff:127.');
+    || /^::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}$/.test(address);
 }
 
 export function trustedForwardedHeader(req, name) {

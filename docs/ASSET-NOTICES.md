@@ -1,10 +1,22 @@
-# Visual Asset Record
+# 视觉素材权利记录
 
-The avatar and icon artwork was supplied with this project as its brand artwork. No external source URL or third-party license was recorded in the repository. The project owner is responsible for confirming redistribution rights before public release.
+本仓库随附的头像、图标、偶像图片、摄影、美术、字体和其他品牌素材，是随项目一并提供的素材。仓库中没有记录这些素材的外部来源 URL、作者、授权方式或第三方许可证。在公开上线、对外分发或以任何方式公开展示前，运营者必须自行确认并留存足以覆盖展示、复制、信息网络传播和必要改编的权利证明；无法确认来源或授权范围的素材，应停止使用并替换。
 
-`avatar-96.webp` is a Lanczos resize and WebP conversion of `avatar.jpg`. `favicon-512.png` is a Lanczos resize of `favicon-192.png`; neither file introduces new artwork.
+第三方软件许可证只适用于对应软件组件，不授予上述视觉素材、微博内容、用户头像或商标的使用权。应用头像和偶像图片是否可用，取决于运营者实际取得的授权，而不是其已经被收录、能够访问、经过裁切转换或曾在其他平台公开。
 
-| File | SHA-256 |
+## 上线前检查清单
+
+- [ ] 逐项记录每个素材的权利人、来源 URL、获取日期和授权凭证（合同、邮件、聊天记录或授权书）。
+- [ ] 涉及可识别自然人的肖像，取得肖像权人同意，法律另有规定的除外。
+- [ ] 确认素材不侵犯第三方的著作权、商标权、肖像权或其他合法权益。
+- [ ] 确认授权范围覆盖公开网页展示、结果图片生成、服务器缓存代理和必要的裁切、缩放、格式转换。
+- [ ] 如素材来自粉丝应援、他人投稿或网络搜集，取得可核验的授权凭证，并约定权利人要求时的下架机制。
+- [ ] 将权利证明与对应版本的发布记录一并保存，便于事后追溯。
+- [ ] 无法完成上述确认时，改用自有或已获授权的替代素材，或在上线前移除。
+
+`avatar-96.webp` 是 `avatar.jpg` 的 Lanczos 缩放和 WebP 转换；`favicon-512.png` 是 `favicon-192.png` 的 Lanczos 缩放；两者均未引入新的美术内容，但不改变原素材本身的授权要求。
+
+| 文件 | SHA-256 |
 | --- | --- |
 | `static/avatar.jpg` | `E3477E97ED3ABA6F4F0C28C661927D592F2C4D62FB05682139738716F065A1E1` |
 | `static/avatar-96.webp` | `0E16CC4656DE3FAD642D8A07F6877C7224108C781CAD9A60BB283F4F3A06583D` |

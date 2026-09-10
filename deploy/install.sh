@@ -223,8 +223,11 @@ if [[ ! -s "${ENV_FILE}" ]]; then
   cat >"${ENV_FILE}" <<EOF
 ADMIN_USERNAME=${admin_username}
 ADMIN_PASSWORD_HASH=${admin_password_hash}
+API_KEY=$(openssl rand -hex 32)
 ADMIN_SESSION_SECRET=$(openssl rand -hex 32)
 COOKIE_WRITE_KEY=$(openssl rand -hex 32)
+ENABLE_COOKIE_READ_API=1
+COOKIE_READ_KEY=$(openssl rand -hex 32)
 SOURCE_FINGERPRINT_SECRET=$(openssl rand -hex 32)
 CORS_ORIGINS=${CORS_ORIGINS}
 EOF
@@ -312,6 +315,9 @@ read_integer_setting() {
 validate_env_file() {
   local admin_username=''
   local admin_password_hash=''
+  local api_key=''
+  local admin_key=''
+  local allow_public_api=''
   local admin_session_secret=''
   local cookie_write_key=''
   local source_fingerprint_secret=''
@@ -340,6 +346,27 @@ validate_env_file() {
   elif [[ ! "${admin_password_hash}" =~ ^scrypt\$[A-Za-z0-9_-]{22}\$[A-Za-z0-9_-]{86}$ ]]; then
     validation_error "ADMIN_PASSWORD_HASH must match scrypt\$<salt>\$<hash>."
   fi
+  read_env_value API_KEY api_key || true
+  read_env_value ALLOW_PUBLIC_API allow_public_api || true
+  case "${allow_public_api,,}" in
+    ''|0|false|no) allow_public_api=0 ;;
+    1|true|yes) allow_public_api=1 ;;
+    *)
+      validation_error "ALLOW_PUBLIC_API must be 1 or 0."
+      allow_public_api=0
+      ;;
+  esac
+  if [[ -z "${api_key}" && "${allow_public_api}" != 1 ]]; then
+    validation_error "API_KEY is required unless ALLOW_PUBLIC_API=1 explicitly enables anonymous public APIs."
+  elif [[ -n "${api_key}" ]]; then
+    secret_bytes="$(LC_ALL=C printf '%s' "${api_key}" | LC_ALL=C wc -c)"
+    (( secret_bytes >= 32 )) || validation_error "API_KEY must be at least 32 bytes."
+  fi
+  read_env_value ADMIN_KEY admin_key || true
+  if [[ -n "${admin_key}" ]]; then
+    secret_bytes="$(LC_ALL=C printf '%s' "${admin_key}" | LC_ALL=C wc -c)"
+    (( secret_bytes >= 32 )) || validation_error "ADMIN_KEY must be at least 32 bytes when configured."
+  fi
   if ! read_env_value ADMIN_SESSION_SECRET admin_session_secret; then
     validation_error "ADMIN_SESSION_SECRET is required and must be at least 32 bytes."
   else
@@ -349,6 +376,24 @@ validate_env_file() {
 
   read_env_value COOKIE_WRITE_KEY cookie_write_key || true
   validate_hex_key COOKIE_WRITE_KEY "${cookie_write_key}" 0
+  read_env_value ENABLE_COOKIE_READ_API enable_cookie_read_api || true
+  case "${enable_cookie_read_api,,}" in
+    ''|0|false|no) enable_cookie_read_api=0 ;;
+    1|true|yes) enable_cookie_read_api=1 ;;
+    *)
+      validation_error "ENABLE_COOKIE_READ_API must be 1 or 0."
+      enable_cookie_read_api=0
+      ;;
+  esac
+  read_env_value COOKIE_READ_KEY cookie_read_key || true
+  validate_hex_key COOKIE_READ_KEY "${cookie_read_key}" 0
+  if [[ "${enable_cookie_read_api}" == 1 && -z "${cookie_read_key}" ]]; then
+    validation_error "ENABLE_COOKIE_READ_API=1 requires COOKIE_READ_KEY on a server deployment; loopback-only mode is not safe behind a reverse proxy."
+  fi
+  if [[ -n "${cookie_read_key}" ]]; then
+    [[ "${cookie_read_key}" != "${api_key}" ]] || validation_error "COOKIE_READ_KEY must differ from API_KEY."
+    [[ "${cookie_read_key}" != "${admin_key}" ]] || validation_error "COOKIE_READ_KEY must differ from ADMIN_KEY."
+  fi
   read_env_value SOURCE_FINGERPRINT_SECRET source_fingerprint_secret || true
   validate_hex_key SOURCE_FINGERPRINT_SECRET "${source_fingerprint_secret}" 0
 
@@ -493,16 +538,28 @@ printf '%s\n' "${source_revision:-unversioned}" >"${stage_dir}/.release-commit"
 
 (
   cd "${stage_dir}"
+  node scripts/check-legal-config.mjs static/config.js
   npm ci
-  npm run licenses:check
+  export PLAYWRIGHT_BROWSERS_PATH="${stage_dir}/ms-playwright"
+  npx playwright install --with-deps chromium
+  browser_notice_file="$(
+    find "${PLAYWRIGHT_BROWSERS_PATH}" -type f \
+      \( -iname 'LICENSE*' -o -iname 'LICENCE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' \) \
+      -print -quit
+  )"
+  [[ -n "${browser_notice_file}" ]] || {
+    echo "Playwright browser release has no accompanying license/copying file; refusing to stage the browser bundle." >&2
+    exit 1
+  }
+  echo "Found browser-distribution notice: ${browser_notice_file#"${stage_dir}/"}"
+  echo "This presence check does not establish complete browser-license compliance; review the exact Playwright/Chromium release before distribution."
+  npm run licenses
   npm run build
   node --check server.mjs
   node --check server-admin/admin.js
-  export PLAYWRIGHT_BROWSERS_PATH="${stage_dir}/ms-playwright"
-  npx playwright install --with-deps chromium
 )
 
-for item in server.mjs server-admin/admin.html server-admin/admin.css server-admin/admin.js server-admin/admin-list-state.js server-admin/api-response.js src/lib/weiboBrowserLifecycle.js dist/index.html node_modules ms-playwright; do
+for item in server.mjs server-admin/admin.html server-admin/admin.css server-admin/admin.js server-admin/admin-list-state.js server-admin/api-response.js src/lib/weiboBrowserLifecycle.js static/config.js dist/index.html node_modules ms-playwright; do
   [[ -e "${stage_dir}/${item}" ]] || { echo "Staged release is missing ${item}." >&2; exit 1; }
 done
 chown -R --no-dereference www-data:www-data "${stage_dir}"

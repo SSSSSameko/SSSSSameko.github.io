@@ -9,6 +9,16 @@ const checkOnly = process.argv.includes('--check');
 const sections = [];
 const seen = new Set();
 const failures = [];
+let includedOptionalPackages = 0;
+let skippedOptionalPackages = 0;
+let excludedPlatformOptionalPackages = 0;
+
+const licenseFilePattern = /^(license|licence|copying|notice|thirdpartynotices)(\..*)?$/i;
+const rolldownBindingPattern = /^@rolldown\/binding-/;
+
+function isPlatformSpecificOptional(locked) {
+  return locked?.optional === true && (Array.isArray(locked.os) || Array.isArray(locked.cpu));
+}
 
 function normalizeText(value) {
   return String(value || '')
@@ -17,17 +27,33 @@ function normalizeText(value) {
     .trim();
 }
 
+function isMissingPathError(error) {
+  return error?.code === 'ENOENT' || error?.code === 'ENOTDIR';
+}
+
+function toPortablePath(filePath) {
+  return path.relative(root, filePath).split(path.sep).join('/');
+}
+
 for (const packagePath of Object.keys(lock.packages || {}).sort()) {
   if (!packagePath.startsWith('node_modules/')) continue;
   const locked = lock.packages[packagePath] || {};
-  if (locked.optional === true) continue;
+  const isOptional = locked.optional === true;
+  if (isPlatformSpecificOptional(locked)) {
+    excludedPlatformOptionalPackages += 1;
+    continue;
+  }
 
   const directory = path.join(root, packagePath);
   let files;
   try {
     files = await fs.readdir(directory);
-  } catch {
-    failures.push(`${packagePath}: package directory is missing`);
+  } catch (error) {
+    if (isOptional && isMissingPathError(error)) {
+      skippedOptionalPackages += 1;
+      continue;
+    }
+    failures.push(`${packagePath}: package directory is missing or unreadable`);
     continue;
   }
 
@@ -42,24 +68,50 @@ for (const packagePath of Object.keys(lock.packages || {}).sort()) {
   const packageKey = `${metadata.name}@${metadata.version}`;
   if (seen.has(packageKey)) continue;
   seen.add(packageKey);
+  if (isOptional) includedOptionalPackages += 1;
 
   const licenseFiles = files
-    .filter((name) => /^(license|licence|copying|notice|thirdpartynotices)(\..*)?$/i.test(name))
+    .filter((name) => licenseFilePattern.test(name))
     .sort((left, right) => left.localeCompare(right, 'en'));
-  if (!licenseFiles.length) {
+  let fallbackLicense = null;
+  if (!licenseFiles.length && rolldownBindingPattern.test(metadata.name)) {
+    const fallbackPath = path.join(root, 'node_modules', 'rolldown', 'LICENSE');
+    try {
+      const content = normalizeText(await fs.readFile(fallbackPath, 'utf8'));
+      if (!content) {
+        failures.push(`${packageKey}: fallback ${toPortablePath(fallbackPath)} is empty`);
+      } else {
+        fallbackLicense = {
+          content,
+          fileName: 'LICENSE (fallback from rolldown)',
+          source: toPortablePath(fallbackPath),
+        };
+      }
+    } catch {
+      failures.push(`${packageKey}: fallback node_modules/rolldown/LICENSE is missing or unreadable`);
+    }
+  } else if (!licenseFiles.length) {
     failures.push(`${packageKey}: no license or notice file found`);
     continue;
   }
 
   const notices = [];
-  for (const fileName of licenseFiles) {
-    const content = normalizeText(await fs.readFile(path.join(directory, fileName), 'utf8'));
+  const licenseEntries = fallbackLicense
+    ? [fallbackLicense]
+    : licenseFiles.map((fileName) => ({ fileName, source: '', content: null }));
+  for (const entry of licenseEntries) {
+    const content = entry.content
+      ?? normalizeText(await fs.readFile(path.join(directory, entry.fileName), 'utf8'));
     if (!content) {
-      failures.push(`${packageKey}: ${fileName} is empty`);
+      failures.push(`${packageKey}: ${entry.fileName} is empty`);
       continue;
     }
     notices.push(
-      `### ${fileName}`,
+      `### ${entry.fileName}`,
+      ...(entry.source ? [
+        '',
+        `License text source: \`${entry.source}\`. This explicit fallback is used because \`@rolldown/binding-*\` packages do not ship a package-local license file.`,
+      ] : []),
       '',
       '```text',
       content,
@@ -70,6 +122,7 @@ for (const packagePath of Object.keys(lock.packages || {}).sort()) {
   sections.push([
     `## ${metadata.name} ${metadata.version}`,
     `Declared license: ${metadata.license || 'See license text'}`,
+    ...(isOptional ? ['Release inclusion: optional npm package installed for this release platform.'] : []),
     '',
     ...notices,
   ].join('\n'));
@@ -81,10 +134,11 @@ if (failures.length) {
 assert.ok(sections.length, 'Third-party notice generation found no installed packages. Run npm ci first.');
 
 const notice = [
-  '# Third-Party Notices',
+  '# Third-Party Notices for npm Packages Installed in This Release Environment',
   '',
-  'Generated from the non-optional package versions in package-lock.json.',
-  'Optional platform-specific build binaries are not distributed with the application output and are excluded.',
+  'Generated from package-lock.json entries whose npm package directories are actually installed in the current release environment.',
+  'Optional npm packages that declare an os/cpu platform restriction are build-time native binaries: they are not distributed with the application output and are excluded so this notice stays identical on Windows, macOS and Linux.',
+  'Playwright-managed browser binaries are separate release artifacts. Deployment checks for accompanying license/copying files, but this npm notice is not by itself a complete browser-binary compliance determination.',
   '',
   ...sections,
 ].join('\n');
@@ -98,8 +152,8 @@ if (checkOnly) {
     const existing = normalizeText(await fs.readFile(target, 'utf8'));
     assert.equal(existing, normalizeText(notice), `${path.relative(root, target)} is out of date; run npm run licenses`);
   }
-  console.log(`Verified notices for ${sections.length} installed packages.`);
+  console.log(`Verified notices for ${sections.length} installed packages (${includedOptionalPackages} optional included, ${skippedOptionalPackages} optional not installed, ${excludedPlatformOptionalPackages} platform-specific optional excluded).`);
 } else {
   await Promise.all(targets.map((target) => fs.writeFile(target, notice, 'utf8')));
-  console.log(`Generated notices for ${sections.length} installed packages.`);
+  console.log(`Generated notices for ${sections.length} installed packages (${includedOptionalPackages} optional included, ${skippedOptionalPackages} optional not installed, ${excludedPlatformOptionalPackages} platform-specific optional excluded).`);
 }

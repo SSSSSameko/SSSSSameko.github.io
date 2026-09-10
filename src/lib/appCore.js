@@ -103,7 +103,7 @@ export function candidateLoadWarning(meta) {
 
 export function candidateCutoffInfo(value, now = Date.now()) {
   const loadedAt = new Date(value || '');
-  if (Number.isNaN(loadedAt.getTime())) return { label: '本次载入', ageMs: 0 };
+  if (Number.isNaN(loadedAt.getTime())) return { label: '时间未记录', ageMs: 0 };
 
   const current = new Date(now);
   const sameDay = loadedAt.getFullYear() === current.getFullYear()
@@ -125,7 +125,7 @@ function normalizeManualItem(raw, index) {
   if (typeof raw === 'string' || typeof raw === 'number') {
     const screenName = String(raw).trim();
     const stable = screenName || String(index);
-    return { id: stable, uid: '', screenName: screenName || `候选人 ${index + 1}`, avatar: '', verified: false, followers: 0, text: '', createdAt: '', repostId: '', source: 'manual' };
+    return { id: `${stable}#${index}`, uid: '', screenName: screenName || `候选人 ${index + 1}`, avatar: '', verified: false, followers: 0, text: '', createdAt: '', repostId: '', source: 'manual' };
   }
   const record = raw && typeof raw === 'object' ? raw : {};
   const values = Array.isArray(record) ? record : [];
@@ -138,7 +138,7 @@ function normalizeManualItem(raw, index) {
   const text = String(record.text || record.content || record['转发内容'] || values[2] || '').trim();
   const createdAt = String(record.createdAt || record.time || record['时间'] || values[3] || '').trim();
   const stable = [uid, screenName, text, createdAt].filter(Boolean).join('|') || String(index);
-  return { id: stable, uid, screenName: screenName || `候选人 ${index + 1}`, avatar: '', verified: false, followers: 0, text, createdAt, repostId: '', source: 'manual' };
+  return { id: `${stable}#${index}`, uid, screenName: screenName || `候选人 ${index + 1}`, avatar: '', verified: false, followers: 0, text, createdAt, repostId: '', source: 'manual' };
 }
 
 function parseDelimitedText(text, delimiter) {
@@ -235,7 +235,6 @@ export function parseManualInput(text) {
     headers.forEach((key, cellIndex) => {
       if (key) row[key] = cells[cellIndex] || '';
     });
-    cells.forEach((cell, cellIndex) => { row[cellIndex] = cell || ''; });
     return normalizeManualItem(row, index);
   });
 }
@@ -288,7 +287,7 @@ export function randomSeedHex() {
   return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function toCsv(rows, headers = ['tier', 'uid', 'screenName', 'text', 'createdAt', 'source']) {
+export function toCsv(rows, headers) {
   const escape = (value) => {
     const raw = String(value ?? '');
     const safe = /^[=+\-@\t\r\n]/.test(raw.trimStart()) ? `'${raw}` : raw;

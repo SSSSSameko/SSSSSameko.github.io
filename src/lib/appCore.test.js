@@ -54,7 +54,7 @@ test('candidate cutoff keeps an explicit draw-list boundary', () => {
 
   assert.match(info.label, /10:20.*截止/);
   assert.equal(info.ageMs, 3 * 60_000);
-  assert.deepEqual(candidateCutoffInfo('', now), { label: '本次载入', ageMs: 0 });
+  assert.deepEqual(candidateCutoffInfo('', now), { label: '时间未记录', ageMs: 0 });
 });
 
 test('safeWeiboUrl only keeps links to Weibo', () => {
@@ -157,7 +157,10 @@ test('digestCandidates returns a stable sha-256 hex digest', async () => {
 });
 
 test('toCsv escapes formula-like values before export', () => {
-  const csv = toCsv([{ tier: '一等奖', uid: '=1+1', screenName: '@sameko', text: 'ok', createdAt: '', source: 'manual' }]);
+  const csv = toCsv(
+    [{ tier: '一等奖', uid: '=1+1', screenName: '@sameko', text: 'ok', createdAt: '', source: 'manual' }],
+    ['tier', 'uid', 'screenName', 'text', 'createdAt', 'source'],
+  );
   assert.match(csv, /"'=1\+1"/);
   assert.match(csv, /"'@sameko"/);
 });

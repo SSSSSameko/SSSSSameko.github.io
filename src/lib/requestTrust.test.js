@@ -34,6 +34,9 @@ test('clientAddress uses the address appended by the trusted local proxy', () =>
 test('loopback detection accepts IPv4 and IPv6 forms', () => {
   assert.equal(isLoopbackAddress('127.0.0.1'), true);
   assert.equal(isLoopbackAddress('::1'), true);
+  assert.equal(isLoopbackAddress('0:0:0:0:0:0:0:1'), true);
   assert.equal(isLoopbackAddress('::ffff:127.0.0.1'), true);
+  assert.equal(isLoopbackAddress('0:0:0:0:0:ffff:7f00:1'), true);
+  assert.equal(isLoopbackAddress('::7f00:1'), false);
   assert.equal(isLoopbackAddress('192.168.1.10'), false);
 });

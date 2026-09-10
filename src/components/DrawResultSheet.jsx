@@ -7,6 +7,7 @@ import {
   Image,
   Link2,
   RefreshCw,
+  Share2,
   ShieldCheck,
   Sparkles,
   X,
@@ -95,6 +96,7 @@ export default function DrawResultSheet({
   const [isRetrying, setIsRetrying] = useState(false);
   const [announcementTemplate, setAnnouncementTemplate] = useState('concise');
   const [visiblePrizeCounts, setVisiblePrizeCounts] = useState(() => new Map());
+  const [shareAvailable] = useState(() => typeof navigator !== 'undefined' && typeof navigator.share === 'function');
   const prizeControlRefs = useRef(new Map());
   const pendingPrizeFocusRef = useRef(null);
 
@@ -163,10 +165,15 @@ export default function DrawResultSheet({
       if (event.key !== 'Tab' || !dialogRef.current) return;
       const controls = [...dialogRef.current.querySelectorAll(
         'a[href], summary, button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      )].filter((element) => !element.hidden && element.getClientRects().length);
+      )].filter((element) => (!element.hidden && !element.closest('[inert]') && element.getClientRects().length));
       if (!controls.length) return;
       const first = controls[0];
       const last = controls.at(-1);
+      if (!dialogRef.current.contains(document.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+        return;
+      }
       if (event.shiftKey && document.activeElement === first) {
         event.preventDefault();
         last.focus();
@@ -180,7 +187,11 @@ export default function DrawResultSheet({
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleKeyDown);
       window.clearTimeout(closeTimerRef.current);
-      previousFocus?.focus?.({ preventScroll: true });
+      if (previousFocus?.isConnected
+        && previousFocus.getClientRects?.().length
+        && !previousFocus.closest?.('[inert]')) {
+        previousFocus.focus({ preventScroll: true });
+      }
     };
   }, [isTopDialog, receipt?.id]);
 
@@ -192,7 +203,6 @@ export default function DrawResultSheet({
   );
   const isPractice = receipt.recordState === 'practice';
   const prizeCount = receipt.results.filter((group) => group.winners.length).length;
-  const manualCount = receipt.drawNumber || 1;
   const drawLabel = isPractice
     ? '本地演练 · 不计入开奖次数'
     : receipt.recordState === 'server' && receipt.drawNumber
@@ -202,7 +212,7 @@ export default function DrawResultSheet({
         completed: true,
       })
       : receipt.source === 'manual' && receipt.drawNumber
-        ? drawCountCopy({ source: 'manual', count: manualCount, completed: true })
+        ? drawCountCopy({ source: 'manual', count: receipt.drawNumber, completed: true })
         : '未计入开奖次数';
   const filterText = receipt.rules?.filters
     ? buildFilterSummary(receipt.rules.filters)
@@ -226,6 +236,17 @@ export default function DrawResultSheet({
     } finally {
       retryingRef.current = false;
       setIsRetrying(false);
+    }
+  }
+
+  async function shareAnnouncement() {
+    try {
+      await navigator.share({
+        title: '微博转发抽奖结果',
+        text: announcementText,
+      });
+    } catch (error) {
+      if (error?.name !== 'AbortError') onCopyPost?.(announcementTemplate);
     }
   }
 
@@ -312,7 +333,7 @@ export default function DrawResultSheet({
             {receipt.results.map((group, groupIndex) => {
               const visibleCount = Math.min(
                 group.winners.length,
-                visiblePrizeCounts.get(groupIndex) || WINNERS_PER_GROUP,
+                visiblePrizeCounts.get(groupIndex) ?? WINNERS_PER_GROUP,
               );
               const expanded = visibleCount > WINNERS_PER_GROUP;
               const hasMore = visibleCount < group.winners.length;
@@ -397,6 +418,23 @@ export default function DrawResultSheet({
             })}
           </div>
 
+          {receipt.backups.length > 0 && (
+            <section className="receipt-backup-note">
+              <header>
+                <div>
+                  <span>历史记录保留</span>
+                  <strong>候补名单 · {receipt.backups.length} 人</strong>
+                </div>
+                <small>旧版数据</small>
+              </header>
+              <p>{receipt.backups
+                .slice(0, 8)
+                .map((winner, index) => `${index + 1}. ${winner.screenName || winner.uid || '候补用户'}`)
+                .join('　')}</p>
+              {receipt.backups.length > 8 && <small>其余 {receipt.backups.length - 8} 人可通过导出名单查看。</small>}
+            </section>
+          )}
+
           <section className="receipt-audit">
             <header>
               <div>
@@ -421,7 +459,12 @@ export default function DrawResultSheet({
             </div>
 
             <div className="receipt-audit-grid">
-              <span><small>候选范围</small><strong>{receipt.eligibleCount} / {receipt.candidateCount} 人</strong></span>
+              <span>
+                <small>候选范围</small>
+                <strong>{receipt.sourceMeta?.legacyCountsIncomplete
+                  ? `可抽 ${receipt.eligibleCount} 人（旧版记录）`
+                  : `${receipt.eligibleCount} / ${receipt.candidateCount} 人`}</strong>
+              </span>
               <span><small>数据来源</small><strong>{sourceScope(receipt)}</strong></span>
               <span className="receipt-audit-code"><small>名单指纹</small><strong title={receipt.candidateDigest}>{compactHash(receipt.candidateDigest)}</strong></span>
               <span className="receipt-audit-code"><small>过程哈希</small><strong title={receipt.auditHash}>{compactHash(receipt.auditHash)}</strong></span>
@@ -497,7 +540,7 @@ export default function DrawResultSheet({
             <p className="receipt-copy-hint">
               {DRAW_ANNOUNCEMENT_TEMPLATES.find((template) => template.value === announcementTemplate)?.hint}
             </p>
-            <pre>{announcementText}</pre>
+            <pre tabIndex={0} role="region" aria-label="公示文案预览">{announcementText}</pre>
           </section>
         </div>
 
@@ -515,6 +558,12 @@ export default function DrawResultSheet({
             <Copy />
             复制文案
           </button>
+          {shareAvailable && (
+            <button type="button" className="receipt-action-secondary" onClick={shareAnnouncement}>
+              <Share2 />
+              分享文案
+            </button>
+          )}
           <button type="button" className="receipt-action-secondary" onClick={onCopyWinners}>
             <Copy />
             复制名单

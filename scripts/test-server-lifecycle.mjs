@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,11 +10,11 @@ import { hashAdminPassword } from '../src/lib/adminAuth.js';
 import { stopChildProcess } from './child-process.mjs';
 import { serverTestEnv } from './server-test-env.mjs';
 
-async function availablePort() {
+async function availablePort(host = '127.0.0.1') {
   return await new Promise((resolve, reject) => {
     const probe = net.createServer();
     probe.once('error', reject);
-    probe.listen(0, '127.0.0.1', () => {
+    probe.listen(0, host, () => {
       const port = probe.address().port;
       probe.close((error) => error ? reject(error) : resolve(port));
     });
@@ -36,6 +36,7 @@ const playwrightModule = import.meta.resolve('playwright');
 const outputDir = await mkdtemp(path.join(os.tmpdir(), 'sameko-lifecycle-'));
 const fetchGuardFile = path.join(outputDir, 'fetch-guard.mjs');
 const retiredRmFailureMarker = path.join(outputDir, 'retired-rm-failure.marker');
+const corruptUnlinkFailureMarker = path.join(outputDir, 'corrupt-unlink-failure.marker');
 const browserLaunchReadyFile = path.join(outputDir, 'browser-launch-ready.marker');
 const browserLaunchReleaseFile = path.join(outputDir, 'browser-launch-release.marker');
 const browserContextClosedFile = path.join(outputDir, 'browser-context-closed.marker');
@@ -55,6 +56,7 @@ const adminPasswordHash = await hashAdminPassword(adminPassword, {
 });
 await writeFile(fetchGuardFile, `
 import fs from 'node:fs/promises';
+import path from 'node:path';
 await import(${JSON.stringify(mockFetch)});
 const delegatedFetch = globalThis.fetch;
 globalThis.fetch = async (input, options = {}) => {
@@ -121,6 +123,30 @@ if (rmFailureMarker) {
   };
 }
 
+const originalUnlink = fs.unlink.bind(fs);
+const corruptUnlinkFailureTarget = process.env.MOCK_CORRUPT_UNLINK_FAILURE_TARGET || '';
+const corruptUnlinkFailureMarker = process.env.MOCK_CORRUPT_UNLINK_FAILURE_MARKER || '';
+if (corruptUnlinkFailureTarget && corruptUnlinkFailureMarker) {
+  fs.unlink = async (target, ...args) => {
+    if (path.resolve(String(target)) === path.resolve(corruptUnlinkFailureTarget)) {
+      let alreadyFailed = false;
+      try {
+        await fs.access(corruptUnlinkFailureMarker);
+        alreadyFailed = true;
+      } catch (error) {
+        if (error.code !== 'ENOENT') throw error;
+      }
+      if (!alreadyFailed) {
+        await fs.writeFile(corruptUnlinkFailureMarker, 'failed-once', 'utf8');
+        const failure = new Error('injected corrupt JSON cleanup failure');
+        failure.code = 'EACCES';
+        throw failure;
+      }
+    }
+    return await originalUnlink(target, ...args);
+  };
+}
+
 const launchReadyFile = process.env.MOCK_BROWSER_LAUNCH_READY_FILE;
 const launchReleaseFile = process.env.MOCK_BROWSER_LAUNCH_RELEASE_FILE;
 const contextClosedFile = process.env.MOCK_BROWSER_CONTEXT_CLOSED_FILE;
@@ -160,14 +186,37 @@ if (launchReadyFile && launchReleaseFile && contextClosedFile) {
 const fetchGuard = pathToFileURL(fetchGuardFile).href;
 const cacheBulkDir = path.join(outputDir, 'runtime-cache', 'bulk');
 const cacheMarker = path.join(cacheBulkDir, 'entry-0000.cache');
+const staleCorruptBackup = path.join(outputDir, 'orphaned-state.json.corrupt-20260701000000-deadbeef');
+const freshCorruptBackup = path.join(outputDir, 'orphaned-state.json.corrupt-20260907000000-cafebabe');
+const cleanupFailureCorruptBackup = path.join(
+  outputDir,
+  'cleanup-failure.json.corrupt-20260701000000-bad0cafe',
+);
+const oldActiveMetricsFile = path.join(outputDir, 'system-metrics.json');
+const bulkCorruptBackups = Array.from({ length: 120 }, (_, index) => path.join(
+  outputDir,
+  `bulk-corrupt-${String(index).padStart(3, '0')}.json.corrupt-20260701000000-${index.toString(16).padStart(8, '0')}`,
+));
 await mkdir(cacheBulkDir, { recursive: true });
 await Promise.all(Array.from({ length: 1001 }, (_, index) => (
   writeFile(path.join(cacheBulkDir, `entry-${String(index).padStart(4, '0')}.cache`), 'x')
 )));
+await Promise.all([
+  writeFile(staleCorruptBackup, '{stale-corrupt', 'utf8'),
+  writeFile(freshCorruptBackup, '{fresh-corrupt', 'utf8'),
+  writeFile(cleanupFailureCorruptBackup, '{cleanup-failure', 'utf8'),
+  writeFile(oldActiveMetricsFile, '{newly-discovered-corrupt', 'utf8'),
+  ...bulkCorruptBackups.map((filePath) => writeFile(filePath, '{bulk-corrupt', 'utf8')),
+]);
+const staleCorruptDate = new Date(Date.now() - 31 * 24 * 60 * 60_000);
+await Promise.all([
+  utimes(staleCorruptBackup, staleCorruptDate, staleCorruptDate),
+  utimes(oldActiveMetricsFile, staleCorruptDate, staleCorruptDate),
+]);
 
 const port = await availablePort();
 const baseUrl = `http://127.0.0.1:${port}`;
-const apiKey = 'lifecycle-test-key';
+const apiKey = 'lifecycle-test-api-key-at-least-32-bytes';
 const adminKey = 'lifecycle-admin-key-at-least-32-bytes';
 const output = [];
 function spawnServer({
@@ -198,6 +247,8 @@ function spawnServer({
       WEIBO_BROWSER_ABORT_CLEANUP_MS: '1000',
       WEIBO_LOGIN_SCREENSHOT_TIMEOUT_MS: '1000',
       MOCK_RETIRED_RM_FAIL_ONCE_FILE: retiredRmFailureMarker,
+      MOCK_CORRUPT_UNLINK_FAILURE_TARGET: cleanupFailureCorruptBackup,
+      MOCK_CORRUPT_UNLINK_FAILURE_MARKER: corruptUnlinkFailureMarker,
       MOCK_BROWSER_LAUNCH_READY_FILE: browserLaunchReadyFile,
       MOCK_BROWSER_LAUNCH_RELEASE_FILE: browserLaunchReleaseFile,
       MOCK_BROWSER_CONTEXT_CLOSED_FILE: browserContextClosedFile,
@@ -258,18 +309,120 @@ async function verifyShutdownBeforeListen() {
   }
 }
 
-async function api(pathname, options = {}) {
-  return await fetch(`${baseUrl}${pathname}`, {
-    ...options,
-    headers: { 'x-api-key': apiKey, ...(options.headers || {}) },
+async function verifyProductionWithoutApiRefused() {
+  for (const targetHost of ['127.0.0.1', 'localhost.evil.example']) {
+    const targetPort = await availablePort();
+    const targetOutputDir = path.join(outputDir, `missing-api-${targetHost.replaceAll('.', '-')}`);
+    const retentionSentinel = path.join(targetOutputDir, 'runtime-cache', 'must-survive.cache');
+    const targetOutput = [];
+    await mkdir(path.dirname(retentionSentinel), { recursive: true });
+    await writeFile(retentionSentinel, 'preserve', 'utf8');
+    const child = spawnServer({
+      targetPort,
+      targetOutputDir,
+      targetOutput,
+      extraEnv: {
+        HOST: targetHost,
+        API_KEY: '',
+        ALLOW_PUBLIC_API: '',
+        NODE_ENV: 'production',
+      },
+    });
+
+    try {
+      const exit = await Promise.race([
+        new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))),
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error(`生产环境无 API_KEY 启动测试超时：${targetHost}`)),
+          15_000,
+        )),
+      ]);
+      assert.equal(exit.code, 1, targetOutput.join(''));
+      assert.equal(exit.signal, null, targetOutput.join(''));
+      assert.match(targetOutput.join(''), /Refusing to start in production without API_KEY/);
+      assert.doesNotMatch(targetOutput.join(''), /Sameko Weibo Lottery running at/);
+      await access(retentionSentinel);
+      await assert.rejects(access(path.join(targetOutputDir, 'system-metrics.json')), { code: 'ENOENT' });
+    } finally {
+      await stopChildProcess(child);
+    }
+  }
+}
+
+async function verifyRejectedStartupConfiguration(name, extraEnv, expectedMessage) {
+  const targetPort = await availablePort();
+  const targetOutputDir = path.join(outputDir, name);
+  const targetOutput = [];
+  const child = spawnServer({ targetPort, targetOutputDir, targetOutput, extraEnv });
+
+  try {
+    const exit = await Promise.race([
+      new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))),
+      new Promise((_, reject) => setTimeout(
+        () => reject(new Error(`无效启动配置测试超时：${name}`)),
+        15_000,
+      )),
+    ]);
+    assert.equal(exit.code, 1, targetOutput.join(''));
+    assert.equal(exit.signal, null, targetOutput.join(''));
+    assert.match(targetOutput.join(''), expectedMessage);
+    assert.doesNotMatch(targetOutput.join(''), /Sameko Weibo Lottery running at/);
+    await assert.rejects(access(path.join(targetOutputDir, 'system-metrics.json')), { code: 'ENOENT' });
+  } finally {
+    await stopChildProcess(child);
+  }
+}
+
+async function verifyExpandedIpv6LoopbackAllowed() {
+  const targetHost = '0:0:0:0:0:0:0:1';
+  const targetPort = await availablePort('::1');
+  const targetOutputDir = path.join(outputDir, 'expanded-ipv6-loopback');
+  const targetOutput = [];
+  const child = spawnServer({
+    targetPort,
+    targetOutputDir,
+    targetOutput,
+    extraEnv: {
+      HOST: targetHost,
+      API_KEY: '',
+      ALLOW_PUBLIC_API: '',
+      NODE_ENV: 'test',
+    },
   });
+
+  try {
+    await waitUntil(
+      () => targetOutput.join('').includes('Sameko Weibo Lottery running at'),
+      15_000,
+      () => `完整 IPv6 回环地址启动超时\n${targetOutput.join('')}`,
+    );
+    const health = await fetch(`http://[::1]:${targetPort}/api/health`);
+    assert.equal(health.status, 200, targetOutput.join(''));
+  } finally {
+    await stopChildProcess(child, { gracefulSignal: 'SIGTERM' });
+  }
+}
+
+async function api(pathname, options = {}) {
+  try {
+    return await fetch(`${baseUrl}${pathname}`, {
+      ...options,
+      headers: { 'x-api-key': apiKey, ...(options.headers || {}) },
+    });
+  } catch (error) {
+    throw new Error(`${options.method || 'GET'} ${pathname} failed`, { cause: error });
+  }
 }
 
 async function adminApi(pathname, options = {}) {
-  return await fetch(`${baseUrl}${pathname}`, {
-    ...options,
-    headers: { 'x-api-key': adminKey, ...(options.headers || {}) },
-  });
+  try {
+    return await fetch(`${baseUrl}${pathname}`, {
+      ...options,
+      headers: { 'x-api-key': adminKey, ...(options.headers || {}) },
+    });
+  } catch (error) {
+    throw new Error(`${options.method || 'GET'} ${pathname} failed`, { cause: error });
+  }
 }
 
 async function startJob(statusId, clientAddress = '', accessToken = 'test-token') {
@@ -296,6 +449,42 @@ async function waitForJob(jobId, readToken) {
 }
 
 try {
+  await verifyProductionWithoutApiRefused();
+  await verifyRejectedStartupConfiguration(
+    'public-host-without-api-key',
+    { HOST: '0.0.0.0', API_KEY: '', ADMIN_KEY: '', ALLOW_PUBLIC_API: '', NODE_ENV: 'test' },
+    /Refusing to listen on non-loopback HOST .* without API_KEY/,
+  );
+  await verifyRejectedStartupConfiguration(
+    'production-weak-api-key',
+    { API_KEY: 'short-api-key', NODE_ENV: 'production' },
+    /API_KEY must be at least 32 bytes/,
+  );
+  await verifyRejectedStartupConfiguration(
+    'production-weak-admin-key',
+    { ADMIN_KEY: 'short-admin-key', NODE_ENV: 'production' },
+    /ADMIN_KEY must be at least 32 bytes/,
+  );
+  await verifyRejectedStartupConfiguration(
+    'cookie-read-key-invalid-format',
+    {
+      NODE_ENV: 'production',
+      ENABLE_COOKIE_READ_API: '1',
+      COOKIE_READ_KEY: 'not-a-hex-key',
+    },
+    /COOKIE_READ_KEY must be exactly 64 hexadecimal characters/,
+  );
+  await verifyRejectedStartupConfiguration(
+    'cookie-read-key-equals-api-key',
+    {
+      NODE_ENV: 'production',
+      API_KEY: 'a'.repeat(64),
+      ENABLE_COOKIE_READ_API: '1',
+      COOKIE_READ_KEY: 'a'.repeat(64),
+    },
+    /COOKIE_READ_KEY must differ from the shared API_KEY/,
+  );
+  await verifyExpandedIpv6LoopbackAllowed();
   await verifyShutdownBeforeListen();
 
   await waitUntil(async () => {
@@ -306,6 +495,19 @@ try {
     }
   }, 15_000, () => `测试服务启动超时\n${output.join('')}`);
 
+  await assert.rejects(access(staleCorruptBackup), { code: 'ENOENT' });
+  await access(freshCorruptBackup);
+  await access(cleanupFailureCorruptBackup);
+  await access(corruptUnlinkFailureMarker);
+  const corruptBackupsAfterStartup = (await readdir(outputDir))
+    .filter((name) => name.startsWith('system-metrics.json.corrupt-'));
+  assert.equal(corruptBackupsAfterStartup.length, 1, output.join(''));
+  await access(path.join(outputDir, corruptBackupsAfterStartup[0]));
+  assert.equal(
+    (await readdir(outputDir)).filter((name) => name.startsWith('bulk-corrupt-')).length,
+    0,
+    '损坏备份清理必须扫描完整目录，不能让后半目录永久饥饿',
+  );
   await assert.rejects(access(cacheMarker), { code: 'ENOENT' });
   await access(path.join(outputDir, 'runtime-cache', 'chromium'));
   await access(retiredRmFailureMarker);
@@ -332,7 +534,18 @@ try {
       return false;
     }
   }, 15_000, () => `重启后的测试服务启动超时\n${output.join('')}`);
+  await waitUntil(async () => {
+    try {
+      const response = await adminApi('/api/admin/summary');
+      if (!response.ok) return false;
+      const body = await response.json();
+      return Boolean(body.system?.runtime?.runtimeCacheCleanup?.lastSuccessAt);
+    } catch {
+      return false;
+    }
+  }, 15_000, () => `重启后的启动清理未完成\n${output.join('')}`);
   await assert.rejects(access(path.join(outputDir, retiredCacheName)), { code: 'ENOENT' });
+  await assert.rejects(access(cleanupFailureCorruptBackup), { code: 'ENOENT' });
   const staleSessionAfterRestart = await api('/api/admin/session', {
     headers: { cookie: preRestartCookie },
   });

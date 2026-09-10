@@ -12,12 +12,16 @@ import { serverTestEnv } from './server-test-env.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scripts = [
   'test-ui-console.mjs',
+  'test-dark-scheme-ui.mjs',
+  'test-desktop-layout-ui.mjs',
   'test-candidate-load-ui.mjs',
   'test-candidate-tools-ui.mjs',
+  'test-tablist-keyboard-ui.mjs',
   'test-main-flow-guards-ui.mjs',
   'test-draw-receipt-ui.mjs',
   'test-draw-animation-ui.mjs',
   'test-draw-practice-ui.mjs',
+  'test-manual-repeat-exclusion-ui.mjs',
   'test-sheet-motion-ui.mjs',
   'test-feedback-ui.mjs',
   'test-admin-ui.mjs',

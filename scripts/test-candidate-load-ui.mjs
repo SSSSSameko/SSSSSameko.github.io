@@ -142,6 +142,14 @@ try {
   await clipboardLoadButton.click();
   const emptyClipboardNotice = clipboardPage.locator('.flow-notice').filter({ hasText: '剪贴板为空' });
   await emptyClipboardNotice.waitFor({ state: 'visible' });
+  assert.equal(await emptyClipboardNotice.getAttribute('role'), 'status');
+  assert.equal(await emptyClipboardNotice.getAttribute('aria-live'), 'polite');
+  assert.equal(await emptyClipboardNotice.getAttribute('aria-atomic'), 'true');
+  assert.equal(
+    await clipboardPage.locator('[data-app-status]').getAttribute('aria-live'),
+    'off',
+    '可见提示负责播报时，隐藏状态区域不应重复播报',
+  );
   assert.equal(
     await emptyClipboardNotice.getByText('剪贴板中没有内容，请先复制微博正文链接、mid 或 bid。', { exact: true }).isVisible(),
     true,
@@ -186,7 +194,8 @@ try {
     input.dispatchEvent(event);
     return event.defaultPrevented;
   });
-  assert.equal(validPasteState, true, '合法微博链接粘贴应由应用接管并自动载入');
+  assert.equal(validPasteState, false, '合法微博链接粘贴应保留默认输入行为，避免误触即清空结果');
+  await clipboardLoadButton.click();
   await clipboardPage.waitForTimeout(220);
   assert.equal(postCount, 2, '合法链接粘贴应只创建一个候选任务');
   await clipboardPage.close();

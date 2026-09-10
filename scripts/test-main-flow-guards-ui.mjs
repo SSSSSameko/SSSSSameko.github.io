@@ -329,6 +329,9 @@ try {
     await syncRacePage.locator('.root-tabbar button').filter({ hasText: '名单' }).click();
     await syncRacePage.getByRole('textbox', { name: '微博链接、mid 或 bid' }).fill(nextStatusUrl);
     await syncRacePage.getByRole('button', { name: /载入候选/ }).click();
+    const replaceCandidatesDialog = syncRacePage.getByRole('alertdialog', { name: '替换当前候选？' });
+    await replaceCandidatesDialog.waitFor({ state: 'visible' });
+    await replaceCandidatesDialog.getByRole('button', { name: '替换并载入' }).click();
     await syncRacePage.getByRole('button', { name: /切换后候选/ }).waitFor();
     await syncRacePage.locator('.root-tabbar button').filter({ hasText: '抽奖' }).click();
     await syncRacePage.getByRole('button', { name: /设置奖项并确认/ }).click();
@@ -376,7 +379,7 @@ try {
     await route.fulfill({ status: 201, json: { ok: true, id: 'single-feedback' } });
   });
   await gotoUiPage(feedbackPage, baseUrl);
-  await feedbackPage.getByRole('button', { name: '更多', exact: true }).click();
+  await feedbackPage.getByRole('tab', { name: '更多', exact: true }).click();
   await feedbackPage.getByRole('button', { name: /意见反馈/ }).click();
   const feedbackDialog = feedbackPage.getByRole('dialog', { name: '意见反馈' });
   await feedbackDialog.getByRole('radio', { name: /遇到问题/ }).click();
@@ -412,9 +415,10 @@ try {
     true,
     '文件选择器获得键盘焦点时应显示父级焦点状态',
   );
-  assert.equal(
-    await fileInput.evaluate((input) => getComputedStyle(input.parentElement).outlineStyle),
-    'solid',
+  assert.match(
+    await fileInput.evaluate((input) => getComputedStyle(input.parentElement).boxShadow),
+    /rgb/i,
+    '文件选择器获得键盘焦点时应显示可见焦点环',
   );
   await fileInput.setInputFiles({ name: 'first.txt', mimeType: 'text/plain', buffer: Buffer.from('第一份名单') });
   await fileInput.setInputFiles({ name: 'second.txt', mimeType: 'text/plain', buffer: Buffer.from('第二份名单') });
@@ -469,6 +473,46 @@ try {
   const storageConfirmText = await confirmDialog.textContent();
   assert.match(storageConfirmText, /当前页面内成功开奖后一分钟内不能重复开奖/, storageConfirmText);
   await storageContext.close();
+
+  const clearContext = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    reducedMotion: 'reduce',
+  });
+  await clearContext.addInitScript((apiBase) => {
+    localStorage.setItem('weibo-draw-history-v2', JSON.stringify({ version: 2, items: [] }));
+    localStorage.setItem('weibo-lottery-history', '[]');
+    localStorage.setItem('weibo-draw-history-v2.corrupt', 'broken-current');
+    localStorage.setItem('weibo-lottery-history.corrupt', 'broken-legacy');
+    localStorage.setItem('weibo-draw-cooldowns-v1', JSON.stringify({ version: 1, records: {} }));
+    localStorage.setItem('weibo-draw-motion', 'full');
+    localStorage.setItem('weibo-draw-api-base', apiBase);
+  }, baseUrl.replace(/\/$/, ''));
+  const clearPage = await clearContext.newPage();
+  await gotoUiPage(clearPage, baseUrl);
+  await clearPage.getByRole('tab', { name: '更多', exact: true }).click();
+  await clearPage.getByRole('button', { name: /数据设置/ }).click();
+  await clearPage.getByRole('dialog', { name: '设置' }).waitFor({ state: 'visible' });
+  await clearPage.getByRole('button', { name: /清空本机抽奖数据/ }).click();
+  const clearConfirm = clearPage.getByRole('alertdialog');
+  await clearConfirm.getByRole('button', { name: '清空', exact: true }).click();
+  await clearPage.getByText('已清空', { exact: true }).waitFor();
+  const clearRemaining = await clearPage.evaluate(() => ({
+    current: localStorage.getItem('weibo-draw-history-v2'),
+    legacy: localStorage.getItem('weibo-lottery-history'),
+    currentCorrupt: localStorage.getItem('weibo-draw-history-v2.corrupt'),
+    legacyCorrupt: localStorage.getItem('weibo-lottery-history.corrupt'),
+    cooldown: localStorage.getItem('weibo-draw-cooldowns-v1'),
+    motion: localStorage.getItem('weibo-draw-motion'),
+    apiBase: localStorage.getItem('weibo-draw-api-base'),
+  }));
+  assert.equal(clearRemaining.current, null);
+  assert.equal(clearRemaining.legacy, null);
+  assert.equal(clearRemaining.currentCorrupt, null);
+  assert.equal(clearRemaining.legacyCorrupt, null);
+  assert.equal(clearRemaining.cooldown, null);
+  assert.equal(clearRemaining.motion, 'full', '清空本机数据不应删除界面动效偏好');
+  assert.ok(clearRemaining.apiBase, '清空本机数据不应删除后端地址');
+  await clearContext.close();
 } finally {
   await browser.close();
 }

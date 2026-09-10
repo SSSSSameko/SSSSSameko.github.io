@@ -8,12 +8,11 @@ export default function CandidateAvatar({
   apiBase = '',
   decorative = false,
   priority = false,
-  loadImage = true,
 }) {
   const name = candidate?.screenName || candidate?.uid || '候选用户';
   const avatar = safeAvatarUrl(candidate?.avatar);
   const proxyAvatar = avatarProxyUrl(avatar, apiBase);
-  const primarySource = loadImage ? proxyAvatar || avatar : '';
+  const primarySource = proxyAvatar || avatar;
   const [source, setSource] = useState(primarySource);
 
   useEffect(() => setSource(primarySource), [primarySource]);

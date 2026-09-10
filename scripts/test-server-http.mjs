@@ -25,7 +25,8 @@ const port = process.env.SERVER_TEST_PORT
   ? Number(process.env.SERVER_TEST_PORT)
   : await availablePort();
 const baseUrl = `http://127.0.0.1:${port}`;
-const apiKey = 'local-release-test-key';
+const recentDrawnAt = () => new Date(Date.now() - 60_000).toISOString();
+const apiKey = 'local-release-test-api-key-32-bytes';
 const adminUsername = 'release-admin';
 const adminPassword = 'release-test-password';
 const adminPasswordHash = await hashAdminPassword(adminPassword, {
@@ -61,10 +62,15 @@ const drawReadRaceArmFile = path.join(testOutputDir, 'draw-read-race-arm.marker'
 const drawReadRaceReadyFile = path.join(testOutputDir, 'draw-read-race-ready.marker');
 const drawReadRaceReleaseFile = path.join(testOutputDir, 'draw-read-race-release.marker');
 const drawReadRaceReadCountFile = path.join(testOutputDir, 'draw-read-race-read-count.txt');
+const cookieMigrationArmFile = path.join(testOutputDir, 'cookie-migration-arm.marker');
+const cookieMigrationReadyFile = path.join(testOutputDir, 'cookie-migration-ready.marker');
+const cookieMigrationReleaseFile = path.join(testOutputDir, 'cookie-migration-release.marker');
+const directorySyncFailureArmFile = path.join(testOutputDir, 'directory-sync-failure-arm.marker');
+const directorySyncFailureMarker = path.join(testOutputDir, 'directory-sync-failure.marker');
 const avatarHttpCancelFile = path.join(testOutputDir, 'avatar-http-cancelled.marker');
 const avatarMimeCancelFile = path.join(testOutputDir, 'avatar-mime-cancelled.marker');
-const avatarHttpErrorUrl = 'https://test-avatar.sinaimg.cn/http-error.jpg';
-const avatarMimeErrorUrl = 'https://test-avatar.sinaimg.cn/mime-error.jpg';
+const avatarHttpErrorUrl = 'https://sinaimg.cn/http-error.jpg';
+const avatarMimeErrorUrl = 'https://sinaimg.cn/mime-error.jpg';
 await rm(testOutputDir, { force: true, recursive: true });
 await Promise.all([
   mkdir(drawsDir, { recursive: true }),
@@ -145,6 +151,13 @@ const avatarHttpErrorUrl = process.env.AVATAR_HTTP_ERROR_URL || '';
 const avatarMimeErrorUrl = process.env.AVATAR_MIME_ERROR_URL || '';
 const avatarHttpCancelFile = process.env.AVATAR_HTTP_CANCEL_FILE || '';
 const avatarMimeCancelFile = process.env.AVATAR_MIME_CANCEL_FILE || '';
+const cookieMigrationTargetFile = path.resolve(process.env.COOKIE_MIGRATION_TARGET_FILE || '');
+const cookieMigrationArmFile = process.env.COOKIE_MIGRATION_ARM_FILE || '';
+const cookieMigrationReadyFile = process.env.COOKIE_MIGRATION_READY_FILE || '';
+const cookieMigrationReleaseFile = process.env.COOKIE_MIGRATION_RELEASE_FILE || '';
+const directorySyncFailureTarget = path.resolve(process.env.DIRECTORY_SYNC_FAILURE_TARGET || '');
+const directorySyncFailureArmFile = process.env.DIRECTORY_SYNC_FAILURE_ARM_FILE || '';
+const directorySyncFailureMarker = process.env.DIRECTORY_SYNC_FAILURE_MARKER || '';
 const originalReadFile = fs.readFile.bind(fs);
 const originalOpen = fs.open.bind(fs);
 const originalStat = fs.stat.bind(fs);
@@ -154,6 +167,7 @@ let held = false;
 let drawWriteHeld = false;
 let drawScanReads = 0;
 let drawReadRaceHeld = false;
+let cookieMigrationReadHeld = false;
 
 async function fileExists(filePath) {
   try {
@@ -192,6 +206,19 @@ async function holdDrawReadRace(filePath) {
   }
 }
 
+async function holdCookieMigrationRead(filePath) {
+  const resolvedPath = path.resolve(String(filePath));
+  if (cookieMigrationReadHeld
+    || resolvedPath !== cookieMigrationTargetFile
+    || !cookieMigrationArmFile
+    || !await fileExists(cookieMigrationArmFile)) return;
+  cookieMigrationReadHeld = true;
+  await fs.writeFile(cookieMigrationReadyFile, 'ready', 'utf8');
+  while (!await fileExists(cookieMigrationReleaseFile)) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 fs.open = async (filePath, ...args) => {
   await holdTargetRead(filePath);
   await holdDrawReadRace(filePath);
@@ -205,7 +232,41 @@ fs.open = async (filePath, ...args) => {
     await fs.writeFile(drawScanStartedFile, 'started', 'utf8');
     await new Promise((resolve) => setTimeout(resolve, drawScanDelayMs));
   }
-  return await originalOpen(filePath, ...args);
+  const handle = await originalOpen(filePath, ...args);
+  const shouldHoldCookieRead = Boolean(cookieMigrationTargetFile)
+    && resolvedPath === cookieMigrationTargetFile
+    && cookieMigrationArmFile
+    && await fileExists(cookieMigrationArmFile);
+  const shouldFailDirectorySync = Boolean(directorySyncFailureTarget)
+    && resolvedPath === directorySyncFailureTarget
+    && directorySyncFailureArmFile
+    && await fileExists(directorySyncFailureArmFile)
+    && !await fileExists(directorySyncFailureMarker);
+  if (!shouldHoldCookieRead && !shouldFailDirectorySync) return handle;
+  return new Proxy(handle, {
+    get(target, property) {
+      if (property === 'read' && shouldHoldCookieRead) {
+        return async (...readArgs) => {
+          const result = await target.read(...readArgs);
+          if (!result.bytesRead) await holdCookieMigrationRead(filePath);
+          return result;
+        };
+      }
+      if (property === 'sync' && shouldFailDirectorySync) {
+        return async () => {
+          if (!await fileExists(directorySyncFailureMarker)) {
+            await fs.writeFile(directorySyncFailureMarker, 'failed-once', 'utf8');
+            const failure = new Error('injected directory sync failure');
+            failure.code = 'EIO';
+            throw failure;
+          }
+          return await target.sync();
+        };
+      }
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 };
 
 fs.stat = async (filePath, ...args) => {
@@ -225,6 +286,7 @@ fs.readFile = async (filePath, ...args) => {
   }
   const value = await originalReadFile(filePath, ...args);
   await holdTargetRead(filePath);
+  await holdCookieMigrationRead(filePath);
   return value;
 };
 
@@ -310,10 +372,18 @@ function spawnServer() {
       DRAW_READ_RACE_READY_FILE: drawReadRaceReadyFile,
       DRAW_READ_RACE_RELEASE_FILE: drawReadRaceReleaseFile,
       DRAW_READ_RACE_READ_COUNT_FILE: drawReadRaceReadCountFile,
+      COOKIE_MIGRATION_TARGET_FILE: cookieStoreFile,
+      COOKIE_MIGRATION_ARM_FILE: cookieMigrationArmFile,
+      COOKIE_MIGRATION_READY_FILE: cookieMigrationReadyFile,
+      COOKIE_MIGRATION_RELEASE_FILE: cookieMigrationReleaseFile,
+      DIRECTORY_SYNC_FAILURE_TARGET: drawsDir,
+      DIRECTORY_SYNC_FAILURE_ARM_FILE: directorySyncFailureArmFile,
+      DIRECTORY_SYNC_FAILURE_MARKER: directorySyncFailureMarker,
       AVATAR_HTTP_ERROR_URL: avatarHttpErrorUrl,
       AVATAR_MIME_ERROR_URL: avatarMimeErrorUrl,
       AVATAR_HTTP_CANCEL_FILE: avatarHttpCancelFile,
       AVATAR_MIME_CANCEL_FILE: avatarMimeCancelFile,
+      REJECTED_BODY_DRAIN_MS: '250',
       NODE_ENV: 'production',
     }),
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -349,6 +419,34 @@ async function waitForFile(filePath, timeoutMs = 5000) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`等待测试文件超时：${path.basename(filePath)}`);
+}
+
+async function waitForMissing(filePath, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      await access(filePath);
+    } catch (error) {
+      if (error.code === 'ENOENT') return;
+      throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`等待文件清理超时：${path.basename(filePath)}`);
+}
+
+async function within(promise, timeoutMs, message) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function waitForDrawRecord(predicate, timeoutMs = 5000) {
@@ -465,6 +563,7 @@ function openPendingJsonRequest(pathname, payload) {
 
 try {
   await waitForServer();
+  await waitForMissing(staleCacheFile);
 
   await writeFile(staticOutsideFile, 'private static test target', 'utf8');
   await rm(staticLinkFile, { force: true });
@@ -503,7 +602,68 @@ try {
 
   const app = await fetch(`${baseUrl}/`);
   assert.equal(app.status, 200);
-  assert.doesNotMatch(await app.text(), /@vite\/client/);
+  const appHtml = await app.text();
+  assert.doesNotMatch(appHtml, /@vite\/client/);
+  const scriptAssetPath = appHtml.match(/assets\/index-[^"]+\.js/)?.[0];
+  assert.ok(scriptAssetPath, 'index.html should reference the built entry script');
+
+  const brotliAsset = await requestWithAgent(`/${scriptAssetPath}`, {
+    headers: { 'accept-encoding': 'br' },
+  });
+  assert.equal(brotliAsset.status, 200);
+  assert.equal(brotliAsset.headers['content-encoding'], 'br');
+  assert.match(String(brotliAsset.headers.vary || ''), /accept-encoding/i);
+
+  const gzipAsset = await requestWithAgent(`/${scriptAssetPath}`, {
+    headers: { 'accept-encoding': 'gzip' },
+  });
+  assert.equal(gzipAsset.headers['content-encoding'], 'gzip');
+
+  const gzipOnlyAsset = await requestWithAgent(`/${scriptAssetPath}`, {
+    headers: { 'accept-encoding': 'br;q=0, gzip' },
+  });
+  assert.equal(gzipOnlyAsset.headers['content-encoding'], 'gzip');
+
+  const brotliOnlyAsset = await requestWithAgent(`/${scriptAssetPath}`, {
+    headers: { 'accept-encoding': 'gzip;q=0, br' },
+  });
+  assert.equal(brotliOnlyAsset.headers['content-encoding'], 'br');
+
+  const plainAsset = await requestWithAgent(`/${scriptAssetPath}`);
+  assert.equal(plainAsset.status, 200);
+  assert.equal(plainAsset.headers['content-encoding'], undefined);
+  assert.ok(plainAsset.headers.etag);
+
+  const notModifiedAsset = await requestWithAgent(`/${scriptAssetPath}`, {
+    headers: { 'if-none-match': String(plainAsset.headers.etag) },
+  });
+  assert.equal(notModifiedAsset.status, 304);
+  assert.equal(notModifiedAsset.body, '');
+
+  const headAsset = await requestWithAgent(`/${scriptAssetPath}`, { method: 'HEAD' });
+  assert.equal(headAsset.status, 200);
+  assert.equal(headAsset.body, '');
+  assert.equal(headAsset.headers['content-length'], plainAsset.headers['content-length']);
+
+  const injectedConfig = await fetch(`${baseUrl}/config.js`);
+  assert.equal(injectedConfig.status, 200);
+  const injectedConfigText = await injectedConfig.text();
+  assert.match(injectedConfigText, /window\.WEIBO_DRAW_API_KEY = /);
+  assert.ok(injectedConfigText.includes(apiKey));
+
+  const sourceConfigPath = path.resolve(fileURLToPath(new URL('..', import.meta.url)), 'static/config.js');
+  const originalSourceConfig = await readFile(sourceConfigPath, 'utf8');
+  try {
+    const probe = '\n// runtime-config-source-probe\n';
+    await writeFile(sourceConfigPath, `${originalSourceConfig}${probe}`, 'utf8');
+    const liveConfig = await fetch(`${baseUrl}/config.js`);
+    const liveConfigText = await liveConfig.text();
+    assert.ok(liveConfigText.includes('runtime-config-source-probe'), 'config.js 未下发源目录文件');
+    assert.ok(liveConfigText.includes(apiKey));
+    assert.equal(liveConfig.headers.get('cache-control'), 'no-cache');
+  } finally {
+    await writeFile(sourceConfigPath, originalSourceConfig, 'utf8');
+  }
 
   const brandAvatar = await fetch(`${baseUrl}/avatar-96.webp`);
   assert.equal(brandAvatar.status, 200);
@@ -529,6 +689,74 @@ try {
 
   const unauthorized = await fetch(`${baseUrl}/api/weibo/cookie-status`);
   assert.equal(unauthorized.status, 401);
+  const unauthorizedPost = await fetch(`${baseUrl}/api/weibo/reposts/jobs`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ source: 'mobile', statusId: '900000000003' }),
+  });
+  assert.equal(unauthorizedPost.status, 401);
+  assert.notEqual(unauthorizedPost.headers.get('connection'), 'close');
+
+  const slowRejectAgent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+  let slowRejectRequest;
+  try {
+    let slowRejectSocket;
+    let resolveSocketClosed;
+    const socketClosed = new Promise((resolve) => { resolveSocketClosed = resolve; });
+    const rejectedAt = Date.now();
+    const slowRejectResponse = new Promise((resolve, reject) => {
+      slowRejectRequest = http.request({
+        host: '127.0.0.1',
+        port,
+        path: '/api/weibo/reposts/jobs',
+        method: 'POST',
+        agent: slowRejectAgent,
+        headers: {
+          'content-type': 'application/json',
+          'content-length': 70_000,
+        },
+      }, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.once('error', reject);
+        response.once('end', () => resolve({
+          status: response.statusCode,
+          headers: response.headers,
+          body: Buffer.concat(chunks).toString('utf8'),
+        }));
+      });
+      slowRejectRequest.once('socket', (socket) => {
+        slowRejectSocket = socket;
+        socket.once('close', () => resolveSocketClosed(socket));
+      });
+      slowRejectRequest.once('error', (error) => {
+        resolveSocketClosed(slowRejectSocket);
+        reject(error);
+      });
+      slowRejectRequest.flushHeaders();
+      slowRejectRequest.write('{"source":"mobile",');
+    });
+    const rejected = await within(
+      slowRejectResponse,
+      1000,
+      '未结束的请求体不应阻塞早期拒绝响应',
+    );
+    assert.equal(rejected.status, 401, rejected.body);
+    assert.equal(rejected.headers.connection, 'close');
+    assert.ok(Date.now() - rejectedAt < 1000);
+    const closedSocket = await within(
+      socketClosed,
+      1500,
+      '早期拒绝后连接未在排空期限内关闭',
+    );
+    assert.equal(closedSocket.destroyed, true);
+    const healthAfterSlowReject = await requestWithAgent('/api/health', { agent: slowRejectAgent });
+    assert.equal(healthAfterSlowReject.status, 200);
+    assert.notEqual(healthAfterSlowReject.socket, closedSocket);
+  } finally {
+    slowRejectRequest?.destroy();
+    slowRejectAgent.destroy();
+  }
 
   const authorized = await fetch(`${baseUrl}/api/weibo/cookie-status`, {
     headers: { 'x-api-key': apiKey },
@@ -1045,6 +1273,43 @@ try {
     headers: { 'content-type': 'application/json', 'x-api-key': apiKey },
     body: JSON.stringify(payload),
   });
+  const directorySyncPayload = {
+    source: 'manual',
+    drawnAt: recentDrawnAt(),
+    audit: { seed: 'directory-sync-commit', candidateDigest: 'directory-sync-v1' },
+    winners: [{ uid: 'directory-sync-winner', screenName: '目录同步故障用户' }],
+  };
+  await writeFile(directorySyncFailureArmFile, 'armed', 'utf8');
+  const committedAfterDirectorySyncFailure = await saveDraw(directorySyncPayload);
+  assert.equal(committedAfterDirectorySyncFailure.status, 200);
+  const committedAfterDirectorySyncFailureBody = await committedAfterDirectorySyncFailure.json();
+  await waitForFile(directorySyncFailureMarker);
+  const indexedAfterDirectorySyncFailure = await fetch(`${baseUrl}/api/admin/draws?limit=100`, {
+    headers: { cookie: sessionCookie },
+  });
+  assert.equal(indexedAfterDirectorySyncFailure.status, 200);
+  assert.equal(
+    (await indexedAfterDirectorySyncFailure.json()).items
+      .filter((item) => item.auditHash === committedAfterDirectorySyncFailureBody.auditHash)
+      .length,
+    1,
+  );
+  const retriedAfterDirectorySyncFailure = await saveDraw(directorySyncPayload);
+  assert.equal(retriedAfterDirectorySyncFailure.status, 200);
+  const retriedAfterDirectorySyncFailureBody = await retriedAfterDirectorySyncFailure.json();
+  assert.equal(retriedAfterDirectorySyncFailureBody.duplicate, true);
+  assert.equal(
+    retriedAfterDirectorySyncFailureBody.file,
+    committedAfterDirectorySyncFailureBody.file,
+  );
+  assert.equal(
+    (await readdir(drawsDir))
+      .filter((name) => name.endsWith(`-${committedAfterDirectorySyncFailureBody.auditHash}.json`))
+      .length,
+    1,
+  );
+  await rm(directorySyncFailureArmFile, { force: true });
+
   const pendingDraw = openPendingJsonRequest('/api/draws', {
     source: 'manual',
     winners: [{ uid: 'pending-body', screenName: '慢请求' }],
@@ -1121,7 +1386,8 @@ try {
   });
   assert.equal(savedDraw.status, 200);
   const savedDrawBody = await savedDraw.json();
-  assert.match(savedDrawBody.file, /^draw-\d{14}-[a-f0-9]{8}\.json$/);
+  assert.match(savedDrawBody.file, /^draw-\d{14}-[a-f0-9]{64}\.json$/);
+  assert.equal(savedDrawBody.file, `draw-${savedDrawBody.savedAt.replace(/\D/g, '').slice(0, 14)}-${savedDrawBody.auditHash}.json`);
   assert.doesNotMatch(savedDrawBody.file, /\.\./);
 
   const drawDetail = await fetch(`${baseUrl}/api/admin/draws/${encodeURIComponent(savedDrawBody.file)}`, {
@@ -1136,7 +1402,7 @@ try {
 
   const manualIdempotentPayload = {
     source: 'manual',
-    drawnAt: '2026-08-27T02:00:00.000Z',
+    drawnAt: recentDrawnAt(),
     audit: { seed: 'manual-idempotent-seed', candidateDigest: 'manual-list-v1' },
     winners: [{ uid: 'manual-idempotent-winner', screenName: '手动幂等用户' }],
   };
@@ -1290,6 +1556,23 @@ try {
   assert.equal(mismatchedPrizeCount.status, 400);
   assert.match((await mismatchedPrizeCount.json()).error, /奖项人数与中奖名单数量不一致/);
 
+  const duplicateWinnerAcrossPrizes = await saveDraw({
+    source: 'manual',
+    statusUrl: 'https://weibo.com/123456/DuplicateWinnerAcrossPrizes',
+    results: [
+      {
+        prize: { name: '一等奖', count: 1 },
+        winners: [{ uid: 'duplicate-across-prizes', screenName: '重复用户' }],
+      },
+      {
+        prize: { name: '二等奖', count: 1 },
+        winners: [{ uid: 'duplicate-across-prizes', screenName: '重复用户' }],
+      },
+    ],
+  });
+  assert.equal(duplicateWinnerAcrossPrizes.status, 400);
+  assert.match((await duplicateWinnerAcrossPrizes.json()).error, /重复出现/);
+
   const invalidSourceCounts = await saveDraw({
     source: 'manual',
     statusUrl: 'https://weibo.com/123456/InvalidSourceCounts',
@@ -1308,7 +1591,7 @@ try {
   const firstLinkedPayload = {
     source: 'mobile',
     statusUrl: 'https://weibo.com/123456/LinkedDraw',
-    drawnAt: '2026-08-26T02:00:00.000Z',
+    drawnAt: recentDrawnAt(),
     audit: { seed: 'linked-seed-1', candidateDigest: 'candidate-list-v1' },
     results: [{ prize: { name: '一等奖', count: 1 }, winners: [{ uid: 'linked-1', screenName: '甲' }] }],
   };
@@ -1508,8 +1791,56 @@ try {
     assert.ok(child.exitCode === 0 || child.signalCode === signal);
   };
   await stopServer(server);
+  const corruptCookieBackupsBeforeMigration = (await readdir(authDir))
+    .filter((name) => name.startsWith('weibo-cookie.json.corrupt-'))
+    .length;
+  const legacyCookie = 'SUB=legacy-release-cookie; SUBP=legacy-release-cookie';
+  await writeFile(cookieStoreFile, JSON.stringify({
+    cookie: legacyCookie,
+    savedAt: '2026-09-01T00:00:00.000Z',
+  }), 'utf8');
   server = spawnServer();
   await waitForServer();
+  await writeFile(cookieMigrationArmFile, 'armed', 'utf8');
+  const migratedCookieStatusPromise = fetch(`${baseUrl}/api/weibo/cookie-status`, {
+    headers: { 'x-api-key': apiKey },
+  });
+  await waitForFile(cookieMigrationReadyFile);
+  const concurrentCookie = 'SUB=concurrent-release-cookie; SUBP=concurrent-release-cookie';
+  await writeFile(cookieStoreFile, JSON.stringify({
+    version: 2,
+    updatedAt: '2026-09-07T00:00:00.000Z',
+    activeId: 'concurrent-cookie',
+    cookies: [{
+      id: 'concurrent-cookie',
+      cookie: concurrentCookie,
+      savedAt: '2026-09-07T00:00:00.000Z',
+    }],
+  }), 'utf8');
+  await writeFile(cookieMigrationReleaseFile, 'released', 'utf8');
+  const migratedCookieStatus = await within(
+    migratedCookieStatusPromise,
+    5000,
+    '旧 Cookie 迁移与并发更新发生死锁',
+  );
+  assert.equal(migratedCookieStatus.status, 200);
+  assert.equal((await migratedCookieStatus.json()).cookieCount, 1);
+  const migratedCookieStore = JSON.parse(await readFile(cookieStoreFile, 'utf8'));
+  assert.equal(migratedCookieStore.version, 2);
+  assert.equal(migratedCookieStore.cookie, undefined);
+  assert.equal(migratedCookieStore.cookies.length, 1);
+  assert.equal(migratedCookieStore.cookies[0].cookie, concurrentCookie);
+  assert.equal(migratedCookieStore.cookies[0].savedAt, '2026-09-07T00:00:00.000Z');
+  assert.ok(!migratedCookieStore.cookies.some((entry) => entry.cookie === legacyCookie));
+  const rereadCookieStatus = await fetch(`${baseUrl}/api/weibo/cookie-status`, {
+    headers: { 'x-api-key': apiKey },
+  });
+  assert.equal(rereadCookieStatus.status, 200);
+  assert.equal((await rereadCookieStatus.json()).cookieCount, 1);
+  assert.equal(
+    (await readdir(authDir)).filter((name) => name.startsWith('weibo-cookie.json.corrupt-')).length,
+    corruptCookieBackupsBeforeMigration,
+  );
   const staleSessionAfterRestart = await fetch(`${baseUrl}/api/admin/session`, {
     headers: { cookie: preRestartLoginCookie },
   });

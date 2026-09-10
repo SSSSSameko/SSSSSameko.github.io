@@ -4,9 +4,11 @@ import test from 'node:test';
 import {
   acquireDrawGuard,
   acquireDrawTabLock,
+  clearDrawCooldownStorage,
   completeDrawGuard,
   drawCooldownScope,
   drawCooldownStatus,
+  DRAW_COOLDOWN_KEY,
   DRAW_COOLDOWN_MS,
   releaseDrawGuard,
 } from './drawCooldown.js';
@@ -67,6 +69,54 @@ test('a different link can draw while another link is cooling down', () => {
   const first = acquireDrawGuard(storage, 'weibo:123', 1_000);
   completeDrawGuard(storage, 'weibo:123', first.token, 2_000);
   assert.equal(acquireDrawGuard(storage, 'weibo:456', 2_100).ok, true);
+});
+
+test('cooldown cleanup removes persistent and in-page draw guards', () => {
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
+  };
+  const scope = 'weibo:clear-guard';
+  assert.equal(acquireDrawGuard(storage, scope, 10_000).ok, true);
+
+  assert.deepEqual(clearDrawCooldownStorage(storage), { ok: true, reason: '' });
+  assert.equal(values.has(DRAW_COOLDOWN_KEY), false);
+  assert.equal(drawCooldownStatus(storage, scope, 10_100).blocked, false);
+  assert.equal(acquireDrawGuard(storage, scope, 10_100).ok, true);
+});
+
+test('suppression-only records cannot evict an active running guard', () => {
+  const now = 200_000;
+  const values = new Map();
+  const storage = {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, String(value)),
+  };
+  const records = Object.fromEntries([
+    ['weibo:active-old', {
+      state: 'running',
+      token: 'active-token',
+      startedAt: now - 120_000,
+      expiresAt: now + 60_000,
+    }],
+    ...Array.from({ length: 50 }, (_, index) => [`weibo:suppressed-${index}`, {
+      state: 'completed',
+      token: `suppressed-token-${index}`,
+      completedAt: now - DRAW_COOLDOWN_MS - 1_000 + index,
+      suppressUntil: now + 120_000 + index,
+    }]),
+  ]);
+  values.set('weibo-draw-cooldowns-v1', JSON.stringify(records));
+
+  const newest = acquireDrawGuard(storage, 'weibo:new-active', now);
+  const persisted = JSON.parse(values.get('weibo-draw-cooldowns-v1'));
+
+  assert.equal(newest.ok, true);
+  assert.equal(drawCooldownStatus(storage, 'weibo:active-old', now + 1_000).reason, 'running');
+  assert.equal(persisted['weibo:active-old'].token, 'active-token');
+  assert.equal(Object.keys(persisted).length, 50);
 });
 
 test('the browser lock closes the simultaneous-tab race for one link', async () => {

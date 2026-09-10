@@ -9,9 +9,9 @@ import {
 } from './storageRetention.js';
 
 const files = [
-  { file: 'newest.json', size: 40 },
-  { file: 'middle.json', size: 35 },
-  { file: 'oldest.json', size: 30 },
+  { file: 'newest.json', size: 40, mtimeMs: 30 },
+  { file: 'middle.json', size: 35, mtimeMs: 20 },
+  { file: 'oldest.json', size: 30, mtimeMs: 10 },
 ];
 
 test('selectFilesToPrune removes oldest files beyond the count limit', () => {
@@ -46,6 +46,34 @@ test('selectFilesToPrune removes oldest files until the byte budget is met', () 
   const result = selectFilesToPrune(files, { maxFiles: 10, maxBytes: 70 });
   assert.deepEqual(result.removals.map((item) => item.file), ['oldest.json', 'middle.json']);
   assert.equal(result.retainedBytes, 40);
+});
+
+test('selectFilesToPrune always retains the newest file even when the byte budget is too small', () => {
+  const result = selectFilesToPrune(files, { maxFiles: 10, maxBytes: 1 });
+  assert.deepEqual(result.removals.map((item) => item.file), ['oldest.json', 'middle.json']);
+  assert.equal(result.retainedBytes, 40);
+});
+
+test('selectFilesToPrune enforces count and byte limits together', () => {
+  const result = selectFilesToPrune([
+    { file: 'newest.json', size: 80, mtimeMs: 30 },
+    { file: 'middle.json', size: 80, mtimeMs: 20 },
+    { file: 'oldest.json', size: 1, mtimeMs: 10 },
+  ], { maxFiles: 2, maxBytes: 100 });
+
+  assert.deepEqual(result.removals.map((item) => item.file), ['oldest.json', 'middle.json']);
+  assert.equal(result.retainedBytes, 80);
+});
+
+test('selectFilesToPrune sorts unsorted input before applying retention limits', () => {
+  const result = selectFilesToPrune([
+    { file: 'oldest.json', size: 30, mtimeMs: 10 },
+    { file: 'newest.json', size: 40, mtimeMs: 30 },
+    { file: 'middle.json', size: 35, mtimeMs: 20 },
+  ], { maxFiles: 2, maxBytes: 1000 });
+
+  assert.deepEqual(result.removals.map((item) => item.file), ['oldest.json']);
+  assert.equal(result.retainedBytes, 75);
 });
 
 test('selectFilesToPrune removes files beyond the retention period', () => {

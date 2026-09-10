@@ -1,11 +1,24 @@
 import { buildFilterSummary, DRAW_RANDOM_ALGORITHM, safeWeiboUrl } from './appCore.js';
 
 export const DRAW_HISTORY_KEY = 'weibo-draw-history-v2';
+const LEGACY_DRAW_HISTORY_KEY = 'weibo-lottery-history';
+export const DRAW_HISTORY_MIGRATION_KEY = `${DRAW_HISTORY_KEY}-legacy-migrated`;
+const CORRUPT_DRAW_HISTORY_KEY = `${DRAW_HISTORY_KEY}.corrupt`;
+const CORRUPT_LEGACY_DRAW_HISTORY_KEY = `${LEGACY_DRAW_HISTORY_KEY}.corrupt`;
 export const DRAW_HISTORY_LIMIT = 50;
-const DRAW_HISTORY_MAX_BYTES = 1_500_000;
+export const DRAW_HISTORY_LOCK_NAME = 'sameko-weibo-draw-history';
+const DRAW_HISTORY_WRITE_MAX_BYTES = 1_500_000;
+const DRAW_HISTORY_READ_MAX_BYTES = 4_000_000;
 export const DRAW_HISTORY_VERSION = 2;
 const DRAW_HISTORY_BACKUP_KIND = 'sameko-weibo-draw-history';
 const DRAW_HISTORY_BACKUP_VERSION = 1;
+const DRAW_HISTORY_STORAGE_KEYS = [
+  DRAW_HISTORY_KEY,
+  LEGACY_DRAW_HISTORY_KEY,
+  CORRUPT_DRAW_HISTORY_KEY,
+  CORRUPT_LEGACY_DRAW_HISTORY_KEY,
+  DRAW_HISTORY_MIGRATION_KEY,
+];
 
 function finiteNonNegative(value, fallback = 0) {
   const number = Number(value);
@@ -38,6 +51,53 @@ function utf8ByteLength(value) {
   return text.length;
 }
 
+function readStorageValue(storage, key) {
+  if (typeof storage?.getItem !== 'function') return { ok: false, value: null };
+  try {
+    return { ok: true, value: storage.getItem(key) };
+  } catch {
+    return { ok: false, value: null };
+  }
+}
+
+function setStorageValueVerified(storage, key, value) {
+  const before = readStorageValue(storage, key);
+  if (before.ok && before.value === value) return true;
+  if (typeof storage?.setItem !== 'function') return false;
+  try {
+    storage.setItem(key, value);
+  } catch {
+    return false;
+  }
+  const after = readStorageValue(storage, key);
+  return after.ok && after.value === value;
+}
+
+function isReplaceableCurrentHistory(raw) {
+  if (!raw) return true;
+  if (utf8ByteLength(raw) > DRAW_HISTORY_READ_MAX_BYTES) return false;
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) return true;
+    if (parsed && typeof parsed === 'object' && Array.isArray(parsed.items)) return true;
+    return parsed === null
+      || (parsed && typeof parsed === 'object' && Object.keys(parsed).length === 0);
+  } catch {
+    return false;
+  }
+}
+
+function drawHistoryWritePreflight(storage) {
+  const current = readStorageValue(storage, DRAW_HISTORY_KEY);
+  if (!current.ok) return { ok: false, reason: 'unavailable' };
+  if (isReplaceableCurrentHistory(current.value)) return { ok: true, reason: '' };
+  const backup = readStorageValue(storage, CORRUPT_DRAW_HISTORY_KEY);
+  if (!backup.ok) return { ok: false, reason: 'unavailable' };
+  return backup.value === current.value
+    ? { ok: true, reason: '' }
+    : { ok: false, reason: 'recovery' };
+}
+
 function normalizeWinner(winner = {}) {
   return {
     id: boundedText(winner.id || winner.repostId || winner.uid || winner.screenName, 160),
@@ -45,6 +105,75 @@ function normalizeWinner(winner = {}) {
     screenName: boundedText(winner.screenName || winner.name, 240),
     avatar: boundedText(winner.avatar, 2048),
     source: boundedText(winner.source, 80),
+  };
+}
+
+function normalizeParticipantList(values, role = 'participant') {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map((value, index) => {
+      if (value && typeof value === 'object' && !Array.isArray(value)) {
+        return normalizeWinner({ ...value, source: value.source || 'legacy' });
+      }
+      return normalizeWinner({
+        id: `legacy-${role}-${index + 1}`,
+        screenName: value,
+        source: 'legacy',
+      });
+    })
+    .filter((value) => value.screenName || value.uid || value.id);
+}
+
+function isLegacyDrawReceipt(input) {
+  return Boolean(
+    input
+    && typeof input === 'object'
+    && !Array.isArray(input)
+    && !Array.isArray(input.results)
+    && (Array.isArray(input.winners) || Array.isArray(input.backups)),
+  );
+}
+
+function legacyDrawReceiptInput(input) {
+  const audit = input.audit && typeof input.audit === 'object' ? input.audit : {};
+  const winners = normalizeParticipantList(input.winners, 'winner');
+  const backups = normalizeParticipantList(input.backups, 'backup');
+  const total = finiteNonNegative(input.total ?? audit.total);
+  const drawnAt = String(input.drawnAt || input.time || audit.drawnAt || audit.time || '');
+  const auditHash = String(input.auditHash || input.hash || audit.auditHash || audit.hash || '');
+  const sourceMeta = input.sourceMeta && typeof input.sourceMeta === 'object'
+    ? input.sourceMeta
+    : {};
+  return {
+    ...input,
+    id: String(input.id || auditHash || localReceiptId(input, drawnAt, receiptSummary([{
+      prize: { name: '中奖用户' },
+      winners,
+    }]))),
+    source: input.source || 'manual',
+    drawnAt,
+    time: input.time || drawnAt,
+    seed: input.seed || audit.seed || '',
+    auditHash,
+    candidateCount: input.candidateCount ?? input.totalCount ?? total,
+    eligibleCount: input.eligibleCount ?? total,
+    results: [{
+      prize: {
+        name: String(input.prizeName || '中奖用户'),
+        count: winners.length,
+        color: '',
+      },
+      winners,
+    }],
+    backups,
+    sourceMeta: {
+      ...sourceMeta,
+      legacyFormat: 'weibo-lottery-history',
+      legacyCountsIncomplete: input.candidateCount == null && input.totalCount == null,
+    },
+    recordState: input.recordState === 'practice'
+      ? 'practice'
+      : input.recordState === 'server' ? 'server' : 'local',
   };
 }
 
@@ -201,56 +330,67 @@ export function nextManualDrawNumber(history, excludeId = '') {
 }
 
 export function normalizeDrawReceipt(input = {}) {
-  const audit = input.audit && typeof input.audit === 'object' ? input.audit : {};
-  const results = normalizeResults(input.results);
-  const candidateCount = finiteNonNegative(input.candidateCount ?? input.totalCount);
-  const eligibleCount = finiteNonNegative(input.eligibleCount ?? audit.eligibleCount);
-  const parsedDrawNumber = Number(input.drawNumber);
-  const drawNumber = input.drawNumber === null
-    || input.drawNumber === undefined
+  const source = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
+  const legacyFormat = isLegacyDrawReceipt(source);
+  const receiptInput = legacyFormat ? legacyDrawReceiptInput(source) : source;
+  const audit = receiptInput.audit && typeof receiptInput.audit === 'object' ? receiptInput.audit : {};
+  const results = normalizeResults(receiptInput.results);
+  const backups = normalizeParticipantList(receiptInput.backups, 'backup');
+  const candidateCount = finiteNonNegative(receiptInput.candidateCount ?? receiptInput.totalCount);
+  const eligibleCount = finiteNonNegative(receiptInput.eligibleCount ?? audit.eligibleCount);
+  const parsedDrawNumber = Number(receiptInput.drawNumber);
+  const drawNumber = receiptInput.drawNumber === null
+    || receiptInput.drawNumber === undefined
     || !Number.isSafeInteger(parsedDrawNumber)
     || parsedDrawNumber < 1
     ? null
     : parsedDrawNumber;
-  const drawnAt = String(input.drawnAt || audit.drawnAt || input.time || '');
-  const summary = String(input.summary || receiptSummary(results));
-  const auditHash = String(input.auditHash || '');
+  const drawnAt = String(receiptInput.drawnAt || audit.drawnAt || receiptInput.time || '');
+  const summary = String(receiptInput.summary || receiptSummary(results));
+  const auditHash = String(receiptInput.auditHash || '');
   const winnerCount = results.reduce((sum, group) => sum + group.winners.length, 0);
+  const sourceMeta = receiptInput.sourceMeta && typeof receiptInput.sourceMeta === 'object'
+    ? receiptInput.sourceMeta
+    : {};
+  const recordState = receiptInput.recordState === 'practice'
+    ? 'practice'
+    : receiptInput.recordState === 'server'
+      ? 'server'
+      : legacyFormat
+        ? 'local'
+        : auditHash
+          ? 'server'
+          : 'local';
 
   return {
-    id: String(input.id || auditHash || localReceiptId(input, drawnAt, summary)),
-    source: String(input.source || 'manual'),
-    statusId: String(input.statusId || audit.statusId || input.sourceMeta?.statusId || ''),
-    statusUrl: safeWeiboUrl(input.statusUrl || audit.statusUrl || input.sourceMeta?.statusUrl),
+    id: String(receiptInput.id || auditHash || localReceiptId(receiptInput, drawnAt, summary)),
+    source: String(receiptInput.source || 'manual'),
+    statusId: String(receiptInput.statusId || audit.statusId || sourceMeta.statusId || ''),
+    statusUrl: safeWeiboUrl(receiptInput.statusUrl || audit.statusUrl || sourceMeta.statusUrl),
     drawNumber,
     drawnAt,
-    savedAt: String(input.savedAt || ''),
-    time: String(input.time || drawnAt),
+    savedAt: String(receiptInput.savedAt || ''),
+    time: String(receiptInput.time || drawnAt),
     results,
+    backups,
     total: winnerCount,
     summary,
     candidateCount,
     eligibleCount,
     excludedCount: finiteNonNegative(
-      input.excludedCount,
+      receiptInput.excludedCount,
       Math.max(0, candidateCount - eligibleCount),
     ),
-    rules: input.rules && typeof input.rules === 'object'
-      ? input.rules
+    rules: receiptInput.rules && typeof receiptInput.rules === 'object'
+      ? receiptInput.rules
       : audit.rules && typeof audit.rules === 'object'
         ? audit.rules
         : null,
-    sourceMeta: input.sourceMeta && typeof input.sourceMeta === 'object'
-      ? input.sourceMeta
-      : {},
-    seed: String(input.seed || audit.seed || ''),
-    candidateDigest: String(input.candidateDigest || audit.candidateDigest || ''),
+    sourceMeta,
+    seed: String(receiptInput.seed || audit.seed || ''),
+    candidateDigest: String(receiptInput.candidateDigest || audit.candidateDigest || ''),
     auditHash,
-    recordState: input.recordState === 'practice'
-      ? 'practice'
-      : input.recordState === 'server' || auditHash
-        ? 'server'
-        : 'local',
+    recordState,
   };
 }
 
@@ -267,18 +407,168 @@ export function upsertDrawReceipt(history, receipt) {
     .slice(0, DRAW_HISTORY_LIMIT);
 }
 
-export function readDrawHistory(storage = globalThis.localStorage) {
-  try {
-    const parsed = JSON.parse(storage?.getItem(DRAW_HISTORY_KEY) || '[]');
-    const items = Array.isArray(parsed)
-      ? parsed
-      : parsed?.version === DRAW_HISTORY_VERSION && Array.isArray(parsed.items)
-        ? parsed.items
-        : [];
-    return items.map(normalizeDrawReceipt).slice(0, DRAW_HISTORY_LIMIT);
-  } catch {
-    return [];
+export function readDrawHistoryState(storage = globalThis.localStorage) {
+  const finish = (
+    items,
+    recoveryProtected = false,
+    safeToPersist = !recoveryProtected,
+    reason = '',
+  ) => ({ items, recoveryProtected, safeToPersist, reason });
+  const normalizeHistoryItems = (items) => (Array.isArray(items) ? items : [])
+    .filter((item) => item && typeof item === 'object' && !Array.isArray(item))
+    .map(normalizeDrawReceipt)
+    .sort((left, right) => compareRecordTime(right, left))
+    .slice(0, DRAW_HISTORY_LIMIT);
+
+  const currentState = readStorageValue(storage, DRAW_HISTORY_KEY);
+  if (!currentState.ok) return finish([], true, false, 'unavailable');
+  const migrationState = readStorageValue(storage, DRAW_HISTORY_MIGRATION_KEY);
+  if (!migrationState.ok) return finish([], true, false, 'unavailable');
+  const currentRaw = currentState.value;
+  const migrationMarked = migrationState.value === '1';
+  let recoveryProtected = false;
+  let recoveryReason = '';
+  if (currentRaw) {
+    if (utf8ByteLength(currentRaw) > DRAW_HISTORY_READ_MAX_BYTES) {
+      setStorageValueVerified(
+        storage,
+        CORRUPT_DRAW_HISTORY_KEY,
+        currentRaw,
+      );
+      return finish([], true, false, 'oversized-current');
+    } else {
+      let parsed = null;
+      let parseFailed = false;
+      try {
+        parsed = JSON.parse(currentRaw);
+      } catch {
+        parseFailed = true;
+      }
+      if (!parseFailed) {
+        if (Array.isArray(parsed)) {
+          const normalized = normalizeHistoryItems(parsed);
+          if (normalized.length || migrationMarked) return finish(normalized);
+        }
+        if (parsed && typeof parsed === 'object' && Array.isArray(parsed.items)) {
+          const normalized = normalizeHistoryItems(parsed.items);
+          if (normalized.length || migrationMarked) return finish(normalized);
+        }
+        if (parsed === null
+          || (parsed && typeof parsed === 'object' && Object.keys(parsed).length === 0)) {
+          // A valid but empty wrapper is not corruption; keep looking for legacy data.
+        } else {
+          recoveryProtected = !setStorageValueVerified(storage, CORRUPT_DRAW_HISTORY_KEY, currentRaw);
+          recoveryReason = recoveryProtected ? 'corrupt-current' : '';
+        }
+      } else {
+        // The current payload is unusable; preserve it and attempt legacy migration.
+        recoveryProtected = !setStorageValueVerified(storage, CORRUPT_DRAW_HISTORY_KEY, currentRaw);
+        recoveryReason = recoveryProtected ? 'corrupt-current' : '';
+      }
+    }
   }
+
+  const legacyState = readStorageValue(storage, LEGACY_DRAW_HISTORY_KEY);
+  if (!legacyState.ok) return finish([], true, false, recoveryReason || 'unavailable');
+  const legacyRaw = legacyState.value;
+  if (migrationMarked || !legacyRaw) {
+    return finish([], recoveryProtected, !recoveryProtected, recoveryReason);
+  }
+  if (utf8ByteLength(legacyRaw) > DRAW_HISTORY_READ_MAX_BYTES) {
+    const legacyRecoveryProtected = !setStorageValueVerified(
+      storage,
+      CORRUPT_LEGACY_DRAW_HISTORY_KEY,
+      legacyRaw,
+    );
+    const blocked = recoveryProtected || legacyRecoveryProtected;
+    return finish(
+      [],
+      blocked,
+      !blocked,
+      recoveryReason || (legacyRecoveryProtected ? 'oversized-legacy' : ''),
+    );
+  }
+  try {
+    const parsed = JSON.parse(legacyRaw);
+    if (!Array.isArray(parsed)
+      && !(parsed && typeof parsed === 'object' && Array.isArray(parsed.items))) {
+      const legacyRecoveryProtected = !setStorageValueVerified(
+        storage,
+        CORRUPT_LEGACY_DRAW_HISTORY_KEY,
+        legacyRaw,
+      );
+      const blocked = recoveryProtected || legacyRecoveryProtected;
+      return finish(
+        [],
+        blocked,
+        !blocked,
+        recoveryReason || (legacyRecoveryProtected ? 'invalid-legacy' : ''),
+      );
+    }
+    const items = Array.isArray(parsed) ? parsed : parsed.items;
+    const normalized = normalizeHistoryItems(items);
+    if (!recoveryProtected) {
+      const migrated = setStorageValueVerified(
+        storage,
+        DRAW_HISTORY_KEY,
+        JSON.stringify({ version: DRAW_HISTORY_VERSION, items: normalized }),
+      );
+      if (migrated) setStorageValueVerified(storage, DRAW_HISTORY_MIGRATION_KEY, '1');
+      else return finish(normalized, false, false, 'migration-write');
+    }
+    return finish(normalized, recoveryProtected, !recoveryProtected, recoveryReason);
+  } catch {
+    const legacyRecoveryProtected = !setStorageValueVerified(
+      storage,
+      CORRUPT_LEGACY_DRAW_HISTORY_KEY,
+      legacyRaw,
+    );
+    const blocked = recoveryProtected || legacyRecoveryProtected;
+    return finish(
+      [],
+      blocked,
+      !blocked,
+      recoveryReason || (legacyRecoveryProtected ? 'corrupt-legacy' : ''),
+    );
+  }
+}
+
+export function readDrawHistory(storage = globalThis.localStorage) {
+  return readDrawHistoryState(storage).items;
+}
+
+export async function withDrawHistoryLock(task, locks = globalThis.navigator?.locks) {
+  if (typeof task !== 'function') throw new TypeError('开奖记录事务必须提供回调函数');
+  if (typeof locks?.request !== 'function') return await task(null);
+  return await locks.request(
+    DRAW_HISTORY_LOCK_NAME,
+    { mode: 'exclusive' },
+    async (lock) => await task(lock),
+  );
+}
+
+export async function mutateDrawHistory(
+  storage = globalThis.localStorage,
+  updater,
+  locks = globalThis.navigator?.locks,
+) {
+  if (typeof updater !== 'function') throw new TypeError('开奖记录更新必须提供回调函数');
+  return await withDrawHistoryLock(async () => {
+    const current = readDrawHistoryState(storage);
+    if (!current.safeToPersist) {
+      return {
+        ok: false,
+        items: current.items,
+        stored: 0,
+        dropped: 0,
+        bytes: 0,
+        reason: current.reason || 'recovery',
+        attempts: 0,
+        recoveryProtected: current.recoveryProtected,
+      };
+    }
+    return writeDrawHistory(storage, await updater(current.items));
+  }, locks);
 }
 
 export function writeDrawHistory(storage = globalThis.localStorage, history = [], options = {}) {
@@ -289,7 +579,7 @@ export function writeDrawHistory(storage = globalThis.localStorage, history = []
     version: DRAW_HISTORY_VERSION,
     items,
   });
-  const maxBytes = positiveLimit(options.maxBytes, DRAW_HISTORY_MAX_BYTES);
+  const maxBytes = positiveLimit(options.maxBytes, DRAW_HISTORY_WRITE_MAX_BYTES);
   let items = normalized;
   let serialized;
   try {
@@ -309,6 +599,32 @@ export function writeDrawHistory(storage = globalThis.localStorage, history = []
   while (items.length > 1 && utf8ByteLength(serialized) > maxBytes) {
     items = items.slice(0, -1);
     serialized = serialize(items);
+  }
+
+  const serializedBytes = utf8ByteLength(serialized);
+  if (serializedBytes > maxBytes) {
+    return {
+      ok: false,
+      items,
+      stored: 0,
+      dropped: normalized.length - items.length,
+      bytes: serializedBytes,
+      reason: 'size',
+      attempts: 0,
+    };
+  }
+
+  const preflight = drawHistoryWritePreflight(storage);
+  if (!preflight.ok) {
+    return {
+      ok: false,
+      items,
+      stored: 0,
+      dropped: normalized.length - items.length,
+      bytes: serializedBytes,
+      reason: preflight.reason,
+      attempts: 0,
+    };
   }
 
   const tryStore = () => {
@@ -342,6 +658,8 @@ export function writeDrawHistory(storage = globalThis.localStorage, history = []
     attempts += 1;
   }
 
+  if (attempt.ok) setStorageValueVerified(storage, DRAW_HISTORY_MIGRATION_KEY, '1');
+
   return {
     ok: attempt.ok,
     items,
@@ -351,6 +669,25 @@ export function writeDrawHistory(storage = globalThis.localStorage, history = []
     reason: attempt.reason,
     attempts,
   };
+}
+
+export function clearDrawHistoryStorage(storage = globalThis.localStorage) {
+  if (typeof storage?.removeItem !== 'function' || typeof storage?.getItem !== 'function') {
+    return { ok: false, reason: 'unavailable', remaining: [...DRAW_HISTORY_STORAGE_KEYS] };
+  }
+  const failed = [];
+  for (const key of DRAW_HISTORY_STORAGE_KEYS) {
+    try {
+      storage.removeItem(key);
+      if (storage.getItem(key) !== null) failed.push(key);
+    } catch {
+      failed.push(key);
+    }
+  }
+  if (failed.length) {
+    return { ok: false, reason: 'unavailable', remaining: [...new Set(failed)] };
+  }
+  return { ok: true, reason: '', remaining: [] };
 }
 
 export function serializeDrawHistoryBackup(history, createdAt = new Date().toISOString(), options = {}) {
@@ -429,9 +766,13 @@ export function buildFairnessSummary(receiptInput) {
     }));
   }
   if (receipt.drawnAt) lines.push(`时间：${receipt.drawnAt}`);
-  lines.push(
-    `载入 ${receipt.candidateCount} 人 · 可抽 ${receipt.eligibleCount} 人 · 排除 ${receipt.excludedCount} 人`,
-  );
+  if (receipt.sourceMeta?.legacyCountsIncomplete) {
+    lines.push(`可抽 ${receipt.eligibleCount} 人 · 旧版记录未保存候选总数`);
+  } else {
+    lines.push(
+      `载入 ${receipt.candidateCount} 人 · 可抽 ${receipt.eligibleCount} 人 · 排除 ${receipt.excludedCount} 人`,
+    );
+  }
   lines.push(`筛选规则：${
     receipt.rules?.filters
       ? buildFilterSummary(receipt.rules.filters)
@@ -446,17 +787,24 @@ export function buildFairnessSummary(receiptInput) {
 
 export function receiptWinnerRows(receiptInput) {
   const receipt = normalizeDrawReceipt(receiptInput);
-  return receipt.results.flatMap((group) => group.winners.map((winner, index) => ({
+  const winnerRows = receipt.results.flatMap((group) => group.winners.map((winner, index) => ({
     prize: group.prize.name,
     rank: index + 1,
     uid: winner.uid,
     screenName: winner.screenName,
   })));
+  const backupRows = receipt.backups.map((winner, index) => ({
+    prize: '候补',
+    rank: index + 1,
+    uid: winner.uid,
+    screenName: winner.screenName,
+  }));
+  return [...winnerRows, ...backupRows];
 }
 
 export function receiptWinnerText(receiptInput) {
   const receipt = normalizeDrawReceipt(receiptInput);
-  return receipt.results
+  const winnerText = receipt.results
     .filter((group) => group.winners.length)
     .map((group) => {
       const names = group.winners.map((winner, index) => {
@@ -467,6 +815,14 @@ export function receiptWinnerText(receiptInput) {
       return `${group.prize.name}\n${names.join('\n')}`;
     })
     .join('\n\n');
+  const backupText = receipt.backups.length
+    ? `候补\n${receipt.backups.map((winner, index) => {
+      const name = winner.screenName || winner.uid || `候补用户 ${index + 1}`;
+      const uid = winner.uid && winner.uid !== name ? `（UID ${winner.uid}）` : '';
+      return `${index + 1}. ${name}${uid}`;
+    }).join('\n')}`
+    : '';
+  return [winnerText, backupText].filter(Boolean).join('\n\n');
 }
 
 export function winnerIdsForStatus(history, statusId) {

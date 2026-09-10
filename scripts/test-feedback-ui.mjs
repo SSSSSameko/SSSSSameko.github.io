@@ -19,16 +19,18 @@ try {
   });
 
   await gotoUiPage(page, baseUrl);
-  await page.getByRole('button', { name: '更多', exact: true }).click();
-  assert.equal(await page.getByText('版本 3.2.0 · by.sameko', { exact: true }).first().isVisible(), true);
+  await page.getByRole('tab', { name: '更多', exact: true }).click();
+  assert.equal(await page.getByText('版本 3.4.0 · by.sameko', { exact: true }).first().isVisible(), true);
   await page.locator('.app-summary').click();
   await page.getByRole('dialog', { name: '关于此应用' }).getByRole('button', { name: /更新日志/ }).click();
   const updates = page.getByRole('dialog', { name: '更新日志' });
   await updates.waitFor({ state: 'visible' });
-  assert.equal(await updates.getByText('更新日期：2026 年 8 月 25 日', { exact: true }).isVisible(), true);
-  assert.equal(await updates.getByText('版本 3.2.0', { exact: true }).isVisible(), true);
-  assert.equal(await updates.getByText('版本 0.0.1', { exact: true }).isVisible(), true);
-  assert.equal(await updates.getByText('增加开奖前确认', { exact: true }).isVisible(), true);
+    assert.equal(await updates.getByText('更新日期：2026 年 9 月 10 日', { exact: true }).isVisible(), true);
+    assert.equal(await updates.getByText('版本 3.4.0', { exact: true }).isVisible(), true);
+    assert.equal(await updates.getByText('版本 0.0.1', { exact: true }).count(), 0);
+    await updates.getByRole('button', { name: /查看历史版本/ }).click();
+    assert.equal(await updates.getByText('版本 0.0.1', { exact: true }).isVisible(), true);
+    assert.equal(await updates.getByText('增加开奖前确认', { exact: true }).isVisible(), true);
   await updates.getByRole('button', { name: '关闭更新日志' }).click();
   await page.getByRole('button', { name: /意见反馈/ }).click();
   const dialog = page.getByRole('dialog', { name: '意见反馈' });

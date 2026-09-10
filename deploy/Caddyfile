@@ -17,5 +17,14 @@ https://draw.example.com {
 		-Server
 		Strict-Transport-Security "max-age=31536000"
 	}
+	# 可选：只允许指定来源访问只读登录态接口（启用前先替换为真实来源 IP）。
+	# @cookie path /v1/cookie/current
+	# handle @cookie {
+	# 	@trusted remote_ip 203.0.113.10
+	# 	handle @trusted {
+	# 		reverse_proxy 127.0.0.1:4173
+	# 	}
+	# 	respond 403
+	# }
 	reverse_proxy 127.0.0.1:4173
 }

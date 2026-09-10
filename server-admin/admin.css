@@ -9,7 +9,6 @@
   --faint: #6d727e;
   --line: rgba(31, 31, 38, .1);
   --glass: rgba(250, 252, 255, .76);
-  --glass-strong: rgba(255, 255, 255, .92);
   --violet: #7667ed;
   --violet-deep: #6254d9;
   --mint: #26a995;
@@ -51,8 +50,9 @@ button {
 button:focus-visible,
 input:focus-visible,
 a:focus-visible {
-  outline: 3px solid rgba(91, 93, 222, .25);
+  outline: 3px solid #5b5dde;
   outline-offset: 2px;
+  box-shadow: 0 0 0 6px rgba(91, 93, 222, .18);
 }
 
 button:active:not(:disabled) {
@@ -182,8 +182,8 @@ button:active:not(:disabled) {
 
 .icon-button {
   display: grid;
-  width: 40px;
-  height: 40px;
+  width: 44px;
+  height: 44px;
   place-items: center;
   border: 1px solid rgba(90, 96, 126, .1);
   border-radius: 12px;
@@ -203,7 +203,7 @@ button:active:not(:disabled) {
 }
 
 .text-button {
-  min-height: 40px;
+  min-height: 44px;
   padding: 0 12px;
   border-radius: 12px;
   color: var(--muted);
@@ -439,7 +439,7 @@ button:active:not(:disabled) {
 .ghost-button,
 .list-toggle-button {
   display: inline-flex;
-  min-height: 42px;
+  min-height: 44px;
   align-items: center;
   justify-content: center;
   gap: 8px;
@@ -531,7 +531,7 @@ button:disabled {
 
 .admin-alert-close {
   min-width: 44px;
-  min-height: 36px;
+  min-height: 44px;
   padding: 0 9px;
   border: 1px solid rgba(150, 67, 75, .14);
   border-radius: 10px;
@@ -561,7 +561,7 @@ button:disabled {
 .tab-button {
   position: relative;
   z-index: 1;
-  min-height: 38px;
+  min-height: 44px;
   border: 0;
   border-radius: 11px;
   color: var(--muted);
@@ -782,7 +782,7 @@ button:disabled {
 }
 
 .link-button {
-  min-height: 32px;
+  min-height: 44px;
   padding: 0 8px;
   border-radius: 9px;
   color: var(--violet-deep);
@@ -1020,7 +1020,7 @@ button:disabled {
 
 .feedback-toolbar button {
   min-width: 0;
-  min-height: 36px;
+  min-height: 44px;
   border: 1px solid transparent;
   border-radius: 10px;
   color: var(--muted);
@@ -1094,7 +1094,7 @@ button:disabled {
 }
 
 .feedback-actions button {
-  min-height: 28px;
+  min-height: 44px;
   border: 1px solid rgba(84, 90, 121, .1);
   border-radius: 8px;
   padding: 0 9px;
@@ -1181,7 +1181,7 @@ button:disabled {
 }
 
 .list-toggle-button {
-  min-height: 32px;
+  min-height: 44px;
   padding: 0 11px;
   font-size: 11px;
 }
@@ -1195,7 +1195,7 @@ button:disabled {
 .search-field {
   display: flex;
   width: min(320px, 42vw);
-  min-height: 42px;
+  min-height: 44px;
   align-items: center;
   gap: 9px;
   padding: 0 13px;
@@ -1355,8 +1355,8 @@ button:disabled {
 
 .detail-close {
   display: none;
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   place-items: center;
   border: 1px solid rgba(31, 31, 38, .08);
   border-radius: 11px;
@@ -1835,10 +1835,6 @@ button:disabled {
     font-size: 27px;
   }
 
-  .metric-value {
-    font-size: 24px;
-  }
-
   .health-pill {
     min-height: 34px;
     padding: 0 10px;
@@ -2063,6 +2059,18 @@ button:disabled {
   .metric-card,
   .confirm-dialog-card {
     background: #fff;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .records-panel-head,
+  .detail-panel-head {
+    background: #fff;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  body.record-detail-open::before {
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }

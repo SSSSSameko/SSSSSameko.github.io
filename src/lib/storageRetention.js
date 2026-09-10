@@ -15,21 +15,31 @@ export function selectNewestFiles(files, limit = 0) {
 }
 
 export function selectFilesToPrune(files, options = {}) {
-  const maxFiles = Math.max(1, Number(options.maxFiles || 1));
-  const maxBytes = Math.max(1, Number(options.maxBytes || 1));
+  const maxFiles = Math.max(1, Math.floor(Number(options.maxFiles || 1)));
+  const maxBytes = Math.max(1, Math.floor(Number(options.maxBytes || 1)));
   const maxAgeMs = Math.max(0, Number(options.maxAgeMs || 0));
   const now = Number(options.now || Date.now());
-  let retainedBytes = files.reduce((sum, item) => sum + Number(item.size || 0), 0);
+  const sorted = (Array.isArray(files) ? files : [])
+    .filter(Boolean)
+    .slice()
+    .sort(compareNewest);
+  let retainedCount = sorted.length;
+  let retainedBytes = sorted.reduce(
+    (sum, item) => sum + Math.max(0, Number(item.size || 0)),
+    0,
+  );
   const removals = [];
 
-  for (let index = files.length - 1; index >= 0; index -= 1) {
-    const item = files[index];
+  for (let index = sorted.length - 1; index >= 0; index -= 1) {
+    const item = sorted[index];
     const expired = maxAgeMs > 0
       && Number.isFinite(Number(item.mtimeMs))
       && Number(item.mtimeMs) < now - maxAgeMs;
-    if (!expired && index < maxFiles && retainedBytes <= maxBytes) continue;
+    if (!expired && index === 0) continue;
+    if (!expired && retainedCount <= maxFiles && retainedBytes <= maxBytes) continue;
     removals.push(item);
-    retainedBytes -= Number(item.size || 0);
+    retainedCount -= 1;
+    retainedBytes -= Math.max(0, Number(item.size || 0));
   }
   return { removals, retainedBytes };
 }

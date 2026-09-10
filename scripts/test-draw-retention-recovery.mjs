@@ -63,6 +63,7 @@ async function runScenario({ recoveryScanLimit, expectedFiles }) {
         HOST: '127.0.0.1',
         PORT: String(port),
         NODE_ENV: 'production',
+        ALLOW_PUBLIC_API: '1',
         WEIBO_KEEPALIVE_ENABLED: '0',
         MAX_SAVED_DRAWS: '20',
         DRAW_FILE_SCAN_MAX_ENTRIES: '100',
@@ -76,7 +77,13 @@ async function runScenario({ recoveryScanLimit, expectedFiles }) {
     child.stderr.on('data', (chunk) => output.push(chunk.toString()));
 
     await waitForHealth(`http://127.0.0.1:${port}/api/health`, child, output);
-    const remaining = (await readdir(drawsDir)).filter((name) => /^draw-.*\.json$/.test(name));
+    let remaining = [];
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      remaining = (await readdir(drawsDir)).filter((name) => /^draw-.*\.json$/.test(name));
+      if (remaining.length === expectedFiles) break;
+      await new Promise((resolve) => { setTimeout(resolve, 50); });
+    }
     assert.equal(
       remaining.length,
       expectedFiles,

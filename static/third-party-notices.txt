@@ -1,7 +1,8 @@
-# Third-Party Notices
+# Third-Party Notices for npm Packages Installed in This Release Environment
 
-Generated from the non-optional package versions in package-lock.json.
-Optional platform-specific build binaries are not distributed with the application output and are excluded.
+Generated from package-lock.json entries whose npm package directories are actually installed in the current release environment.
+Optional npm packages that declare an os/cpu platform restriction are build-time native binaries: they are not distributed with the application output and are excluded so this notice stays identical on Windows, macOS and Linux.
+Playwright-managed browser binaries are separate release artifacts. Deployment checks for accompanying license/copying files, but this npm notice is not by itself a complete browser-binary compliance determination.
 
 ## @oxc-project/types 0.139.0
 Declared license: MIT
@@ -119,7 +120,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## baseline-browser-mapping 2.10.32
+## baseline-browser-mapping 2.11.20
 Declared license: Apache-2.0
 
 ### LICENSE.txt
@@ -328,7 +329,7 @@ Apache License
    limitations under the License.
 ```
 
-## browserslist 4.28.2
+## browserslist 4.28.8
 Declared license: MIT
 
 ### LICENSE
@@ -356,7 +357,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## caniuse-lite 1.0.30001793
+## caniuse-lite 1.0.30001810
 Declared license: CC-BY-4.0
 
 ### LICENSE
@@ -968,7 +969,7 @@ Apache License
    limitations under the License.
 ```
 
-## electron-to-chromium 1.5.362
+## electron-to-chromium 1.5.420
 Declared license: ISC
 
 ### LICENSE
@@ -1517,7 +1518,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## node-releases 2.0.46
+## node-releases 2.0.54
 Declared license: MIT
 
 ### LICENSE
@@ -10084,7 +10085,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ```
 
-## update-browserslist-db 1.2.3
+## update-browserslist-db 1.3.2
 Declared license: MIT
 
 ### LICENSE
@@ -10092,7 +10093,7 @@ Declared license: MIT
 ```text
 The MIT License (MIT)
 
-Copyright 2022 Andrey Sitnik <andrey@sitnik.ru> and other contributors
+Copyright 2022 Andrey Sitnik <andrey@sitnik.es> and other contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of
 this software and associated documentation files (the "Software"), to deal in
