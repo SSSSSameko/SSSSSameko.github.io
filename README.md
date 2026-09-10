@@ -33,26 +33,24 @@ http://127.0.0.1:4173/
 
 前端可托管到 GitHub Pages，后端部署到服务器。公开前端通过 `static/config.js` 指向后端 API。
 
-公开部署前只需要在 `static/config.js` 填写两项：处理者署名和一条长期有效的联系邮箱。《个人信息保护法》第 17 条要求告知「名称或者姓名」，填真实姓名或个体、工作室名称最稳妥；只用于自己和熟人的小范围场景也可以填长期使用的署名——该法第 72 条对自然人因个人或者家庭事务处理个人信息有豁免空间，但一旦变成面向不特定公众的服务，豁免就不再适用。地址、托管服务商、机房区域、备份和跨境说明都是选填：留空时按程序的实际运行参数自动生成。本仓库默认按「GitHub Pages 静态前端 + 境内自建后端」撰写接收方与跨境说明，换成别的托管方式时需要覆盖。示例：
+公开部署前只需要在 `static/config.js` 填写两项：运营者署名和一条长期有效的联系邮箱。地址、托管服务商、机房区域和保存规则都是选填，留空时按程序的实际运行参数自动生成。本仓库默认按「GitHub Pages 静态前端 + 美国自建后端、适用怀俄明州法律」撰写接收方与管辖说明，换成别的托管方式或地区时需要覆盖。示例：
 
 ```js
 window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
-  operatorName: '张三',                   // 必填：真实姓名、个体名称或长期使用的署名
-  privacyContact: 'privacy@example.com',  // 必填：长期有效的联系邮箱
+  operatorName: 'Sameko',                 // 必填：运营者署名
+  privacyContact: 'loveofcc@gmail.com',   // 必填：长期有效的联系邮箱
   // 以下均选填，留空时由程序生成；与实际部署不符时再覆盖
   operatorAddress: '',
-  hostingProvider: '',
-  serverRegion: '',
+  hostingProvider: '',                      // 如“自建机房”“Vultr”
+  serverRegion: '',                         // 如“美国（怀俄明州）”
   dataRecipientDisclosure: '',
   jurisdictionDisclosure: '',
   recordRetentionDisclosure: '',
   credentialRetentionDisclosure: '',
-  backupRetentionDisclosure: '',
-  crossBorderDisclosure: '',
 };
 ```
 
-可先运行 `npm run legal:check`；正式安装脚本也会执行同一校验，必填项为空或任何已填字段仍是占位内容时拒绝部署。该工程校验只能防止遗漏，不能替代律师对实际业务、活动规则和数据处理安排的审查。
+可先运行 `npm run legal:check`；正式安装脚本也会执行同一校验，必填项为空或任何已填字段仍是占位内容时拒绝部署。该工程校验只能防止遗漏，不构成法律意见。
 
 常用环境变量：
 

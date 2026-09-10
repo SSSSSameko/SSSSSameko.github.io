@@ -336,7 +336,7 @@ const MOTION_OPTIONS = [
 
 function initialMotionPreference() {
   const stored = readStoredValue('weibo-draw-motion');
-  return MOTION_OPTIONS.some((option) => option.value === stored) ? stored : 'system';
+  return MOTION_OPTIONS.some((option) => option.value === stored) ? stored : 'full';
 }
 
 function canUseLocalStorage() {

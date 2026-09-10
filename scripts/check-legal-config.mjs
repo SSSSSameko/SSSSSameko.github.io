@@ -22,8 +22,8 @@ try {
 }
 
 const legal = sandbox.window.WEIBO_DRAW_LEGAL;
-// PIPL 第 17 条强制告知的只有"处理者名称或者姓名"和"联系方式"两项。
-// 地址、托管商、机房区域、备份策略属于可自选披露内容，这里不再强制，填写时才校验。
+// 这里只强制要求两项：运营者署名和一条有效的联系渠道。
+// 地址、托管商、机房区域、保存规则属于可自选披露内容，填写时才校验。
 const requiredFields = {
   operatorName: { label: 'operatorName（运营者名称或姓名）', maxLength: 240 },
   privacyContact: { label: 'privacyContact（有效隐私联系渠道）', maxLength: 240 },
@@ -36,8 +36,6 @@ const optionalFields = {
   jurisdictionDisclosure: { label: 'jurisdictionDisclosure（适用法律与管辖）', maxLength: 1200 },
   recordRetentionDisclosure: { label: 'recordRetentionDisclosure（服务器记录保存规则）', maxLength: 1200 },
   credentialRetentionDisclosure: { label: 'credentialRetentionDisclosure（服务器登录资料保存规则）', maxLength: 1200 },
-  backupRetentionDisclosure: { label: 'backupRetentionDisclosure（备份保存与清除规则）', maxLength: 1200 },
-  crossBorderDisclosure: { label: 'crossBorderDisclosure（跨境处理情况）', maxLength: 1200 },
 };
 const fields = { ...requiredFields, ...optionalFields };
 const placeholderPattern = /(?:待填写|待补充|待定|未配置|未公布|未知|占位|示例|某某|某省|某市|某区|某县|某路|某街|某公司|某单位|某地域|unknown|example|placeholder|your[-_ ]|xxx|tbd|todo)/i;

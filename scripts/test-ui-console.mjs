@@ -15,7 +15,7 @@ page.on('console', (message) => {
 
 await gotoUiPage(page, baseUrl);
 await page.waitForTimeout(700);
-assert.equal(await page.locator('.app-shell').getAttribute('data-motion'), 'system');
+assert.equal(await page.locator('.app-shell').getAttribute('data-motion'), 'full');
 
 await page.getByRole('button', { name: '设置', exact: true }).click();
 await page.getByRole('button', { name: /清空当前抽奖/ }).click();

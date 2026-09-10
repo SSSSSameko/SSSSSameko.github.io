@@ -59,7 +59,7 @@ const receipt = {
 };
 const cases = [
   { name: '390x844', viewport: { width: 390, height: 844 }, reducedMotion: 'no-preference' },
-  { name: '320x700', viewport: { width: 320, height: 700 }, reducedMotion: 'no-preference' },
+  { name: '320x700', viewport: { width: 320, height: 700 }, reducedMotion: 'no-preference', hideShare: true },
   { name: '320x256', viewport: { width: 320, height: 256 }, reducedMotion: 'reduce' },
   { name: 'reduced-motion', viewport: { width: 390, height: 844 }, reducedMotion: 'reduce' },
   { name: 'desktop-1440x900', viewport: { width: 1440, height: 900 }, reducedMotion: 'no-preference' },
@@ -82,6 +82,11 @@ try {
     if (item.reducedMotion === 'reduce') {
       await context.addInitScript(() => {
         localStorage.setItem('weibo-draw-motion', 'system');
+      });
+    }
+    if (item.hideShare) {
+      await context.addInitScript(() => {
+        Object.defineProperty(navigator, 'share', { value: undefined, configurable: true });
       });
     }
     const page = await context.newPage();
@@ -202,12 +207,26 @@ try {
     const actionGrid = await page.evaluate(() => {
       const container = document.querySelector('.receipt-actions');
       const containerBox = container?.getBoundingClientRect();
+      const style = container ? getComputedStyle(container) : null;
+      const insetLeft = style
+        ? parseFloat(style.paddingLeft) + parseFloat(style.borderLeftWidth)
+        : 0;
+      const insetRight = style
+        ? parseFloat(style.paddingRight) + parseFloat(style.borderRightWidth)
+        : 0;
       const secondary = [...document.querySelectorAll('.receipt-action-secondary')].map((button) => {
         const box = button.getBoundingClientRect();
         return { left: box.left, top: box.top, width: box.width };
       });
       return {
         container: containerBox && { left: containerBox.left, width: containerBox.width },
+        content: containerBox && {
+          left: containerBox.left + insetLeft,
+          width: containerBox.width - insetLeft - insetRight,
+        },
+        columns: style
+          ? style.gridTemplateColumns.split(' ').filter(Boolean).length
+          : 0,
         secondary,
       };
     });
@@ -221,8 +240,21 @@ try {
       );
     } else {
       const lastAction = secondaryActions.at(-1);
-      assert.equal(lastAction.left, actionGrid.container.left, JSON.stringify(actionGrid));
-      assert.equal(lastAction.width, actionGrid.container.width, JSON.stringify(actionGrid));
+      assert.ok(
+        lastAction.left >= actionGrid.content.left - 1
+          && lastAction.left + lastAction.width <= actionGrid.content.left + actionGrid.content.width + 1,
+        `二级操作不应超出按钮区：${JSON.stringify(actionGrid)}`,
+      );
+      if (actionGrid.columns === 2) {
+        assert.ok(
+          Math.abs(lastAction.left - actionGrid.content.left) <= 1,
+          `落单的二级操作应占满整行：${JSON.stringify(actionGrid)}`,
+        );
+        assert.ok(
+          Math.abs(lastAction.width - actionGrid.content.width) <= 1,
+          `落单的二级操作应占满整行：${JSON.stringify(actionGrid)}`,
+        );
+      }
     }
     if (item.name === '390x844') {
       await dialog.locator('.receipt-audit').scrollIntoViewIfNeeded();
