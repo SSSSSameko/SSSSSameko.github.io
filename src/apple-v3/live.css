@@ -1593,6 +1593,34 @@ button {
   display: none;
 }
 
+.flow-sheet-footer {
+  position: relative;
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 12px;
+}
+
+.flow-sheet-footer::before {
+  position: absolute;
+  inset: -16px 0 auto;
+  height: 16px;
+  background: linear-gradient(to bottom, rgba(251, 252, 254, 0), rgba(251, 252, 254, 0.92));
+  content: "";
+  pointer-events: none;
+}
+
+.flow-sheet-footer > * {
+  margin-top: 0;
+}
+
+@media (prefers-color-scheme: dark) {
+  .flow-sheet-footer::before {
+    background: linear-gradient(to bottom, rgba(23, 27, 35, 0), rgba(23, 27, 35, 0.92));
+  }
+}
+
 .flow-sheet-grabber,
 .receipt-grabber {
   width: 36px;
@@ -1665,8 +1693,8 @@ button {
 
 .flow-sheet-primary {
   --v3-action-shadow:
-    0 9px 21px rgba(57, 68, 97, 0.09),
-    0 3px 9px rgba(241, 91, 137, 0.04),
+    0 12px 26px rgba(57, 68, 97, 0.11),
+    0 3px 9px rgba(241, 91, 137, 0.05),
     inset 0 1px 0 #fff;
   width: 100%;
   flex: 0 0 auto;

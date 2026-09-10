@@ -674,6 +674,7 @@ function SheetFrame({
   icon,
   onClose,
   children,
+  footer = null,
   className = '',
   initialFocusRef = null,
   returnFocusId = '',
@@ -778,6 +779,11 @@ function SheetFrame({
         <div className="flow-sheet-body">
           {typeof children === 'function' ? children(requestClose) : children}
         </div>
+        {footer ? (
+          <div className="flow-sheet-footer">
+            {typeof footer === 'function' ? footer(requestClose) : footer}
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -796,7 +802,24 @@ function FilterEditorSheet({ controller, onClose }) {
   const setPreset = (keyword, mentionMin) => updateDraft({ keyword, mentionMin });
 
   return (
-    <SheetFrame title="筛选规则" subtitle="调整本轮可抽候选" icon={I.listChecks} onClose={onClose} className="v3-editor-sheet">
+    <SheetFrame
+      title="筛选规则"
+      subtitle="调整本轮可抽候选"
+      icon={I.listChecks}
+      onClose={onClose}
+      className="v3-editor-sheet"
+      footer={(close) => (
+        <button
+          type="button"
+          className="flow-sheet-primary v3-primary-action"
+          onClick={() => {
+            if (controller.applyFilterDraft(draft)) close();
+          }}
+        >
+          应用筛选
+        </button>
+      )}
+    >
       {(close) => (
         <>
           <div className="v3-filter-presets">
@@ -842,15 +865,6 @@ function FilterEditorSheet({ controller, onClose }) {
             <label><span><strong>候选去重</strong><small>同一用户只保留一次</small></span><input type="checkbox" checked={draft.uniqueByUser} onChange={(event) => updateDraft({ uniqueByUser: event.target.checked })} /></label>
             <label><span><strong>排除已中奖用户</strong><small>仅限当前浏览器的当前任务</small></span><input type="checkbox" checked={draft.excludePrevious} onChange={(event) => updateDraft({ excludePrevious: event.target.checked })} /></label>
           </div>
-          <button
-            type="button"
-            className="flow-sheet-primary v3-primary-action"
-            onClick={() => {
-              if (controller.applyFilterDraft(draft)) close();
-            }}
-          >
-            应用筛选
-          </button>
         </>
       )}
     </SheetFrame>
@@ -876,6 +890,34 @@ function DrawConfirmSheet({ controller: c, onClose, onConfirm, onPractice, onRef
       icon={I.shield}
       onClose={onClose}
       className="v3-draw-confirm-sheet"
+      footer={(close) => (
+        <>
+          <button type="button" className="flow-sheet-primary v3-primary-action v3-confirm-draw" onClick={() => onConfirm(close)}>
+            {I.shuffle}
+            <span>确认并开始抽奖</span>
+          </button>
+          <button type="button" className="v3-confirm-practice" onClick={() => onPractice(close)}>
+            <span>{I.play}</span>
+            <span>
+              <strong>本地演练</strong>
+              <small>播放完整流程，不保存记录</small>
+            </span>
+            {I.chevron}
+          </button>
+          <div className="v3-confirm-secondary-actions">
+            {c.source !== 'manual' && (
+              <button type="button" onClick={() => close(onRefresh)}>
+                {I.refresh}
+                更新候选
+              </button>
+            )}
+            <button type="button" onClick={() => close(() => c.setShowPrizeEditor(true))}>
+              {I.gift}
+              修改奖项
+            </button>
+          </div>
+        </>
+      )}
     >
       {(close) => (
         <>
@@ -951,30 +993,6 @@ function DrawConfirmSheet({ controller: c, onClose, onConfirm, onPractice, onRef
               : '同一浏览器内，本链接成功开奖后一分钟内不能重复开奖。'}
           </p>
 
-          <button type="button" className="flow-sheet-primary v3-primary-action v3-confirm-draw" onClick={() => onConfirm(close)}>
-            {I.shuffle}
-            <span>确认并开始抽奖</span>
-          </button>
-          <button type="button" className="v3-confirm-practice" onClick={() => onPractice(close)}>
-            <span>{I.play}</span>
-            <span>
-              <strong>本地演练</strong>
-              <small>播放完整流程，不保存记录</small>
-            </span>
-            {I.chevron}
-          </button>
-          <div className="v3-confirm-secondary-actions">
-            {c.source !== 'manual' && (
-              <button type="button" onClick={() => close(onRefresh)}>
-                {I.refresh}
-                更新候选
-              </button>
-            )}
-            <button type="button" onClick={() => close(() => c.setShowPrizeEditor(true))}>
-              {I.gift}
-              修改奖项
-            </button>
-          </div>
         </>
       )}
     </SheetFrame>
@@ -983,7 +1001,16 @@ function DrawConfirmSheet({ controller: c, onClose, onConfirm, onPractice, onRef
 
 function GuideSheet({ onClose }) {
   return (
-    <SheetFrame title="使用教程" subtitle="从载入候选到保存结果" icon={I.book} onClose={onClose} className="flow-guide-sheet">
+    <SheetFrame
+      title="使用教程"
+      subtitle="从载入候选到保存结果"
+      icon={I.book}
+      onClose={onClose}
+      className="flow-guide-sheet"
+      footer={(close) => (
+        <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">知道了</button>
+      )}
+    >
       {(close) => (
         <>
           <div className="flow-guide-list">
@@ -997,7 +1024,6 @@ function GuideSheet({ onClose }) {
               </div>
             ))}
           </div>
-          <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">知道了</button>
         </>
       )}
     </SheetFrame>
@@ -1035,6 +1061,9 @@ function CandidateDetailSheet({ entry, apiBase, onClose, onCopy }) {
       icon={I.users}
       onClose={onClose}
       className="candidate-detail-sheet"
+      footer={(close) => (
+        <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">完成</button>
+      )}
     >
       {(close) => (
         <>
@@ -1073,7 +1102,6 @@ function CandidateDetailSheet({ entry, apiBase, onClose, onCopy }) {
               </button>
             )}
           </div>
-          <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">完成</button>
         </>
       )}
     </SheetFrame>
@@ -1135,6 +1163,14 @@ function FeedbackSheet({ initialCategory = FEEDBACK_CATEGORIES[0].value, onClose
       onClose={onClose}
       className="flow-feedback-sheet"
       initialFocusRef={focusComposer ? textareaRef : null}
+      footer={(close) => (sent ? (
+        <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
+      ) : (
+        <button type="submit" form="feedback-form" className="flow-sheet-primary v3-primary-action feedback-submit" disabled={submitting || content.trim().length < 2}>
+          {submitting ? I.refresh : I.send}
+          <span>{submitting ? '正在提交' : '提交反馈'}</span>
+        </button>
+      ))}
     >
       {(close) => sent ? (
         <div className="feedback-success" role="status" aria-live="polite" aria-atomic="true">
@@ -1142,10 +1178,9 @@ function FeedbackSheet({ initialCategory = FEEDBACK_CATEGORIES[0].value, onClose
           <h3>谢谢你的反馈</h3>
           <p>内容已经送达，运营者会在后台查看。</p>
           {sent.id && <code>反馈编号 {sent.id}</code>}
-          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
         </div>
       ) : (
-        <form className="feedback-form" onSubmit={submit}>
+        <form className="feedback-form" id="feedback-form" onSubmit={submit}>
           <fieldset className="feedback-category">
             <legend id="feedback-category-label">反馈类型</legend>
             <div role="radiogroup" aria-labelledby="feedback-category-label">
@@ -1189,10 +1224,6 @@ function FeedbackSheet({ initialCategory = FEEDBACK_CATEGORIES[0].value, onClose
             {I.shield} {category === 'privacy' ? '无需填写联系方式；请勿填写 Cookie、密码、身份证号等敏感信息' : '无需填写联系方式；请勿填写 Cookie、密码等敏感信息'}
           </p>
           {error && <p className="feedback-error" id="feedback-error" role="alert" aria-live="assertive">{error}</p>}
-          <button type="submit" className="flow-sheet-primary v3-primary-action feedback-submit" disabled={submitting || content.trim().length < 2}>
-            {submitting ? I.refresh : I.send}
-            <span>{submitting ? '正在提交' : '提交反馈'}</span>
-          </button>
         </form>
       )}
     </SheetFrame>
@@ -1219,7 +1250,17 @@ function LegalSheet({ document, onClose, onOpenPrivacyRequest, onOpenUpdates }) 
   useEffect(() => { setShowUpdateHistory(false); }, [documentKey]);
   if (!document) return null;
   return (
-    <SheetFrame key={document.key || document.title} title={document.title} subtitle={document.subtitle} icon={document.key === 'updates' ? I.history : I.file} onClose={onClose} className="flow-legal-sheet">
+    <SheetFrame
+      key={document.key || document.title}
+      title={document.title}
+      subtitle={document.subtitle}
+      icon={document.key === 'updates' ? I.history : I.file}
+      onClose={onClose}
+      className="flow-legal-sheet"
+      footer={(close) => (
+        <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">完成</button>
+      )}
+    >
       {(close) => (
         <>
           {document.key === 'updates' && document.updates?.[0]?.date && <p className="flow-legal-date">更新日期：{document.updates[0].date}</p>}
@@ -1280,7 +1321,6 @@ function LegalSheet({ document, onClose, onOpenPrivacyRequest, onOpenUpdates }) 
               )}
             </>
           )}
-          <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">完成</button>
         </>
       )}
     </SheetFrame>
@@ -2404,6 +2444,9 @@ function AppleNavigationV3({ controller: c }) {
           onClose={() => c.setShowSourceEditor(false)}
           className="v3-editor-sheet v3-source-sheet"
           returnFocusId="candidate-source-row"
+          footer={(close) => (
+            <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
+          )}
         >
           {(close) => (
             <>
@@ -2548,7 +2591,6 @@ function AppleNavigationV3({ controller: c }) {
             </div>
           )}
 
-          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
             </>
           )}
         </SheetFrame>
@@ -2562,6 +2604,19 @@ function AppleNavigationV3({ controller: c }) {
           onClose={() => c.setShowPrizeEditor(false)}
           className="v3-editor-sheet"
           initialFocusRef={c.firstPrizeNameRef}
+          footer={(close) => (
+            <button
+              type="button"
+              className="flow-sheet-primary v3-primary-action v3-prize-confirm-button"
+              onClick={() => {
+                if (c.confirmDrawSetup()) close(() => c.setShowDrawConfirm(true));
+              }}
+              disabled={!c.hasCandidates || !c.candidateSourceReady}
+            >
+              {I.check}
+              <span>{!c.hasCandidates ? '载入候选后确认' : c.candidateSourceReady ? '确认奖项设置' : '载入当前来源后确认'}</span>
+            </button>
+          )}
         >
           {(close) => (
             <>
@@ -2637,17 +2692,6 @@ function AppleNavigationV3({ controller: c }) {
             <span>{I.users}<small>可抽候选</small><strong>{c.eligible.length.toLocaleString()} 人</strong></span>
             <span>{I.gift}<small>中奖名额</small><strong>{c.totalSlots} 人</strong></span>
           </div>
-          <button
-            type="button"
-            className="flow-sheet-primary v3-primary-action v3-prize-confirm-button"
-            onClick={() => {
-              if (c.confirmDrawSetup()) close(() => c.setShowDrawConfirm(true));
-            }}
-            disabled={!c.hasCandidates || !c.candidateSourceReady}
-          >
-            {I.check}
-            <span>{!c.hasCandidates ? '载入候选后确认' : c.candidateSourceReady ? '确认奖项设置' : '载入当前来源后确认'}</span>
-          </button>
             </>
           )}
         </SheetFrame>
@@ -2658,7 +2702,16 @@ function AppleNavigationV3({ controller: c }) {
       )}
 
       {c.showSettings && (
-        <SheetFrame title="设置" subtitle="显示、数据与后端连接" icon={I.settings} onClose={() => c.setShowSettings(false)} className="v3-editor-sheet">
+        <SheetFrame
+          title="设置"
+          subtitle="显示、数据与后端连接"
+          icon={I.settings}
+          onClose={() => c.setShowSettings(false)}
+          className="v3-editor-sheet"
+          footer={(close) => (
+            <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
+          )}
+        >
           {(close) => (
             <>
           <div className="flow-app-summary">
@@ -2755,7 +2808,6 @@ function AppleNavigationV3({ controller: c }) {
               </div>
             </div>
           </details>
-          <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
             </>
           )}
         </SheetFrame>

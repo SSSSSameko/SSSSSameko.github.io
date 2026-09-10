@@ -159,12 +159,24 @@ try {
 
     const closeButton = confirmDialog.getByRole('button', { name: '关闭开奖前确认' });
     const primaryButton = confirmDialog.getByRole('button', { name: '确认并开始抽奖' });
+    const lastControl = confirmDialog.locator('.flow-sheet-footer button').last();
     await closeButton.focus();
     assert.equal(await closeButton.evaluate((element) => element === document.activeElement), true);
+    // 主操作已移出滚动区域。Chromium 会把没有可聚焦子元素的可滚动容器本身放进 Tab 顺序，
+    // 所以这里只断言焦点没有逃出弹窗，再单独校验主操作可聚焦、以及首尾循环仍然生效。
     await shortPage.keyboard.press('Tab');
+    assert.equal(
+      await confirmDialog.evaluate((dialog) => dialog.contains(document.activeElement)),
+      true,
+      'Tab 后焦点离开了弹窗',
+    );
+    await primaryButton.focus();
     assert.equal(await primaryButton.evaluate((element) => element === document.activeElement), true);
-    await shortPage.keyboard.press('Shift+Tab');
+    await lastControl.focus();
+    await shortPage.keyboard.press('Tab');
     assert.equal(await closeButton.evaluate((element) => element === document.activeElement), true);
+    await shortPage.keyboard.press('Shift+Tab');
+    assert.equal(await lastControl.evaluate((element) => element === document.activeElement), true);
     await closeButton.click();
     await confirmDialog.waitFor({ state: 'detached' });
   } finally {
