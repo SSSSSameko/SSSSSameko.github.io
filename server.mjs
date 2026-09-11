@@ -122,6 +122,33 @@ function isPrivateAddress(address) {
   return false;
 }
 
+function avatarDnsOverridesForTests() {
+  if (process.env.SERVER_TEST_MODE !== '1') return null;
+  const raw = String(process.env.AVATAR_DNS_OVERRIDES || '').trim();
+  if (!raw) return null;
+  const parsed = JSON.parse(raw);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('AVATAR_DNS_OVERRIDES must be a JSON object');
+  }
+  const overrides = new Map();
+  for (const [hostname, records] of Object.entries(parsed)) {
+    if (!Array.isArray(records) || !records.length) {
+      throw new Error(`AVATAR_DNS_OVERRIDES.${hostname} must be a non-empty array`);
+    }
+    const normalized = records.map((record) => ({
+      address: String(record?.address || '').trim(),
+      family: Number(record?.family),
+    }));
+    if (normalized.some((record) => !record.address || ![4, 6].includes(record.family))) {
+      throw new Error(`AVATAR_DNS_OVERRIDES.${hostname} contains an invalid address record`);
+    }
+    overrides.set(String(hostname).toLowerCase(), normalized);
+  }
+  return overrides;
+}
+
+const avatarDnsOverrides = avatarDnsOverridesForTests();
+
 async function avatarHostIsPublic(avatar) {
   let url;
   try {
@@ -132,7 +159,8 @@ async function avatarHostIsPublic(avatar) {
   const hostname = url.hostname;
   if (isIP(hostname)) return !isPrivateAddress(hostname);
   try {
-    const records = await dnsLookup(hostname, { all: true, verbatim: true });
+    const records = avatarDnsOverrides?.get(hostname.toLowerCase())
+      || await dnsLookup(hostname, { all: true, verbatim: true });
     if (!records.length) return false;
     return records.every((record) => !isPrivateAddress(record.address));
   } catch {

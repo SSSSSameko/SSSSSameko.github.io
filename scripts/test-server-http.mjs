@@ -383,6 +383,10 @@ function spawnServer() {
       AVATAR_MIME_ERROR_URL: avatarMimeErrorUrl,
       AVATAR_HTTP_CANCEL_FILE: avatarHttpCancelFile,
       AVATAR_MIME_CANCEL_FILE: avatarMimeCancelFile,
+      SERVER_TEST_MODE: '1',
+      AVATAR_DNS_OVERRIDES: JSON.stringify({
+        'sinaimg.cn': [{ address: '93.184.216.34', family: 4 }],
+      }),
       REJECTED_BODY_DRAIN_MS: '250',
       NODE_ENV: 'production',
     }),
