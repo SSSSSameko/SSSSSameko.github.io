@@ -14,11 +14,10 @@
 - [ ] 将权利证明与对应版本的发布记录一并保存，便于事后追溯。
 - [ ] 无法完成上述确认时，改用自有或已获授权的替代素材，或在上线前移除。
 
-`avatar-96.webp` 是 `avatar.jpg` 的 Lanczos 缩放和 WebP 转换；`favicon-512.png` 是 `favicon-192.png` 的 Lanczos 缩放；两者均未引入新的美术内容，但不改变原素材本身的授权要求。
+`favicon-512.png` 是 `favicon-192.png` 的 Lanczos 缩放，未引入新的美术内容，但不改变原素材本身的授权要求。
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `static/avatar.jpg` | `E3477E97ED3ABA6F4F0C28C661927D592F2C4D62FB05682139738716F065A1E1` |
 | `static/avatar-96.webp` | `0E16CC4656DE3FAD642D8A07F6877C7224108C781CAD9A60BB283F4F3A06583D` |
 | `static/favicon-32.png` | `23C66925C626F9E8B8CD18AE6FCCE11359E5F400247B19BACF44762A4CCF5D00` |
 | `static/favicon-192.png` | `B0A127FFA03110D747BFBCDD276FB18EC20BFB6B69C5361DE1FA89E4DA8C965F` |

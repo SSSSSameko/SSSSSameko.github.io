@@ -225,6 +225,8 @@ try {
     API_KEY: '',
     ENABLE_COOKIE_READ_API: '1',
   });
+  const publicHealth = await fetch(`${active.baseUrl}/api/health`);
+  assert.equal((await publicHealth.json()).authRequired, false);
   const loopback = await fetch(`${active.baseUrl}${cookiePath}`);
   assert.equal(loopback.status, 200);
   assert.equal((await loopback.json()).cookie, storedCookie);

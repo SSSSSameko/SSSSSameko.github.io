@@ -44,6 +44,8 @@ service_is_healthy() {
   local verify_release_assets="${2:-1}"
   local main_pid=''
   local process_cwd=''
+  local admin_base_path='/admin'
+  local configured_admin_base_path=''
 
   systemctl is-active --quiet "${SERVICE_NAME}" || return 1
   main_pid="$(systemctl show "${SERVICE_NAME}" --property MainPID --value)" || return 1
@@ -52,10 +54,21 @@ service_is_healthy() {
     process_cwd="$(readlink -f "/proc/${main_pid}/cwd")" || return 1
     [[ "${process_cwd}" == "${expected_cwd}" ]] || return 1
   fi
+  if [[ -r "${ENV_FILE}" ]]; then
+    configured_admin_base_path="$(sed -n 's/^[[:space:]]*ADMIN_BASE_PATH[[:space:]]*=[[:space:]]*//p' "${ENV_FILE}" | tail -n 1)"
+    configured_admin_base_path="${configured_admin_base_path%\"}"
+    configured_admin_base_path="${configured_admin_base_path#\"}"
+    configured_admin_base_path="${configured_admin_base_path%\'}"
+    configured_admin_base_path="${configured_admin_base_path#\'}"
+    if [[ "${configured_admin_base_path}" =~ ^/[A-Za-z0-9._~/-]+$ ]]; then
+      admin_base_path="${configured_admin_base_path%/}"
+    fi
+  fi
 
-  node --input-type=module - "${health_port}" "${verify_release_assets}" <<'NODE'
+  node --input-type=module - "${health_port}" "${verify_release_assets}" "${admin_base_path}" <<'NODE'
 const port = process.argv[2];
 const verifyReleaseAssets = process.argv[3] === '1';
+const adminBase = process.argv[4] || '/admin';
 try {
   const request = (pathname) => fetch(`http://127.0.0.1:${port}${pathname}`, {
     signal: AbortSignal.timeout(1500),
@@ -66,14 +79,15 @@ try {
     && body?.ok === true
     && body?.service === 'sameko-weibo-lottery';
   if (!verifyReleaseAssets) process.exit(healthy ? 0 : 1);
-  const [admin, adminScript, adminStyle, adminResponse] = await Promise.all([
-    request('/admin'),
-    request('/admin/admin.js'),
-    request('/admin/admin.css'),
-    request('/admin/api-response.js'),
+  const [admin, adminScript, adminStyle, adminResponse, adminStatus] = await Promise.all([
+    request(adminBase),
+    request(`${adminBase}/admin.js`),
+    request(`${adminBase}/admin.css`),
+    request(`${adminBase}/api-response.js`),
+    request(`${adminBase}/admin-status.js`),
   ]);
   const adminHtml = await admin.text();
-  const assetsReady = [adminScript, adminStyle, adminResponse].every((response) => response.ok);
+  const assetsReady = [adminScript, adminStyle, adminResponse, adminStatus].every((response) => response.ok);
   process.exit(
     healthy
       && admin.ok
@@ -223,7 +237,10 @@ if [[ ! -s "${ENV_FILE}" ]]; then
   cat >"${ENV_FILE}" <<EOF
 ADMIN_USERNAME=${admin_username}
 ADMIN_PASSWORD_HASH=${admin_password_hash}
-API_KEY=$(openssl rand -hex 32)
+# 前端是公开静态页面时没人能真正藏住共享密钥，写死一个只会让页面全部 401。
+# 默认开放匿名业务接口，由限流、任务队列和容量上限兜底；确实需要访问门槛时，
+# 再填写 API_KEY（至少 32 字节），并把它同步给可信前端。
+ALLOW_PUBLIC_API=1
 ADMIN_SESSION_SECRET=$(openssl rand -hex 32)
 COOKIE_WRITE_KEY=$(openssl rand -hex 32)
 ENABLE_COOKIE_READ_API=1
@@ -559,7 +576,7 @@ printf '%s\n' "${source_revision:-unversioned}" >"${stage_dir}/.release-commit"
   node --check server-admin/admin.js
 )
 
-for item in server.mjs server-admin/admin.html server-admin/admin.css server-admin/admin.js server-admin/admin-list-state.js server-admin/api-response.js src/lib/weiboBrowserLifecycle.js static/config.js dist/index.html node_modules ms-playwright; do
+for item in server.mjs server-admin/admin.html server-admin/admin.css server-admin/admin.js server-admin/admin-list-state.js src/lib/adminStatus.js src/lib/apiResponse.js src/lib/weiboBrowserLifecycle.js static/config.js dist/index.html node_modules ms-playwright; do
   [[ -e "${stage_dir}/${item}" ]] || { echo "Staged release is missing ${item}." >&2; exit 1; }
 done
 chown -R --no-dereference www-data:www-data "${stage_dir}"

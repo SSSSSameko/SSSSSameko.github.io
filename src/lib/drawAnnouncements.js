@@ -1,4 +1,5 @@
 import { buildFilterSummary, DRAW_RANDOM_ALGORITHM, safeMentionName } from './appCore.js';
+import { formatDateTime } from './dateTime.js';
 import { drawCountCopy, normalizeDrawReceipt } from './drawReceipts.js';
 
 export const DRAW_ANNOUNCEMENT_TEMPLATES = Object.freeze([
@@ -6,19 +7,6 @@ export const DRAW_ANNOUNCEMENT_TEMPLATES = Object.freeze([
   { value: 'grouped', label: '分组版', hint: '按奖项列出序号' },
   { value: 'record', label: '记录版', hint: '附时间、范围与随机规则' },
 ]);
-
-function formatDate(value) {
-  const date = new Date(value || '');
-  if (Number.isNaN(date.getTime())) return '时间未记录';
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(date).replaceAll('/', '.');
-}
 
 function winnerName(winner, index) {
   return safeMentionName(winner?.screenName || winner?.uid) || `中奖用户 ${index + 1}`;
@@ -63,7 +51,7 @@ function recordDetails(receipt) {
   const label = drawLabel(receipt);
   return [
     label,
-    `开奖时间：${formatDate(receipt.drawnAt)}`,
+    `开奖时间：${formatDateTime(receipt.drawnAt, { fallback: '时间未记录' })}`,
     `候选范围：载入 ${receipt.candidateCount} 人 · 可抽 ${receipt.eligibleCount} 人`,
     `筛选规则：${filterText}`,
     `随机规则：${DRAW_RANDOM_ALGORITHM}`,

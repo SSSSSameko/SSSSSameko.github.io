@@ -1,6 +1,6 @@
 # 微博转发抽奖助手
 
-当前版本：`3.4.0`（2026 年 9 月 10 日）
+当前版本：`3.4.1`（2026 年 9 月 12 日）
 
 用于微博转发抽奖的网页工具，支持候选抓取、名单导入、滚动开奖、开奖记录图和后台管理。
 
@@ -57,8 +57,8 @@ window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
 - `HOST=127.0.0.1`
 - `PORT=4173`（整数，范围 `1-65535`；环境文件未配置时使用 `4173`）
 - `CORS_ORIGINS=https://你的前端域名`（多个来源用逗号分隔，使用 `http://` 或 `https://` 来源格式）
-- `API_KEY=公开业务接口的共享访问密钥`（生产环境或非回环监听时默认必需且至少 32 字节，安装脚本自动生成；前端按部署要求填写。它只能作为访问门槛，不能被视为浏览器中的保密身份凭据）
-- `ALLOW_PUBLIC_API=1`（仅在明确接受匿名开放抓取与开奖记录接口的风险时启用；即使服务只绑定 `127.0.0.1`、由反向代理对外提供，也必须显式设置）
+- `ALLOW_PUBLIC_API=1`（安装脚本为新部署默认写入 `1`：公开静态前端无法保存共享密钥，匿名开放抓取与开奖记录接口，由限流、任务队列和容量上限兜底。即使服务只绑定 `127.0.0.1`、由反向代理对外提供，也必须显式设置）
+- `API_KEY=公开业务接口的共享访问密钥`（可选，至少 32 字节；只在需要额外访问门槛时配置。前端能读取到的密钥就不是保密凭据，它只能挡掉顺手抓接口的人，无法阻止有意滥用。配置后所有前端分发渠道都必须同步同一个值，否则访客会收到 401）
 - `ADMIN_KEY=你的后台密钥`（可选；生产环境或非回环监听时如配置，至少 32 字节）
 - `ADMIN_USERNAME=后台账号`（1-64 位，仅限英文字母、数字、点、下划线和连字符）
 - `ADMIN_PASSWORD_HASH=scrypt 密码哈希`（安装脚本要求当前生成器格式）
@@ -67,6 +67,7 @@ window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
 - `ENABLE_COOKIE_READ_API=1`（安装脚本为新部署默认写入 `1`，开启只读 `GET /v1/cookie/current`；改为 `0` 或删除该行即关闭并返回 404）
 - `COOKIE_READ_KEY=只读 Cookie 接口的专用密钥`（安装脚本为新部署自动生成 64 位十六进制字符，且必须与 `API_KEY`、`ADMIN_KEY` 不同。只接受 `x-cookie-read-key` 或 `Authorization: Bearer`，不读取 `x-api-key`；未配置时仅允许回环来源）
 - `COOKIE_READ_AUDIT_INTERVAL_MS=21600000`（可选；同一来源的只读接口成功审计最短合并间隔，默认 6 小时，避免高频轮询挤掉其他安全事件）
+- `ADMIN_BASE_PATH=/admin`（可选；后台入口路径。默认 `/admin`，改成例如 `/ops-9d2c` 之类不好猜的路径可以减少被扫描到后台页面的机会；必须以 `/` 开头，不能占用 `/api`、`/v1`。改完记得同步书签和部署自检。前端页面不链接后台入口，也不显示真实后端地址）
 - `SOURCE_FINGERPRINT_SECRET=去标识化来源与登录态指纹密钥（若配置则为 64 位十六进制字符，未配置时复用会话密钥）`
 - `PLAYWRIGHT_BROWSERS_PATH=/opt/sameko-weibo-lottery/current/ms-playwright`
 - `WEIBO_BROWSER_SANDBOX=1`（生产环境默认开启 Chromium 沙箱；仅在目标主机明确不支持时才设为 `0`）
@@ -158,7 +159,7 @@ sudo bash deploy/install.sh
 
 脚本默认要求源码是干净的 Git 仓库根目录，并从当前 commit 直接生成发布归档；commit 会写入发布目录，未提交文件不会进入服务器版本。随后在独立目录中安装锁定依赖、构建前端并安装 Playwright Chromium，再把完整版本放入 `releases/`，通过 `current` 符号链接一次切换前后端。健康检查失败时会恢复上一版本和原 systemd 配置；恢复不完整时会保留备份供人工处理。最近两个旧版本会继续保留。若源码不在应用目录，可通过 `SOURCE_DIR=/path/to/source` 指定来源；只有经过单独校验的离线归档才应设置 `ALLOW_UNVERSIONED_SOURCE=1`。
 
-首次运行会要求输入后台账号和密码，并在权限为 `0600` 的 `/etc/sameko-weibo-lottery.env` 中生成密码哈希、共享 API 访问密钥、三个服务端密钥和默认 CORS 来源。再次运行会保留并校验该文件；既没有 `API_KEY`、也没有显式设置 `ALLOW_PUBLIC_API=1` 的旧配置会被拒绝，避免反向代理下意外公开业务接口。环境文件中的服务回收周期和内存阈值会同步到 systemd；`NODE_OPTIONS`、`HOST`、`HOME` 和 Playwright 路径等运行约束由服务固定管理，不允许在该文件中覆盖。
+首次运行会要求输入后台账号和密码，并在权限为 `0600` 的 `/etc/sameko-weibo-lottery.env` 中生成密码哈希、三个服务端密钥、默认 CORS 来源和 `ALLOW_PUBLIC_API=1`。默认不生成 `API_KEY`：公开静态前端拿不到也藏不住它，自动生成只会让整站请求 401。需要访问门槛时再显式填写 `API_KEY`，并把同一个值配置到所有前端分发渠道。再次运行会保留并校验该文件；既没有 `API_KEY`、也没有显式设置 `ALLOW_PUBLIC_API=1` 的旧配置会被拒绝，避免反向代理下意外公开业务接口。环境文件中的服务回收周期和内存阈值会同步到 systemd；`NODE_OPTIONS`、`HOST`、`HOME` 和 Playwright 路径等运行约束由服务固定管理，不允许在该文件中覆盖。
 
 服务器需要预先安装受支持的 Node.js、npm、Git、tar、OpenSSL、GNU coreutils 和 systemd。部署更新前应先运行 `npm run test:release`；systemd 仍按 24 小时周期回收服务进程，避免小内存服务器长期积累不可回收资源。
 

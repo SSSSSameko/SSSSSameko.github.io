@@ -40,6 +40,8 @@ jobs:
         run: node scripts/test-deploy-contract.mjs
       - name: Test HTTP service
         run: node scripts/test-server-http.mjs
+      - name: Test admin entry path
+        run: node scripts/test-admin-path.mjs
       - name: Test draw retention recovery
         run: node scripts/test-draw-retention-recovery.mjs
       - name: Test service lifecycle

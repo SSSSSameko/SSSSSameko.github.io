@@ -54,8 +54,18 @@ try {
   assert.equal(drawRequests.length, 0, '本地演练不应请求正式开奖记录接口');
   assert.deepEqual(errors, []);
 
-  await resultSheet.getByRole('button', { name: '关闭开奖结果' }).click();
+  await page.keyboard.press('Escape');
   await resultSheet.waitFor({ state: 'detached' });
+  const resultTrigger = page.getByRole('button', { name: '查看开奖结果' });
+  await resultTrigger.waitFor({ state: 'visible' });
+  await page.waitForFunction(() => (
+    document.activeElement?.getAttribute('aria-label') === '查看开奖结果'
+  ));
+  assert.equal(
+    await resultTrigger.evaluate((element) => element === document.activeElement),
+    true,
+    '关闭自动打开的结果弹层后，焦点没有回到结果入口',
+  );
   await page.locator('.root-tabbar button').filter({ hasText: '记录' }).click();
   assert.equal(
     await page.locator('[data-root-view="history"]').getByText('暂无开奖记录', { exact: true }).isVisible(),

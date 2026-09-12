@@ -597,6 +597,7 @@ try {
   const health = await fetch(`${baseUrl}/api/health`);
   assert.equal(health.status, 200);
   const healthText = await health.text();
+  assert.equal(JSON.parse(healthText).authRequired, true);
   assert.equal(Number(health.headers.get('content-length')), Buffer.byteLength(healthText, 'utf8'));
   assert.match(health.headers.get('content-security-policy') || '', /script-src 'self'/);
   assert.match(health.headers.get('content-security-policy') || '', /frame-ancestors 'none'/);
@@ -1185,6 +1186,24 @@ try {
     })).status);
   }
   assert.deepEqual(pollStatuses, [404, 404, 429]);
+  const sameAddressOtherBrowser = await fetch(`${baseUrl}/api/weibo/reposts/jobs/rate-limit-test`, {
+    headers: { 'x-api-key': apiKey, 'x-client-id': 'other-browser-0001' },
+  });
+  assert.equal(
+    sameAddressOtherBrowser.status,
+    404,
+    '同一出口 IP 下的另一个浏览器不应被别人的额度拖累',
+  );
+  const rotatedClientStatuses = [];
+  for (let index = 0; index < 20; index += 1) {
+    rotatedClientStatuses.push((await fetch(`${baseUrl}/api/weibo/reposts/jobs/rate-limit-test`, {
+      headers: { 'x-api-key': apiKey, 'x-client-id': `rotating-browser-${index}` },
+    })).status);
+  }
+  assert.ok(
+    rotatedClientStatuses.includes(429),
+    '不断伪造 x-client-id 时，同一出口 IP 的总上限仍要生效',
+  );
   const cancelAfterPollLimit = await fetch(`${baseUrl}/api/weibo/reposts/jobs/rate-limit-test`, {
     method: 'DELETE',
     headers: { 'x-api-key': apiKey, 'x-job-cancel-token': 'not-a-real-token' },

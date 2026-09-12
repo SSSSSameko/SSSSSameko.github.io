@@ -1,4 +1,5 @@
 import { safeWeiboUrl } from './appCore.js';
+import { isQuotaError } from './storageErrors.js';
 
 export const DRAW_COOLDOWN_MS = 60_000;
 const DRAW_GUARD_TTL_MS = 3 * 60_000;
@@ -147,14 +148,6 @@ function writePersistentRecords(storage, records, now) {
   } catch {
     return { ok: false, reason: 'unavailable', observed: null };
   }
-}
-
-function isQuotaError(error) {
-  const message = String(error?.message || '').toLowerCase();
-  return error?.name === 'QuotaExceededError'
-    || error?.code === 22
-    || error?.code === 1014
-    || message.includes('quota');
 }
 
 function activeRecord(storage, scope, now) {
@@ -366,9 +359,9 @@ export function acquireDrawGuard(storage, scope, now = Date.now()) {
   return { ok: true, scope: key, token: guardToken, persistent: false };
 }
 
-export function completeDrawGuard(storage, scope, guardToken, now = Date.now()) {
+function claimRunningGuard(storage, scope, guardToken, now) {
   const key = String(scope || '').trim();
-  if (!key || !guardToken) return;
+  if (!key || !guardToken) return null;
   const current = activeRecord(storage, key, now);
   const memoryRecord = current.memory.get(key);
   const persistentRecord = current.persistent.records.get(key);
@@ -382,6 +375,28 @@ export function completeDrawGuard(storage, scope, guardToken, now = Date.now()) 
   if (!memoryOwns && !persistentOwns) {
     return { ok: false, persistent: current.persistent.available };
   }
+  return {
+    ok: true,
+    key,
+    current,
+    memoryRecord,
+    persistentRecord,
+    memoryOwns,
+    persistentOwns,
+  };
+}
+
+export function completeDrawGuard(storage, scope, guardToken, now = Date.now()) {
+  const ownership = claimRunningGuard(storage, scope, guardToken, now);
+  if (!ownership) return;
+  if (!ownership.ok) return ownership;
+  const {
+    key,
+    current,
+    memoryRecord,
+    persistentRecord,
+    persistentOwns,
+  } = ownership;
 
   const stalePersistentUntil = memoryRecord?.persistent === true || persistentOwns
     ? Math.max(recordExpiry(memoryRecord), recordExpiry(persistentRecord))
@@ -403,21 +418,17 @@ export function completeDrawGuard(storage, scope, guardToken, now = Date.now()) 
 }
 
 export function releaseDrawGuard(storage, scope, guardToken, now = Date.now()) {
-  const key = String(scope || '').trim();
-  if (!key || !guardToken) return;
-  const current = activeRecord(storage, key, now);
-  const memoryRecord = current.memory.get(key);
-  const persistentRecord = current.persistent.records.get(key);
-  const memoryOwns = memoryRecord?.state === 'running' && memoryRecord.token === guardToken;
-  const persistentOwns = persistentRecord?.state === 'running'
-    && persistentRecord.token === guardToken;
-  if (current.persistent.available && recordIsActive(persistentRecord, now) && !persistentOwns) {
-    if (memoryOwns) current.memory.delete(key);
-    return { ok: false, persistent: true };
-  }
-  if (!memoryOwns && !persistentOwns) {
-    return { ok: false, persistent: current.persistent.available };
-  }
+  const ownership = claimRunningGuard(storage, scope, guardToken, now);
+  if (!ownership) return;
+  if (!ownership.ok) return ownership;
+  const {
+    key,
+    current,
+    memoryRecord,
+    persistentRecord,
+    memoryOwns,
+    persistentOwns,
+  } = ownership;
 
   current.memory.delete(key);
   if (!persistentOwns) {

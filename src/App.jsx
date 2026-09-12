@@ -1,4 +1,4 @@
-import React, { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import {
   AlertCircle,
   ArchiveRestore,
@@ -26,7 +26,6 @@ import {
   ShieldCheck,
   Shuffle,
   Trash2,
-  Upload,
   Users,
   X,
   Zap,
@@ -49,6 +48,7 @@ import {
   writeStoredValue,
 } from './lib/appCore.js';
 import CandidateAvatar from './components/CandidateAvatar.jsx';
+import CandidateSourceForm from './components/CandidateSourceForm.jsx';
 import DrawResultSheet from './components/DrawResultSheet.jsx';
 import { avatarProxyUrl, safeAvatarUrl } from './lib/avatar.js';
 import useDialogStack from './hooks/useDialogStack.js';
@@ -87,6 +87,14 @@ import {
   releaseDrawGuard,
 } from './lib/drawCooldown.js';
 import {
+  getAccountStatusText,
+  getCandidateFreshnessText,
+  getDrawActionState,
+  getDrawCountText,
+  getIntakeState,
+  getNextDrawText,
+} from './lib/drawUiModel.js';
+import {
   candidateIdentity,
   eligibleCandidates,
   evaluateCandidateEligibility,
@@ -100,6 +108,7 @@ import {
 } from './lib/feedback.js';
 import { isWeiboStatusReference } from './lib/weiboStatus.js';
 import { isResponseBodyTimeout, readResponseTextWithin } from './lib/apiResponse.js';
+import { trapDialogFocus } from './lib/dialogFocus.js';
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
   let timer;
@@ -123,7 +132,7 @@ const throwIfAborted = (signal) => {
   throw new DOMException('操作已取消', 'AbortError');
 };
 const publicAsset = (name) => `${import.meta.env.BASE_URL}${name}`;
-const APP_VERSION = '3.4.0';
+const APP_VERSION = '3.4.1';
 const REPOST_JOB_TIMEOUT_MS = 90 * 60 * 1000;
 const REPOST_JOB_POLL_MS = 1200;
 const REPOST_JOB_RECONNECT_ATTEMPTS = 4;
@@ -198,9 +207,6 @@ const candidateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
   hour12: false,
 });
 
-function looksLikeWeiboStatusReference(value) {
-  return isWeiboStatusReference(value);
-}
 function configuredApiBases() {
   const configured = [
     window.WEIBO_DRAW_API_BASE,
@@ -235,6 +241,19 @@ function initialApiBase() {
   if (storedApi) writeStoredValue('weibo-draw-api-base', '');
   return cleanApiBase(window.WEIBO_DRAW_API_BASE || '');
 }
+function presetApiBase() {
+  return cleanApiBase(window.WEIBO_DRAW_API_BASE || '');
+}
+function isPresetApiBase(value) {
+  const cleaned = cleanApiBase(value);
+  return Boolean(cleaned) && configuredApiBases().includes(cleaned);
+}
+// 预置服务地址不对访客展示，输入框只保留用户自己填过的自定义地址。
+function initialApiBaseInput() {
+  const stored = cleanApiBase(readStoredValue('weibo-draw-api-base'));
+  if (!stored || !isTrustedApiBase(stored) || isPresetApiBase(stored)) return '';
+  return stored;
+}
 function initialApiKey() {
   const injected = String(window.WEIBO_DRAW_API_KEY || '').trim();
   const stored = readStoredValue('weibo-draw-api-key').trim();
@@ -259,6 +278,13 @@ function requestClientId() {
 }
 function isStaticHostedPage() {
   return /\.github\.io$/i.test(location.hostname) || location.protocol === 'file:';
+}
+
+function apiError(message, status) {
+  const error = new Error(message);
+  const code = Number(status);
+  if (Number.isFinite(code)) error.status = code;
+  return error;
 }
 
 async function readApiResponse(response, label = '服务') {
@@ -323,11 +349,6 @@ function defaultPrize(index = 0, count = 1) {
 }
 const DEFAULT_PRIZES = [defaultPrize(0, 1)];
 
-const SOURCE_OPTIONS = [
-  { value: 'mobile', label: '微博链接' },
-  { value: 'manual', label: '手动名单' },
-  { value: 'official', label: '官方接口' },
-];
 const MOTION_OPTIONS = [
   { value: 'full', label: '完整' },
   { value: 'system', label: '跟随系统' },
@@ -425,7 +446,6 @@ const I = {
   close: <X className="icon-16" strokeWidth={2} />,
   plus: <Plus className="icon-16" strokeWidth={2} />,
   minus: <Minus className="icon-16" strokeWidth={2} />,
-  upload: <Upload className="icon-16" strokeWidth={1.8} />,
   shield: <ShieldCheck className="icon-16" strokeWidth={1.7} />,
   download: <Download className="icon-16" strokeWidth={1.8} />,
   more: <Ellipsis className="icon-19" strokeWidth={1.8} />,
@@ -437,28 +457,12 @@ const I = {
   play: <Play className="icon-18" strokeWidth={1.7} />,
   zap: <Zap className="icon-18" strokeWidth={1.7} />,
 };
-
-function keepFocusInDialog(event, dialog) {
-  if (event.key !== 'Tab' || !dialog) return;
-  const controls = [...dialog.querySelectorAll(
-    'a[href], summary, button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-  )].filter((element) => !element.hidden && !element.closest('[inert]') && element.getClientRects().length);
-  if (!controls.length) return;
-  const first = controls[0];
-  const last = controls.at(-1);
-  if (!dialog.contains(document.activeElement)) {
-    event.preventDefault();
-    (event.shiftKey ? last : first).focus();
-    return;
-  }
-  if (event.shiftKey && document.activeElement === first) {
-    event.preventDefault();
-    last.focus();
-  } else if (!event.shiftKey && document.activeElement === last) {
-    event.preventDefault();
-    first.focus();
-  }
-}
+const DRAW_ACTION_ICONS = {
+  load: I.link,
+  filter: I.listChecks,
+  draw: I.shuffle,
+  setup: I.gift,
+};
 
 function ErrorNoticeDialog({ notice, onClose }) {
   const dialogRef = useRef(null);
@@ -494,7 +498,7 @@ function ErrorNoticeDialog({ notice, onClose }) {
         event.stopImmediatePropagation();
         dismiss();
       }
-      keepFocusInDialog(event, dialogRef.current);
+      trapDialogFocus(event, dialogRef.current);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => {
@@ -634,7 +638,7 @@ function ConfirmActionDialog({ action, motionPreference, onClose, onConfirm }) {
         event.stopImmediatePropagation();
         close();
       }
-      keepFocusInDialog(event, dialogRef.current);
+      trapDialogFocus(event, dialogRef.current);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => {
@@ -681,11 +685,13 @@ function SheetFrame({
 }) {
   const backdropRef = useRef(null);
   const dialogRef = useRef(null);
+  const bodyRef = useRef(null);
   const closeButtonRef = useRef(null);
   const closeTimerRef = useRef(null);
   const requestCloseRef = useRef(null);
   const closingRef = useRef(false);
   const [isClosing, setIsClosing] = useState(false);
+  const [bodyScrollable, setBodyScrollable] = useState(false);
   const isTopDialog = useDialogStack(true);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -730,7 +736,7 @@ function SheetFrame({
         event.stopImmediatePropagation();
         requestCloseRef.current?.();
       }
-      keepFocusInDialog(event, dialogRef.current);
+      trapDialogFocus(event, dialogRef.current);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => {
@@ -762,6 +768,23 @@ function SheetFrame({
     };
   }, [initialFocusRef, isTopDialog, returnFocusId]);
 
+  useLayoutEffect(() => {
+    const body = bodyRef.current;
+    if (!body) return undefined;
+    const syncScrollable = () => {
+      setBodyScrollable(body.scrollHeight > body.clientHeight + 1);
+    };
+    syncScrollable();
+    const resizeObserver = new ResizeObserver(syncScrollable);
+    resizeObserver.observe(body);
+    const mutationObserver = new MutationObserver(syncScrollable);
+    mutationObserver.observe(body, { childList: true, characterData: true, subtree: true });
+    return () => {
+      resizeObserver.disconnect();
+      mutationObserver.disconnect();
+    };
+  }, []);
+
   return (
     <div ref={backdropRef} className={`flow-sheet-backdrop ${isClosing ? 'is-closing' : ''}`} onClick={() => requestClose()}>
       <div ref={dialogRef} className={`flow-sheet ${className}`} role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
@@ -776,7 +799,13 @@ function SheetFrame({
           </div>
           <button ref={closeButtonRef} type="button" aria-label={`关闭${title}`} onClick={() => requestClose()} className="flow-sheet-close">{I.close}</button>
         </div>
-        <div className="flow-sheet-body">
+        <div
+          ref={bodyRef}
+          className="flow-sheet-body"
+          role={bodyScrollable ? 'region' : undefined}
+          aria-label={bodyScrollable ? `${title}内容` : undefined}
+          tabIndex={bodyScrollable ? 0 : undefined}
+        >
           {typeof children === 'function' ? children(requestClose) : children}
         </div>
         {footer ? (
@@ -820,7 +849,7 @@ function FilterEditorSheet({ controller, onClose }) {
         </button>
       )}
     >
-      {(close) => (
+      {() => (
         <>
           <div className="v3-filter-presets">
             <button
@@ -919,7 +948,7 @@ function DrawConfirmSheet({ controller: c, onClose, onConfirm, onPractice, onRef
         </>
       )}
     >
-      {(close) => (
+      {() => (
         <>
           <div className={`v3-confirm-hero ${previousCount > 0 ? 'is-repeat' : ''} ${previousCount === null ? 'is-unknown' : ''}`}>
             <span>{previousCount > 0 ? I.history : previousCount === null ? I.info : I.gift}</span>
@@ -1011,7 +1040,7 @@ function GuideSheet({ onClose }) {
         <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">知道了</button>
       )}
     >
-      {(close) => (
+      {() => (
         <>
           <div className="flow-guide-list">
             {GUIDE_STEPS.map(([step, title, detail]) => (
@@ -1065,7 +1094,7 @@ function CandidateDetailSheet({ entry, apiBase, onClose, onCopy }) {
         <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">完成</button>
       )}
     >
-      {(close) => (
+      {() => (
         <>
           <div className="candidate-detail-identity">
             <CandidateAvatar candidate={candidate} className="candidate-detail-avatar" apiBase={apiBase} priority />
@@ -1172,7 +1201,7 @@ function FeedbackSheet({ initialCategory = FEEDBACK_CATEGORIES[0].value, onClose
         </button>
       ))}
     >
-      {(close) => sent ? (
+      {() => sent ? (
         <div className="feedback-success" role="status" aria-live="polite" aria-atomic="true">
           <span>{I.check}</span>
           <h3>谢谢你的反馈</h3>
@@ -1453,7 +1482,6 @@ function AppleNavigationV3({ controller: c }) {
 
   const tabIndex = { home: 0, candidates: 1, history: 2, more: 3 }[c.activeTab] ?? 0;
   const tabOrder = ['home', 'candidates', 'history', 'more'];
-  const sourceSegmentIndex = Math.max(0, SOURCE_OPTIONS.findIndex((option) => option.value === c.source));
   const candidateSegmentIndex = { eligible: 0, all: 1, excluded: 2 }[c.candidateSegment] ?? 0;
   const motionSegmentIndex = Math.max(0, MOTION_OPTIONS.findIndex((option) => option.value === c.motionPreference));
   const candidateGroups = useMemo(() => {
@@ -1569,15 +1597,14 @@ function AppleNavigationV3({ controller: c }) {
       layers.forEach((layer) => layer.removeAttribute('inert'));
     };
   }, [contentInert, layerSignature]);
-  const intakeState = c.isLoading
-    ? 'loading'
-    : c.candidateLoadError
-      ? 'error'
-    : c.hasCandidates
-      ? drawState
-      : c.candidateLoadCompleted
-        ? 'checked-empty'
-        : c.statusUrl.trim() ? 'link-ready' : 'empty';
+  const intakeState = getIntakeState({
+    loading: c.isLoading,
+    loadError: c.candidateLoadError,
+    hasCandidates: c.hasCandidates,
+    drawState,
+    loadCompleted: c.candidateLoadCompleted,
+    statusUrl: c.statusUrl,
+  });
   const intakePercent = Math.max(0, Math.min(100, Math.round(c.progress?.percent || 0)));
   const visibleWinners = c.results
     .flatMap((item) => item.winners.map((winner) => ({
@@ -1586,31 +1613,20 @@ function AppleNavigationV3({ controller: c }) {
     })))
     .slice(0, 4);
   const resultReceipt = c.currentReceipt || c.drawHistory[0] || null;
-  const drawAction = c.candidateLoadError || (c.hasCandidates && !c.candidateSourceReady)
-    ? {
-      icon: I.link,
-      title: c.candidateLoadError ? '重新载入候选' : '载入当前来源',
-      detail: c.candidateLoadError
-        ? c.hasCandidates ? '上次名单仍在页面中，刷新成功后才能开奖' : '请检查链接或登录态后重试'
-        : '来源或链接已更改，载入后再设置奖项',
-    }
-    : !c.eligible.length
-    ? {
-      icon: I.listChecks,
-      title: '调整筛选',
-      detail: '当前没有符合条件的候选',
-    }
-    : c.drawSetupConfirmed
-      ? {
-        icon: I.shuffle,
-        title: '核对并开奖',
-        detail: `${c.nextDrawText} · 将抽取 ${c.totalSlots} 人`,
-      }
-      : {
-        icon: I.gift,
-        title: '设置奖项并确认',
-        detail: `${c.normalizedPrizes.length} 个奖项 · ${c.totalSlots} 个名额`,
-      };
+  const resolvedDrawAction = getDrawActionState({
+    loadError: c.candidateLoadError,
+    hasCandidates: c.hasCandidates,
+    sourceReady: c.candidateSourceReady,
+    eligibleCount: c.eligible.length,
+    setupConfirmed: c.drawSetupConfirmed,
+    nextDrawLabel: c.nextDrawText,
+    totalSlots: c.totalSlots,
+    prizeCount: c.normalizedPrizes.length,
+  });
+  const drawAction = {
+    ...resolvedDrawAction,
+    icon: DRAW_ACTION_ICONS[resolvedDrawAction.kind],
+  };
 
   useEffect(() => {
     if (!c.showSettings) return undefined;
@@ -1964,7 +1980,7 @@ function AppleNavigationV3({ controller: c }) {
                       </div>
                       <div className="result-buttons">
                         <button type="button" aria-label="设置并再次抽奖" title="设置并再次抽奖" onClick={() => c.requestDraw()}>{I.shuffle}</button>
-                        <button type="button" aria-label="查看开奖结果" title="查看开奖结果" onClick={() => c.setSelectedReceipt(resultReceipt)}>{I.clock}</button>
+                        <button id="draw-result-trigger" type="button" aria-label="查看开奖结果" title="查看开奖结果" onClick={() => c.setSelectedReceipt(resultReceipt)}>{I.clock}</button>
                       </div>
                     </div>
                   </div>
@@ -2050,129 +2066,7 @@ function AppleNavigationV3({ controller: c }) {
 
             <section className="content-section v3-source-section">
               <SectionTitle title="载入名单" action={c.hasCandidates && c.source !== 'manual' ? '刷新' : ''} onAction={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: true })} />
-              <div className="segmented-control v3-source-control" role="group" aria-label="候选来源" style={{ '--segment-index': sourceSegmentIndex }}>
-                <span className="segmented-highlight" aria-hidden="true" />
-                {SOURCE_OPTIONS.map(({ value, label }) => (
-                  <button
-                    key={value}
-                    type="button"
-                    className={c.source === value ? 'is-active' : ''}
-                    aria-pressed={c.source === value}
-                    onClick={() => {
-                      if (value !== c.source && c.setSource(value)) c.clearResult('候选来源已更新，请重新开奖。');
-                    }}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-
-              {c.source === 'mobile' && (
-                <div className="v3-source-form">
-                  <label className="v3-link-field">
-                    <span className="sr-only">微博链接、mid 或 bid</span>
-                    <input
-                      ref={c.candidateStatusInputRef}
-                      value={c.statusUrl}
-                      onChange={(event) => c.updateStatusInput(event.target.value)}
-                      name="candidateStatusUrl"
-                      inputMode="url"
-                      autoComplete="off"
-                      placeholder="微博正文链接、mid 或 bid"
-                    />
-                  </label>
-                  <button className="v3-solid-action v3-primary-action" type="button" onClick={c.pasteAndLoadCandidates} disabled={c.isLoading}>
-                    {c.isLoading ? I.refresh : I.link}
-                    {c.isLoading ? '正在载入' : c.statusUrl.trim() ? '载入候选' : '粘贴并载入'}
-                  </button>
-                  <div className="v3-cookie-row">
-                    <span className="row-icon blue">{I.shield}</span>
-                    <span><strong>{c.accountStatusText}</strong><small>服务器登录态优先</small></span>
-                    <button type="button" onClick={() => c.loadCookieStatus(false)}>刷新</button>
-                  </div>
-                  <button className="v3-disclosure" type="button" onClick={() => c.setManualCookieOpen((value) => !value)} aria-expanded={c.manualCookieOpen}>
-                    <span>备用 Cookie</span>
-                    <span>{c.manualCookieOpen ? '收起' : '展开'} {I.chevron}</span>
-                  </button>
-                  {c.manualCookieOpen && (
-                    <>
-                      <textarea
-                        className="v3-textarea"
-                        value={c.mobileCookie}
-                        onChange={(event) => c.setMobileCookie(event.target.value)}
-                        name="mobileCookie"
-                        autoComplete="off"
-                        spellCheck="false"
-                        aria-label="备用微博 Cookie"
-                        placeholder="仅在服务器登录态不可用时尝试"
-                      />
-                      <p className="v3-credential-notice">
-                        备用 Cookie 会发送至本应用服务器，仅在当前任务中处理。请勿在公共设备填写。
-                        <button type="button" onClick={() => c.openLegalDocument('privacy')}>查看隐私政策</button>
-                      </p>
-                    </>
-                  )}
-                </div>
-              )}
-
-              {c.source === 'manual' && (
-                <div className="v3-source-form">
-                  <textarea
-                    className="v3-textarea v3-list-input"
-                    value={c.manualInput}
-                    onChange={(event) => c.updateManualInput(event.target.value)}
-                    name="manualCandidateInput"
-                    autoComplete="off"
-                    aria-label="手动候选名单"
-                    placeholder="每行一个昵称；CSV 建议使用 uid,screenName 表头。"
-                  />
-                  <div className="v3-action-row">
-                    <label className="v3-file-action">
-                      {I.upload}
-                      <span>选择文件</span>
-                      <input type="file" accept=".csv,.txt,.tsv,.json,text/csv,text/plain,application/json" onChange={c.importCandidateFile} />
-                    </label>
-                    <button type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false })}>替换名单</button>
-                    <button type="button" onClick={c.addManualNames}>追加</button>
-                  </div>
-                </div>
-              )}
-
-              {c.source === 'official' && (
-                <div className="v3-source-form">
-                  <label className="v3-link-field">
-                    <span className="sr-only">微博链接、mid 或 bid</span>
-                    <input
-                      value={c.statusUrl}
-                      onChange={(event) => c.updateStatusInput(event.target.value)}
-                      name="officialStatusUrl"
-                      inputMode="url"
-                      autoComplete="off"
-                      placeholder="微博正文链接、mid 或 bid"
-                    />
-                  </label>
-                  <label className="v3-link-field">
-                    <span className="sr-only">官方访问令牌</span>
-                    <input
-                      value={c.accessToken}
-                      onChange={(event) => c.setAccessToken(event.target.value)}
-                      name="accessToken"
-                      type="password"
-                      autoComplete="off"
-                      spellCheck="false"
-                      placeholder="输入官方访问令牌"
-                    />
-                  </label>
-                  <p className="v3-credential-notice">
-                    访问令牌会发送至本应用服务器，仅用于当前任务。请使用微博官方授权获得的令牌。
-                    <button type="button" onClick={() => c.openLegalDocument('privacy')}>查看隐私政策</button>
-                  </p>
-                  <button className="v3-solid-action v3-primary-action" type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: c.shouldForceCandidateRefresh(c.statusUrl) })} disabled={c.isLoading}>
-                    {I.download}
-                    通过官方接口载入
-                  </button>
-                </div>
-              )}
+              <CandidateSourceForm controller={c} variant="page" />
 
               <CandidateLoadProgress progress={c.progress} isLoading={c.isLoading} onCancel={c.cancelCandidateLoad} />
             </section>
@@ -2448,151 +2342,7 @@ function AppleNavigationV3({ controller: c }) {
             <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
           )}
         >
-          {(close) => (
-            <>
-          <div className="segmented-control v3-source-control" role="group" aria-label="候选来源" style={{ '--segment-index': sourceSegmentIndex }}>
-            <span className="segmented-highlight" aria-hidden="true" />
-            {SOURCE_OPTIONS.map(({ value, label }) => (
-              <button
-              key={value}
-              type="button"
-              className={c.source === value ? 'is-active' : ''}
-              aria-pressed={c.source === value}
-              onClick={() => {
-                  if (value !== c.source && c.setSource(value)) c.clearResult();
-                }}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          {c.source === 'mobile' && (
-            <div className="v3-source-form v3-sheet-source-form">
-              <div className="v3-sheet-callout">
-                <span className="row-icon blue">{I.link}</span>
-                <div><strong>微博链接载入</strong><small>读取当前登录态及微博接口可见的转发</small></div>
-              </div>
-              <label className="v3-link-field">
-                <span className="sr-only">微博链接、mid 或 bid</span>
-                <input
-                  ref={c.sourceSheetStatusInputRef}
-                  value={c.statusUrl}
-                  onChange={(event) => c.updateStatusInput(event.target.value)}
-                  name="sourceSheetStatusUrl"
-                  inputMode="url"
-                  autoComplete="off"
-                  placeholder="微博正文链接、mid 或 bid"
-                />
-              </label>
-              <button className="v3-pearl-action v3-primary-action" type="button" onClick={c.pasteAndLoadCandidates} disabled={c.isLoading}>
-                <span className="v3-pearl-icon">{c.isLoading ? I.refresh : I.link}</span>
-                <span className="v3-pearl-copy">
-                  <strong>{c.isLoading ? '正在载入候选' : c.statusUrl.trim() ? '载入候选' : '粘贴链接并载入'}</strong>
-                  <small>自动识别微博正文链接、mid 或 bid</small>
-                </span>
-                <span className="v3-pearl-arrow">{I.chevron}</span>
-              </button>
-              <div className="v3-cookie-row">
-                <span className="row-icon blue">{I.shield}</span>
-                <span><strong>{c.accountStatusText}</strong><small>服务器登录态优先</small></span>
-                <button type="button" onClick={() => c.loadCookieStatus(false)}>刷新</button>
-              </div>
-              <button className="v3-disclosure" type="button" onClick={() => c.setManualCookieOpen((value) => !value)} aria-expanded={c.manualCookieOpen}>
-                <span>备用 Cookie</span>
-                <span>{c.manualCookieOpen ? '收起' : '展开'} {I.chevron}</span>
-              </button>
-              {c.manualCookieOpen && (
-                <>
-                  <textarea
-                    className="v3-textarea"
-                    value={c.mobileCookie}
-                    onChange={(event) => c.setMobileCookie(event.target.value)}
-                    name="sourceSheetMobileCookie"
-                    autoComplete="off"
-                    spellCheck="false"
-                    aria-label="备用微博 Cookie"
-                    placeholder="仅在服务器登录态不可用时尝试"
-                  />
-                  <p className="v3-credential-notice">
-                    备用 Cookie 会发送至本应用服务器，仅在当前任务中处理。请勿在公共设备填写。
-                    <button type="button" onClick={() => c.openLegalDocument('privacy')}>查看隐私政策</button>
-                  </p>
-                </>
-              )}
-            </div>
-          )}
-
-          {c.source === 'manual' && (
-            <div className="v3-source-form v3-sheet-source-form">
-              <div className="v3-sheet-callout">
-                <span className="row-icon coral">{I.users}</span>
-                <div><strong>手动名单</strong><small>每行一个昵称，也可导入带表头的 CSV、TSV 或 JSON</small></div>
-              </div>
-              <textarea
-                className="v3-textarea v3-list-input"
-                value={c.manualInput}
-                onChange={(event) => c.updateManualInput(event.target.value)}
-                name="sourceSheetManualCandidates"
-                autoComplete="off"
-                aria-label="弹窗手动候选名单"
-                placeholder="每行一个昵称；CSV 建议使用 uid,screenName 表头。"
-              />
-              <div className="v3-action-row">
-                <label className="v3-file-action">
-                  {I.upload}
-                  <span>选择文件</span>
-                  <input type="file" accept=".csv,.txt,.tsv,.json,text/csv,text/plain,application/json" onChange={c.importCandidateFile} />
-                </label>
-                <button type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false })}>替换名单</button>
-                <button type="button" onClick={c.addManualNames}>追加</button>
-              </div>
-            </div>
-          )}
-
-          {c.source === 'official' && (
-            <div className="v3-source-form v3-sheet-source-form">
-              <div className="v3-sheet-callout">
-                <span className="row-icon mint">{I.shield}</span>
-                <div><strong>官方接口</strong><small>使用微博官方访问令牌载入候选</small></div>
-              </div>
-              <label className="v3-link-field">
-                <span className="sr-only">微博链接、mid 或 bid</span>
-                <input
-                  value={c.statusUrl}
-                  onChange={(event) => c.updateStatusInput(event.target.value)}
-                  name="sourceSheetOfficialStatusUrl"
-                  inputMode="url"
-                  autoComplete="off"
-                  placeholder="微博正文链接、mid 或 bid"
-                />
-              </label>
-              <label className="v3-link-field">
-                <span className="sr-only">官方访问令牌</span>
-                <input
-                  value={c.accessToken}
-                  onChange={(event) => c.setAccessToken(event.target.value)}
-                  name="sourceSheetAccessToken"
-                  type="password"
-                  autoComplete="off"
-                  spellCheck="false"
-                  placeholder="输入官方访问令牌"
-                />
-              </label>
-              <p className="v3-credential-notice">
-                访问令牌会发送至本应用服务器，仅用于当前任务。请使用微博官方授权获得的令牌。
-                <button type="button" onClick={() => c.openLegalDocument('privacy')}>查看隐私政策</button>
-              </p>
-              <button className="v3-pearl-action v3-primary-action" type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: c.shouldForceCandidateRefresh(c.statusUrl) })} disabled={c.isLoading}>
-                <span className="v3-pearl-icon">{c.isLoading ? I.refresh : I.download}</span>
-                <span className="v3-pearl-copy"><strong>{c.isLoading ? '正在载入候选' : '通过官方接口载入'}</strong><small>令牌仅用于当前载入任务</small></span>
-                <span className="v3-pearl-arrow">{I.chevron}</span>
-              </button>
-            </div>
-          )}
-
-            </>
-          )}
+          {() => <CandidateSourceForm controller={c} variant="sheet" />}
         </SheetFrame>
       )}
 
@@ -2618,7 +2368,7 @@ function AppleNavigationV3({ controller: c }) {
             </button>
           )}
         >
-          {(close) => (
+          {() => (
             <>
           <div className="v3-sheet-toolbar">
             <span>按顺序依次抽取</span>
@@ -2800,11 +2550,30 @@ function AppleNavigationV3({ controller: c }) {
           >
             <summary><span><strong>后端连接</strong><small>{c.serviceStatusText}</small></span>{I.chevron}</summary>
             <div className="flow-settings-form">
-              <label className="flow-field-block"><span>已配置的后端地址</span><input name="backendAddress" autoComplete="off" inputMode="url" spellCheck="false" value={c.apiBaseInput} onChange={(event) => c.setApiBaseInput(event.target.value)} onBlur={() => c.commitApiBase()} onKeyDown={(event) => { if (event.key === 'Enter') c.commitApiBase(); }} placeholder="仅支持预配置地址或本机地址…" /></label>
-              <label className="flow-field-block"><span>访问密钥（按部署要求）</span><input name="backendAccessKey" autoComplete="off" spellCheck="false" value={c.apiKey} onChange={(event) => c.setApiKey(event.target.value)} type="password" placeholder="公开模式不用填写…" /></label>
+              {c.backendAddressEditorOpen ? (
+                <label className="flow-field-block"><span>自定义后端地址</span><input name="backendAddress" autoComplete="off" inputMode="url" spellCheck="false" value={c.apiBaseInput} onChange={(event) => c.setApiBaseInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') c.saveBackendAddress(); }} placeholder="例如 http://127.0.0.1:4173" /></label>
+              ) : (
+                <div className="flow-field-block">
+                  <span>后端地址</span>
+                  <p className="flow-field-hint">已使用预置服务地址，默认不在页面上显示。需要连接本机或自建服务时再手动填写。</p>
+                </div>
+              )}
+              <label className="flow-field-block"><span>访问密钥（按部署要求）</span><input name="backendAccessKey" autoComplete="off" spellCheck="false" value={c.apiKey} onChange={(event) => c.setApiKey(event.target.value)} type="password" placeholder={c.apiAuthRequired ? '该后端要求密钥，请填写…' : '公开模式不用填写…'} /></label>
+              {c.apiAuthRequired && !c.apiKey.trim() && (
+                <p className="flow-field-hint">当前后端开启了访问密钥校验，未填写时候选载入和记录保存都会返回 401。</p>
+              )}
               <div className="flow-settings-actions">
-                <button type="button" onClick={c.testApiConnection}>测试连接</button>
-                <button type="button" onClick={() => { c.setApiBaseInput(''); c.setApiBase(''); c.setApiKey(''); c.showStatus('已改用当前站点的后端。', 'success', { popup: true, title: '已切换' }); }}>使用当前站点</button>
+                {c.backendAddressEditorOpen ? (
+                  <>
+                    <button type="button" onClick={c.saveBackendAddress}>保存并使用</button>
+                    <button type="button" onClick={c.usePresetBackend}>使用预置地址</button>
+                  </>
+                ) : (
+                  <>
+                    <button type="button" onClick={c.testApiConnection}>测试连接</button>
+                    <button type="button" onClick={c.openBackendAddressEditor}>手动填写地址</button>
+                  </>
+                )}
               </div>
             </div>
           </details>
@@ -2820,6 +2589,7 @@ function AppleNavigationV3({ controller: c }) {
         isCapturing={c.isCapturing}
         isSyncing={c.syncingReceiptIds.has(c.selectedReceipt?.id)}
         historyStorageAvailable={c.historyStorageAvailable}
+        returnFocusId="draw-result-trigger"
         onClose={() => c.setSelectedReceipt(null)}
         onSaveImage={() => c.createShareImage(c.selectedReceipt)}
         onCopyPost={(template) => c.copyReceiptPost(c.selectedReceipt, template)}
@@ -2899,10 +2669,12 @@ function App() {
   const [cooldownStorageAvailable, setCooldownStorageAvailable] = useState(canUseLocalStorage);
   const [, setFreshnessTick] = useState(0);
   const [apiBase, setApiBase] = useState(initialApiBase);
-  const [apiBaseInput, setApiBaseInput] = useState(initialApiBase);
+  const [apiBaseInput, setApiBaseInput] = useState(initialApiBaseInput);
+  const [backendAddressEditorOpen, setBackendAddressEditorOpen] = useState(() => Boolean(initialApiBaseInput()));
   const [apiKey, setApiKey] = useState(initialApiKey);
   const [apiHealth, setApiHealth] = useState('checking');
   const [apiHealthDetail, setApiHealthDetail] = useState('');
+  const [apiAuthRequired, setApiAuthRequired] = useState(false);
   const [cookieHealth, setCookieHealth] = useState('checking');
   const firstPrizeNameRef = useRef(null);
   const homeStatusInputRef = useRef(null);
@@ -3213,7 +2985,9 @@ function App() {
     return true;
   }
   function openSettings(target = 'overview') {
-    setApiBaseInput(apiBase);
+    const customBase = isPresetApiBase(apiBase) ? '' : apiBase;
+    setApiBaseInput(customBase);
+    setBackendAddressEditorOpen(Boolean(customBase));
     setSettingsTarget(target);
     setShowSettings(true);
   }
@@ -3333,21 +3107,38 @@ function App() {
   }
   function commitApiBase(value = apiBaseInput) {
     const raw = String(value || '').trim();
-    if (!raw) {
+    const cleaned = cleanApiBase(raw || presetApiBase());
+    if (!cleaned) {
       if (apiBase) apiHealthRequestRef.current += 1;
       setApiBaseInput('');
       setApiBase('');
       return '';
     }
-    const cleaned = cleanApiBase(raw);
     if (!isTrustedApiBase(cleaned)) {
-      showStatus('后端接口地址不在可信列表里，请使用当前公开后端或本地地址。', 'error', { title: '地址不可用' });
+      showStatus('后端接口地址不在可信列表里，请使用预置服务或本机地址。', 'error', { title: '地址不可用' });
       return null;
     }
     if (cleaned !== apiBase) apiHealthRequestRef.current += 1;
-    setApiBaseInput(cleaned);
+    setApiBaseInput(isPresetApiBase(cleaned) ? '' : cleaned);
     setApiBase(cleaned);
     return cleaned;
+  }
+  function openBackendAddressEditor() {
+    setApiBaseInput(isPresetApiBase(apiBase) ? '' : apiBase);
+    setBackendAddressEditorOpen(true);
+  }
+  function saveBackendAddress() {
+    const saved = commitApiBase();
+    if (saved === null) return;
+    setBackendAddressEditorOpen(false);
+    showStatus(saved ? '已切换到自定义后端地址。' : '已使用预置服务地址。', 'success');
+  }
+  function usePresetBackend() {
+    const restored = commitApiBase(presetApiBase());
+    if (restored === null) return;
+    setBackendAddressEditorOpen(false);
+    setApiBaseInput('');
+    showStatus('已使用预置服务地址。', 'success');
   }
   function shouldForceCandidateRefresh(value, sourceValue = source) {
     const target = String(value || '').trim();
@@ -3444,7 +3235,7 @@ function App() {
     if (isLoading || isDrawing || candidateLoadStartRef.current || drawStartRef.current) return;
     const existingValue = statusUrl.trim();
     if (existingValue) {
-      if (!looksLikeWeiboStatusReference(existingValue)) {
+      if (!isWeiboStatusReference(existingValue)) {
         showInvalidStatusReference();
         return;
       }
@@ -3478,7 +3269,7 @@ function App() {
       showStatus('当前操作正在进行，请稍候再试。');
       return;
     }
-    if (!looksLikeWeiboStatusReference(pastedValue)) {
+    if (!isWeiboStatusReference(pastedValue)) {
       showInvalidStatusReference();
       return;
     }
@@ -3763,7 +3554,8 @@ function App() {
       if (!json.ok) throw new Error(json.error || '后端没有返回 ok');
       if (mountedRef.current && requestId === apiHealthRequestRef.current) {
         setApiHealth('ok');
-        setApiHealthDetail('');
+        setApiAuthRequired(json.authRequired === true);
+        setApiHealthDetail(json.authRequired === true ? '该后端要求访问密钥' : '');
       }
     } catch (error) {
       if (mountedRef.current && requestId === apiHealthRequestRef.current) {
@@ -3774,7 +3566,7 @@ function App() {
   }
 
   async function testApiConnection() {
-    const targetBase = commitApiBase();
+    const targetBase = backendAddressEditorOpen ? commitApiBase() : apiBase;
     if (targetBase === null) return;
     const requestId = ++apiHealthRequestRef.current;
     cookieStatusRequestRef.current += 1;
@@ -3785,8 +3577,15 @@ function App() {
       if (!json.ok) throw new Error(json.error || '后端没有返回 ok');
       if (requestId !== apiHealthRequestRef.current) return;
       setApiHealth('ok');
-      setApiHealthDetail('');
-      showStatus(`后端连接成功：${targetBase || location.origin}`, 'success', { popup: true, title: '连接正常' });
+      setApiAuthRequired(json.authRequired === true);
+      setApiHealthDetail(json.authRequired === true ? '该后端要求访问密钥' : '');
+      showStatus(
+        json.authRequired === true
+          ? '后端连接成功，但它要求访问密钥。'
+          : '后端连接成功。',
+        'success',
+        { popup: true, title: '连接正常' },
+      );
     } catch (error) {
       if (requestId !== apiHealthRequestRef.current) return;
       setApiHealth('error');
@@ -3835,7 +3634,8 @@ function App() {
   }, [apiBase]);
   useEffect(() => {
     const cleaned = cleanApiBase(apiBase);
-    writeStoredValue('weibo-draw-api-base', cleaned && isTrustedApiBase(cleaned) ? cleaned : '');
+    const custom = cleaned && isTrustedApiBase(cleaned) && !isPresetApiBase(cleaned) ? cleaned : '';
+    writeStoredValue('weibo-draw-api-base', custom);
   }, [apiBase]);
   useEffect(() => {
     writeStoredValue('weibo-draw-api-key', apiKey.trim());
@@ -3870,7 +3670,7 @@ function App() {
     return () => window.removeEventListener('storage', syncDrawHistory);
   }, [currentStatusId]);
   useEffect(() => {
-    if (source === 'manual' || !looksLikeWeiboStatusReference(statusUrl)) {
+    if (source === 'manual' || !isWeiboStatusReference(statusUrl)) {
       drawCountRequestRef.current += 1;
       setDrawCount(null);
       setDrawCountStatus('idle');
@@ -3899,7 +3699,7 @@ function App() {
       body: JSON.stringify(payload),
     });
     const started = await readApiResponse(startResponse, '候选载入服务');
-    if (!started.ok) throw new Error(started.error || '抓取任务创建失败');
+    if (!started.ok) throw apiError(started.error || '抓取任务创建失败', startResponse.status);
     if (!started.jobId && !(started.status === 'done' && started.result)) {
       throw new Error('抓取任务创建失败：服务器没有返回任务编号');
     }
@@ -3934,7 +3734,7 @@ function App() {
     if (started.status === 'done' && started.result) {
       return {
         ...started.result,
-        meta: { ...(started.result.meta || {}), delivery: started.delivery || 'fresh' },
+        meta: { ...started.result.meta, delivery: started.delivery || 'fresh' },
       };
     }
     while (true) {
@@ -3953,9 +3753,7 @@ function App() {
         });
         json = await readApiResponse(response, '候选载入服务');
         if (!json.ok) {
-          const error = new Error(json.error || '抓取进度读取失败');
-          error.status = response.status;
-          throw error;
+          throw apiError(json.error || '抓取进度读取失败', response.status);
         }
         reconnectAttempts = 0;
       } catch (error) {
@@ -3976,7 +3774,7 @@ function App() {
       if (json.status === 'done') {
         return {
           ...json.result,
-          meta: { ...(json.result?.meta || {}), delivery: started.delivery || json.delivery || 'fresh' },
+          meta: { ...json.result?.meta, delivery: started.delivery || json.delivery || 'fresh' },
         };
       }
       if (json.status === 'cancelled') throw new DOMException('候选载入已取消', 'AbortError');
@@ -4098,7 +3896,7 @@ function App() {
         setDrawCount(null);
         setDrawCountStatus('unknown');
       }
-      setSourceMeta({ ...(json.meta || {}), statusId: json.statusId, statusUrl: json.statusUrl });
+      setSourceMeta({ ...json.meta, statusId: json.statusId, statusUrl: json.statusUrl });
       setLoadedSource(effectiveSource);
       setSourceInputDirty(false);
       setCandidateLoadError('');
@@ -4126,7 +3924,7 @@ function App() {
         eligible: eligibleCandidates(loadedCandidates, rules, freshHistory),
         statusId: json.statusId || '',
         statusUrl: json.statusUrl || effectiveStatusUrl,
-        sourceMeta: { ...(json.meta || {}), statusId: json.statusId, statusUrl: json.statusUrl },
+        sourceMeta: { ...json.meta, statusId: json.statusId, statusUrl: json.statusUrl },
       };
     } catch (error) {
       if (!isCurrentCandidateLoad(loadRevision, operation)) return null;
@@ -4137,7 +3935,9 @@ function App() {
         showStatus(message);
         return null;
       }
-      const message = error?.message || '微博数据拉取失败。';
+      const message = error?.status === 401
+        ? '该后端要求访问密钥，请到“设置 → 后端连接”填写后重新载入。'
+        : error?.message || '微博数据拉取失败。';
       setCandidateLoadError(message);
       showStatus(message, 'error');
       throw error;
@@ -4296,7 +4096,7 @@ function App() {
       };
       setLastAudit(audit);
       const activeSourceMeta = {
-        ...(drawContext.sourceMeta || sourceMeta || {}),
+        ...(drawContext.sourceMeta || sourceMeta),
         statusId: drawContext.statusId || currentStatusId,
         statusUrl: drawContext.statusUrl || currentStatusUrl || statusUrl.trim(),
       };
@@ -4478,23 +4278,8 @@ function App() {
         updateCurrentTask: false,
       });
       if (!saved?.file) throw new Error('服务器没有返回开奖记录文件');
-      if (drawHistoryMutationRevisionRef.current !== historyMutationRevision) return null;
-      const manualDrawNumber = receipt.source === 'manual'
-        ? manualDrawNumberFromSave(saved.drawNumber, drawHistoryRef.current, receipt.id)
-        : null;
-      const updated = normalizeDrawReceipt({
-        ...receipt,
-        id: receipt.id,
-        drawNumber: saved.drawNumber ?? manualDrawNumber,
-        savedAt: saved.savedAt,
-        auditHash: saved.auditHash,
-        recordState: 'server',
-      });
-      const historyUpdate = await commitDrawHistoryMutation(
-        (history) => upsertDrawReceipt(history, updated),
-        { revision: historyMutationRevision },
-      );
-      if (historyUpdate.cancelled) return null;
+      const updated = await persistSavedReceipt(receipt, saved, historyMutationRevision);
+      if (!updated) return null;
       const isCurrentTask = taskRevisionRef.current === taskRevision;
       if (isCurrentTask) {
         setPendingReceipt((current) => current?.id === receipt.id ? updated : current);
@@ -4529,6 +4314,26 @@ function App() {
     } finally {
       setReceiptSyncing(receipt.id, false);
     }
+  }
+
+  async function persistSavedReceipt(receipt, saved, historyMutationRevision) {
+    if (drawHistoryMutationRevisionRef.current !== historyMutationRevision) return null;
+    const manualDrawNumber = receipt.source === 'manual'
+      ? manualDrawNumberFromSave(saved.drawNumber, drawHistoryRef.current, receipt.id)
+      : null;
+    const updated = normalizeDrawReceipt({
+      ...receipt,
+      id: receipt.id,
+      drawNumber: saved.drawNumber ?? manualDrawNumber,
+      savedAt: saved.savedAt,
+      auditHash: saved.auditHash,
+      recordState: 'server',
+    });
+    const historyUpdate = await commitDrawHistoryMutation(
+      (history) => upsertDrawReceipt(history, updated),
+      { revision: historyMutationRevision },
+    );
+    return historyUpdate.cancelled ? null : updated;
   }
 
   async function copyToClipboard(text, successMessage) {
@@ -4756,23 +4561,8 @@ function App() {
       },
     });
     if (!saved?.file) return;
-    if (drawHistoryMutationRevisionRef.current !== historyMutationRevision) return null;
-    const manualDrawNumber = receipt.source === 'manual'
-      ? manualDrawNumberFromSave(saved.drawNumber, drawHistoryRef.current, receipt.id)
-      : null;
-    const updated = normalizeDrawReceipt({
-      ...receipt,
-      id: receipt.id,
-      drawNumber: saved.drawNumber ?? manualDrawNumber,
-      savedAt: saved.savedAt,
-      auditHash: saved.auditHash,
-      recordState: 'server',
-    });
-    const historyUpdate = await commitDrawHistoryMutation(
-      (history) => upsertDrawReceipt(history, updated),
-      { revision: historyMutationRevision },
-    );
-    if (historyUpdate.cancelled) return null;
+    const updated = await persistSavedReceipt(receipt, saved, historyMutationRevision);
+    if (!updated) return null;
     setSelectedReceipt((current) => current?.id === receipt.id ? updated : current);
     return updated;
   }
@@ -4958,39 +4748,25 @@ function App() {
     : drawCountKnown
       ? Math.max(0, Math.floor(Number(drawCount)))
       : null;
-  const nextDrawText = source === 'manual'
-    ? manualDrawLimitReached
-      ? '手动名单开奖次数已达上限'
-      : `本机第 ${previousDrawCount + 1} 次手动开奖`
-    : previousDrawCount === null
-      ? '本链接下一次开奖（次数待核实）'
-      : `本链接第 ${previousDrawCount + 1} 次开奖`;
+  const nextDrawText = getNextDrawText({
+    source,
+    previousDrawCount,
+    manualLimitReached: manualDrawLimitReached,
+  });
   const activeReceipt = selectedReceipt?.drawnAt === lastAudit?.drawnAt
     ? selectedReceipt
     : lastAudit?.drawnAt
       ? drawHistory.find((item) => item.drawnAt === lastAudit.drawnAt)
       : null;
-  const drawCountText = activeReceipt
-    ? activeReceipt.drawNumber
-      ? drawCountCopy({
-        source: activeReceipt.source,
-        count: activeReceipt.drawNumber,
-        completed: true,
-      })
-      : '本次结果未计入次数'
-    : source === 'manual'
-      ? manualDrawLimitReached
-        ? '手动名单开奖次数已达上限'
-        : drawCountCopy({ source, count: manualDrawCount, completed: false })
-      : !statusUrl.trim()
-        ? '输入链接后显示'
-        : drawCountStatus === 'loading'
-          ? '正在查询记录'
-          : drawCountStatus === 'error'
-            ? '开奖次数查询失败'
-            : drawCount === null
-              ? '暂未获取到开奖次数'
-              : drawCountCopy({ source, count: drawCount, completed: false });
+  const drawCountText = getDrawCountText({
+    activeReceipt,
+    source,
+    manualLimitReached: manualDrawLimitReached,
+    manualDrawCount,
+    statusUrl,
+    status: drawCountStatus,
+    count: drawCount,
+  });
   const hasCandidates = candidates.length > 0;
   const hasResults = results.length > 0;
   const serverTryableAccountCount = Number(
@@ -5002,17 +4778,12 @@ function App() {
       ?? 0,
   );
   const serverVerifiedAccountCount = Number(cookieInfo.verifiedAccountCount || 0);
-  const accountStatusText = cookieHealth === 'error'
-    ? '登录态状态暂不可用'
-    : cookieHealth === 'checking'
-      ? '正在读取登录态'
-      : serverVerifiedAccountCount > 0
-        ? `${serverVerifiedAccountCount} 个已验证服务器登录态`
-        : serverTryableAccountCount > 0
-          ? '服务器登录态已保存'
-        : mobileCookie.trim()
-          ? '已填写备用 Cookie'
-          : '暂无服务器登录态';
+  const accountStatusText = getAccountStatusText({
+    cookieHealth,
+    verifiedAccountCount: serverVerifiedAccountCount,
+    tryableAccountCount: serverTryableAccountCount,
+    hasFallbackCookie: Boolean(mobileCookie.trim()),
+  });
   const serviceStatusText = progress
     ? '任务运行中'
     : apiHealth === 'ok'
@@ -5035,19 +4806,14 @@ function App() {
   const loadedTime = shortLoadedTime(sourceMeta?.loadedAt);
   const candidateCutoff = candidateCutoffInfo(sourceMeta?.loadedAt);
   const candidateNeedsRefresh = source !== 'manual' && candidateCutoff.ageMs >= 2 * 60_000;
-  const candidateFreshnessText = candidateLoadError
-    ? '上次载入未完成，等待重新载入'
-    : candidates.length && !candidateSourceReady
-    ? '来源已修改，等待重新载入'
-    : source === 'manual'
-    ? loadedTime ? `${loadedTime} 更新` : '手动名单'
-    : sourceMeta?.delivery === 'recent-snapshot'
-      ? `复用 ${Math.max(1, Math.round(Number(sourceMeta.snapshotAgeMs || 0) / 1000))} 秒内名单`
-      : sourceMeta?.delivery === 'shared-running'
-        ? '共享载入完成'
-           : loadedTime
-           ? `${loadedTime} 更新`
-           : '本次载入';
+  const candidateFreshnessText = getCandidateFreshnessText({
+    loadError: candidateLoadError,
+    candidateCount: candidates.length,
+    sourceReady: candidateSourceReady,
+    source,
+    loadedTime,
+    sourceMeta,
+  });
   const currentReceipt = hasResults ? currentReceiptSnapshot() : null;
   return (
     <AppleNavigationV3
@@ -5098,7 +4864,9 @@ function App() {
         confirmAction,
         apiBase,
         apiBaseInput,
+        backendAddressEditorOpen,
         apiKey,
+        apiAuthRequired,
         totalSlots,
         hasCandidates,
         hasResults,
@@ -5155,6 +4923,9 @@ function App() {
         setApiBase: updateApiBase,
         setApiBaseInput: updateApiBaseInput,
         commitApiBase,
+        openBackendAddressEditor,
+        saveBackendAddress,
+        usePresetBackend,
         setApiKey,
         setManualCookieOpen,
         setMotionPreference,

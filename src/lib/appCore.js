@@ -70,7 +70,7 @@ export function safeMentionName(value) {
 }
 
 export function friendlyProviderText(value) {
-  const parts = Array.isArray(value) ? value : String(value || '').split(/[\/,]/);
+  const parts = Array.isArray(value) ? value : String(value || '').split(/[/,]/);
   const labels = parts
     .map((item) => String(item || '').trim())
     .filter(Boolean)

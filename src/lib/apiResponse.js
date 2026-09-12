@@ -121,6 +121,7 @@ export async function readJsonResponse(response, options = {}) {
   const {
     allowEmpty = true,
     fallback = {},
+    invalidJsonMessage = '响应正文不是有效 JSON',
     strict = false,
   } = options;
   const text = await readResponseTextWithin(response, options);
@@ -134,7 +135,7 @@ export async function readJsonResponse(response, options = {}) {
     return JSON.parse(text);
   } catch (cause) {
     if (!strict) return fallback;
-    const error = new Error('响应正文不是有效 JSON');
+    const error = new Error(invalidJsonMessage);
     error.code = 'INVALID_RESPONSE_JSON';
     error.cause = cause;
     throw error;

@@ -1,4 +1,5 @@
 import { listDisplayState } from './admin-list-state.js';
+import { formatDurationMs } from './admin-status.js';
 import { readJsonResponse } from './api-response.js';
 
 (() => {
@@ -146,18 +147,6 @@ import { readJsonResponse } from './api-response.js';
       hour: '2-digit',
       minute: '2-digit',
     });
-  }
-
-  function formatDurationMs(value) {
-    const ms = Number(value);
-    if (!Number.isFinite(ms) || ms <= 0) return '-';
-    const minute = 60_000;
-    const hour = 60 * minute;
-    const day = 24 * hour;
-    if (ms % day === 0) return `${ms / day} 天`;
-    if (ms % hour === 0) return `${ms / hour} 小时`;
-    if (ms % minute === 0) return `${ms / minute} 分钟`;
-    return `${Math.round(ms / 1000)} 秒`;
   }
 
   function formatFileSize(value) {
@@ -399,6 +388,7 @@ import { readJsonResponse } from './api-response.js';
     const lifecycle = responseLifecycles.get(response);
     try {
       return await readJsonResponse(response, {
+        invalidJsonMessage: '服务器返回格式异常',
         ...options,
         signal: lifecycle?.signal || options.signal,
       });

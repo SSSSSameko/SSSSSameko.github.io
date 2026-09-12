@@ -1593,6 +1593,11 @@ button {
   display: none;
 }
 
+.flow-sheet-body:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: -3px;
+}
+
 .flow-sheet-footer {
   position: relative;
   display: flex;
@@ -3220,6 +3225,13 @@ button {
   min-height: 92px;
   padding-block: 10px;
   resize: vertical;
+}
+
+.flow-field-hint {
+  margin: 0;
+  color: var(--live-secondary);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .flow-settings-actions {

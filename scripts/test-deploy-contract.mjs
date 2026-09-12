@@ -160,9 +160,14 @@ assert.ok(installer.indexOf(swappedFlag, installer.indexOf(swapCommand)) > insta
 assert.match(installer, /Environment=PORT=\.\*\|Environment=PORT=\$\{health_port\}/);
 assert.doesNotMatch(installer, /current_link_replacement/);
 
-for (const asset of ['admin.html', 'admin.css', 'admin.js', 'admin-list-state.js', 'api-response.js']) {
+for (const asset of ['admin.html', 'admin.css', 'admin.js', 'admin-list-state.js']) {
   assert.match(installer, new RegExp(`server-admin/${asset.replace('.', '\\.')}\\b`));
 }
+assert.match(installer, /src\/lib\/apiResponse\.js\b/);
+assert.match(installer, /src\/lib\/adminStatus\.js\b/);
+assert.match(installer, /request\(`\$\{adminBase\}\/admin-status\.js`\)/);
+assert.match(installer, /ADMIN_BASE_PATH/);
+assert.match(installer, /admin_base_path/);
 
 assert.match(installer, /SAMEKO_BROWSER_SOAK_ROUNDS=([2-8])/);
 assert.match(installer, /WEIBO_BROWSER_SANDBOX="\$\{weibo_browser_sandbox\}"/);
@@ -172,7 +177,8 @@ assert.match(installer, /local verify_release_assets="\$\{2:-1\}"/);
 assert.match(installer, /git -C "\$\{source_root\}" archive --format=tar "\$\{source_revision\}" \| tar -xf -/);
 assert.match(installer, /Refusing to deploy a dirty Git working tree/);
 assert.match(installer, /ALLOW_UNVERSIONED_SOURCE=1/);
-assert.match(installer, /API_KEY=\$\(openssl rand -hex 32\)/);
+assert.match(installer, /^ALLOW_PUBLIC_API=1$/m);
+assert.doesNotMatch(installer, /API_KEY=\$\(openssl rand -hex 32\)/);
 assert.match(installer, /API_KEY is required unless ALLOW_PUBLIC_API=1/);
 assert.match(installer, /ADMIN_KEY must be at least 32 bytes when configured/);
 assert.match(installer, />"\$\{stage_dir\}\/\.release-commit"/);

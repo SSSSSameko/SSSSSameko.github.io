@@ -131,6 +131,15 @@ try {
       scrollHeight: element.scrollHeight,
     }));
     assert.ok(scrollMetrics.scrollHeight > scrollMetrics.clientHeight, JSON.stringify(scrollMetrics));
+    assert.equal(await confirmBody.evaluate((element) => element.tabIndex), 0);
+    await confirmBody.focus();
+    const scrollTopBeforeKeyboard = await confirmBody.evaluate((element) => element.scrollTop);
+    await shortPage.keyboard.press('PageDown');
+    const scrollTopAfterKeyboard = await confirmBody.evaluate((element) => element.scrollTop);
+    assert.ok(
+      scrollTopAfterKeyboard > scrollTopBeforeKeyboard,
+      `确认内容无法用键盘滚动：${scrollTopBeforeKeyboard} -> ${scrollTopAfterKeyboard}`,
+    );
 
     const factRows = confirmDialog.locator('.v3-confirm-facts > div');
     assert.equal(await factRows.count(), 4);
@@ -161,15 +170,8 @@ try {
     const primaryButton = confirmDialog.getByRole('button', { name: '确认并开始抽奖' });
     const lastControl = confirmDialog.locator('.flow-sheet-footer button').last();
     await closeButton.focus();
-    assert.equal(await closeButton.evaluate((element) => element === document.activeElement), true);
-    // 主操作已移出滚动区域。Chromium 会把没有可聚焦子元素的可滚动容器本身放进 Tab 顺序，
-    // 所以这里只断言焦点没有逃出弹窗，再单独校验主操作可聚焦、以及首尾循环仍然生效。
     await shortPage.keyboard.press('Tab');
-    assert.equal(
-      await confirmDialog.evaluate((dialog) => dialog.contains(document.activeElement)),
-      true,
-      'Tab 后焦点离开了弹窗',
-    );
+    assert.equal(await confirmBody.evaluate((element) => element === document.activeElement), true);
     await primaryButton.focus();
     assert.equal(await primaryButton.evaluate((element) => element === document.activeElement), true);
     await lastControl.focus();

@@ -209,7 +209,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname);
 const distDir = path.join(rootDir, 'dist');
 const publicDir = path.join(rootDir, 'public');
-const adminDir = path.join(rootDir, 'server-admin');
 const outputDir = path.resolve(rootDir, process.env.OUTPUT_DIR || 'output');
 const drawsDir = path.resolve(rootDir, process.env.DRAWS_DIR || path.join(outputDir, 'draws'));
 const authDir = path.join(outputDir, 'auth');
@@ -256,6 +255,8 @@ const adminSessionSecure = /^(1|true|yes)$/i.test(String(
 const cookieWriteKey = String(process.env.COOKIE_WRITE_KEY || '').trim();
 const cookieReadApiEnabled = /^(1|true|yes)$/i.test(String(process.env.ENABLE_COOKIE_READ_API || '').trim());
 const cookieReadKey = String(process.env.COOKIE_READ_KEY || '').trim();
+const configuredAdminBasePath = String(process.env.ADMIN_BASE_PATH || '').trim();
+const adminBasePath = configuredAdminBasePath ? normalizeAdminBasePath(configuredAdminBasePath) : '/admin';
 const fetchTimeoutMs = envNumber('FETCH_TIMEOUT_MS', 20_000, 1000);
 const completedJobReleaseMs = envNumber('COMPLETED_JOB_RELEASE_MS', 60_000, 10_000);
 const jobQueueTimeoutMs = envNumber('JOB_QUEUE_TIMEOUT_MS', 5 * 60_000, 10_000);
@@ -269,6 +270,7 @@ const maxJobSubscribers = envInteger('MAX_JOB_SUBSCRIBERS', 32, 1);
 const rateLimitWindowMs = envNumber('RATE_LIMIT_WINDOW_MS', 60_000, 1000);
 const rateLimitMax = envInteger('RATE_LIMIT_MAX', 240, 1);
 const rateLimitMaxBuckets = envInteger('RATE_LIMIT_MAX_BUCKETS', 5000, 100);
+const rateLimitIpFactor = envInteger('RATE_LIMIT_IP_FACTOR', 8, 1);
 const jobCreateRateLimitMax = envInteger('JOB_CREATE_RATE_LIMIT_MAX', 10, 1);
 const jobPollRateLimitMax = envInteger('JOB_POLL_RATE_LIMIT_MAX', 480, 1);
 const drawSaveRateLimitMax = envInteger('DRAW_SAVE_RATE_LIMIT_MAX', 30, 1);
@@ -631,7 +633,7 @@ function sendText(res, status, text) {
 }
 
 function cspConnectSources() {
-  const sources = new Set(["'self'", 'https://111.228.11.206', 'https://sssssameko.github.io']);
+  const sources = new Set(["'self'", 'https://sssssameko.github.io']);
   for (const origin of configuredCorsOrigins) sources.add(origin);
   return [...sources].join(' ');
 }
@@ -696,7 +698,7 @@ function applyCors(req, res, pathname) {
   res.setHeader('access-control-allow-origin', allowedOrigin);
   res.setHeader('vary', 'Origin');
   res.setHeader('access-control-allow-methods', 'GET,POST,PATCH,DELETE,OPTIONS');
-    res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key, x-client-id, x-admin-csrf, x-cookie-write-key, x-cookie-read-key, x-job-cancel-token, x-job-read-token');
+  res.setHeader('access-control-allow-headers', 'content-type, authorization, x-api-key, x-client-id, x-admin-csrf, x-cookie-write-key, x-cookie-read-key, x-job-cancel-token, x-job-read-token');
   res.setHeader('access-control-max-age', '86400');
   return true;
 }
@@ -915,14 +917,7 @@ function rateLimitMaxForPath(req, pathname) {
   return rateLimitMax;
 }
 
-function checkRateLimit(req, pathname) {
-  if (!isApiPath(pathname) || req.method === 'OPTIONS') return { ok: true };
-  const now = Date.now();
-  const limit = rateLimitMaxForPath(req, pathname);
-  const scope = rateLimitScope(req, pathname);
-  const usesClientIdentity = (req.method === 'POST' && pathname === '/api/feedback')
-    || (req.method === 'POST' && pathname === '/api/weibo/reposts/jobs');
-  const key = `${usesClientIdentity ? clientIdentityKey(req) : clientRateKey(req)}:${scope}`;
+function consumeRateLimit(key, scope, limit, now) {
   const current = rateLimitBuckets.get(key);
   let bucket = current && current.resetAt > now ? current : null;
   if (!bucket) {
@@ -936,6 +931,32 @@ function checkRateLimit(req, pathname) {
     ok: bucket.count <= limit,
     retryAfter: Math.max(1, Math.ceil((bucket.resetAt - now) / 1000)),
   };
+}
+
+// 同一个出口 IP 后面可能是一整个宿舍或运营商 NAT，只按 IP 限流会让互不相干的
+// 访客互相挤占额度。改成按浏览器标识计数，再保留一个更宽松的 IP 上限，
+// 防止伪造 x-client-id 无限刷接口。
+function checkRateLimit(req, pathname) {
+  if (!isApiPath(pathname) || req.method === 'OPTIONS') return { ok: true };
+  const now = Date.now();
+  const limit = rateLimitMaxForPath(req, pathname);
+  const scope = rateLimitScope(req, pathname);
+  const address = clientRateKey(req);
+  const clientId = clientIdFromRequest(req);
+  const clientResult = consumeRateLimit(
+    `${clientId ? `${address}:${clientId}` : address}:${scope}`,
+    scope,
+    limit,
+    now,
+  );
+  if (!clientId) return clientResult;
+  const addressResult = consumeRateLimit(
+    `${address}:-:${scope}`,
+    scope,
+    limit * rateLimitIpFactor,
+    now,
+  );
+  return clientResult.ok ? addressResult : clientResult;
 }
 
 function pruneRateLimitBuckets(now = Date.now()) {
@@ -1162,7 +1183,7 @@ function emptyRemovalSummary() {
   };
 }
 
-function mergeRemovalSummary(target, source) {
+function mergeRemovalCounters(target, source) {
   target.removedCount += Number(source?.removedCount || 0);
   target.missingCount += Number(source?.missingCount || 0);
   target.failedCount += Number(source?.failedCount || 0);
@@ -1172,6 +1193,10 @@ function mergeRemovalSummary(target, source) {
     target.failures.push(...(source?.failures || []).slice(0, remainingFailureSlots));
   }
   return target;
+}
+
+function mergeRemovalSummary(target, source) {
+  return mergeRemovalCounters(target, source);
 }
 
 async function removeCorruptJsonBackups(files) {
@@ -1771,7 +1796,7 @@ const staticDir = hasBuiltFrontend ? distDir : publicDir;
 const staticRootRealPath = await fs.realpath(staticDir).catch(() => path.resolve(staticDir));
 const runtimeConfigDir = path.join(rootDir, 'static');
 const runtimeConfigRootRealPath = await fs.realpath(runtimeConfigDir).catch(() => '');
-const adminRootRealPath = await fs.realpath(adminDir).catch(() => path.resolve(adminDir));
+const rootRealPath = await fs.realpath(rootDir).catch(() => path.resolve(rootDir));
 
 function isPathWithin(rootPath, candidatePath) {
   const relative = path.relative(rootPath, candidatePath);
@@ -2402,8 +2427,9 @@ function safeErrorMessage(error, maxChars = maxErrorMessageChars) {
 
 function safeText(value, maxChars = maxErrorMessageChars, fallback = '') {
   const cleaned = redactSensitiveText(value || fallback)
+    // eslint-disable-next-line no-control-regex -- Terminal escape sequences must be removed from server logs.
     .replace(/\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\)?)/g, '')
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, ' ')
+    .replace(/\p{Cc}/gu, (character) => '\t\n\r'.includes(character) ? character : ' ')
     .replace(/\s*\r?\n\s*/g, ' · ')
     .replace(/[\t ]+/g, ' ')
     .trim() || fallback;
@@ -2446,13 +2472,13 @@ function cleanCookieHeader(value) {
 }
 
 function isCookieHeaderWithinLimit(cookie) {
-  return !/[\u0000-\u001F\u007F]/.test(cookie)
+  return !/\p{Cc}/u.test(cookie)
     && Buffer.byteLength(cookie, 'utf8') <= maxCookieBytes;
 }
 
 function assertCookieHeaderInput(cookie) {
   if (!cookie) return;
-  if (/[\u0000-\u001F\u007F]/.test(cookie)) {
+  if (/\p{Cc}/u.test(cookie)) {
     const error = new Error('Cookie 包含不允许的控制字符');
     error.status = 400;
     throw error;
@@ -4052,7 +4078,7 @@ function normalizeOfficialAccessToken(value) {
   if (!token) {
     throw invalidDrawRequest('官方接口需要在页面输入本次使用的访问凭据');
   }
-  if (/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/u.test(token)) {
+  if (/[\p{Cc}\u2028\u2029]/u.test(token)) {
     const error = invalidDrawRequest('官方访问凭据包含不允许的控制字符');
     error.code = 'ACCESS_TOKEN_INVALID_CHARACTERS';
     throw error;
@@ -4109,6 +4135,53 @@ function reportPageProgress(reportProgress, { phase, label, start, end, page, to
   });
 }
 
+async function reconcileRepostHead({
+  phase,
+  reportProgress,
+  pageCount,
+  startedAt,
+  candidateCollection,
+  hitCandidateCap,
+  signal,
+  loadHead,
+}) {
+  const result = {
+    addedCount: 0,
+    reconciled: false,
+    warning: '',
+    hitCandidateCap,
+    totalNumber: null,
+  };
+  if (!shouldReconcileRepostHead({
+    pageCount,
+    elapsedMs: Date.now() - startedAt,
+    hitCandidateCap,
+  })) {
+    return result;
+  }
+
+  try {
+    reportProgress?.({ phase, percent: 97, message: '核对抓取期间新增的转发' });
+    const head = await loadHead();
+    const headCandidates = (Array.isArray(head.items) ? head.items : [])
+      .map((item) => normalizeCandidate(item, head.source));
+    const merged = prependCandidates(candidateCollection, headCandidates);
+    return {
+      addedCount: merged.addedCount,
+      reconciled: true,
+      warning: '',
+      hitCandidateCap: hitCandidateCap || Boolean(candidateCollection.limitReason),
+      totalNumber: head.totalNumber,
+    };
+  } catch (error) {
+    throwIfTaskCancelled(signal);
+    return {
+      ...result,
+      warning: `最新转发复核失败：${error.message}`,
+    };
+  }
+}
+
 async function fetchOfficialReposts({ statusId, accessToken, reportProgress, signal }) {
   const token = normalizeOfficialAccessToken(accessToken);
 
@@ -4148,16 +4221,15 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
   }
 
   const unique = candidates;
-  let headAddedCount = 0;
-  let headReconciled = false;
-  let headWarning = '';
-  if (shouldReconcileRepostHead({
+  const headResult = await reconcileRepostHead({
+    phase: 'official',
+    reportProgress,
     pageCount: pages.length,
-    elapsedMs: Date.now() - startedAt,
+    startedAt,
+    candidateCollection,
     hitCandidateCap,
-  })) {
-    try {
-      reportProgress?.({ phase: 'official', percent: 97, message: '核对抓取期间新增的转发' });
+    signal,
+    loadHead: async () => {
       const headUrl = new URL('https://api.weibo.com/2/statuses/repost_timeline.json');
       headUrl.searchParams.set('id', statusId);
       headUrl.searchParams.set('access_token', token);
@@ -4167,18 +4239,15 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
         signal,
         onThrottle: throttleProgress(reportProgress, '官方接口'),
       });
-      totalNumber = finiteNumber(headJson?.total_number, totalNumber);
-      const headCandidates = (Array.isArray(headJson.reposts) ? headJson.reposts : [])
-        .map((item) => normalizeCandidate(item, 'official'));
-      const merged = prependCandidates(candidateCollection, headCandidates);
-      headAddedCount = merged.addedCount;
-      hitCandidateCap ||= Boolean(candidateCollection.limitReason);
-      headReconciled = true;
-    } catch (error) {
-      throwIfTaskCancelled(signal);
-      headWarning = `最新转发复核失败：${error.message}`;
-    }
-  }
+      return {
+        items: Array.isArray(headJson.reposts) ? headJson.reposts : [],
+        totalNumber: finiteNumber(headJson?.total_number, totalNumber),
+        source: 'official',
+      };
+    },
+  });
+  totalNumber = headResult.totalNumber ?? totalNumber;
+  hitCandidateCap = headResult.hitCandidateCap;
   return {
     candidates: unique,
     meta: {
@@ -4186,14 +4255,14 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
       pages,
       totalNumber,
       pageSize: OFFICIAL_PAGE_SIZE,
-      headReconciled,
-      headAddedCount,
+      headReconciled: headResult.reconciled,
+      headAddedCount: headResult.addedCount,
       ...candidateCollectionMeta(candidateCollection),
-      complete: !hitPageCap && !hitCandidateCap && !repeatedPages && !headWarning && (totalNumber === null || unique.length >= totalNumber || pages.at(-1)?.count < OFFICIAL_PAGE_SIZE),
+      complete: !hitPageCap && !hitCandidateCap && !repeatedPages && !headResult.warning && (totalNumber === null || unique.length >= totalNumber || pages.at(-1)?.count < OFFICIAL_PAGE_SIZE),
       warnings: [
         '已自动分页抓取全部可见转发；官方开放接口的配额和可见范围以账号权限为准。',
-        ...(headAddedCount ? [`结束前补入 ${headAddedCount} 条刚新增的可见转发。`] : []),
-        ...(headWarning ? [headWarning] : []),
+        ...(headResult.addedCount ? [`结束前补入 ${headResult.addedCount} 条刚新增的可见转发。`] : []),
+        ...(headResult.warning ? [headResult.warning] : []),
         ...(repeatedPages ? ['官方接口连续返回重复页面，已停止无效分页请求。'] : []),
         ...(hitPageCap ? [`为避免异常长任务，本次在 ${OFFICIAL_MAX_PAGES} 页后停止。`] : []),
         ...candidateLimitWarnings(candidateCollection),
@@ -4310,16 +4379,15 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
   }
 
   const unique = candidates;
-  let headAddedCount = 0;
-  let headReconciled = false;
-  let headWarning = '';
-  if (shouldReconcileRepostHead({
+  const headResult = await reconcileRepostHead({
+    phase: 'desktop',
+    reportProgress,
     pageCount: pages.length,
-    elapsedMs: Date.now() - startedAt,
+    startedAt,
+    candidateCollection,
     hitCandidateCap,
-  })) {
-    try {
-      reportProgress?.({ phase: 'desktop', percent: 97, message: '核对抓取期间新增的转发' });
+    signal,
+    loadHead: async () => {
       const headUrl = new URL('https://weibo.com/ajax/statuses/repostTimeline');
       headUrl.searchParams.set('id', timelineId);
       headUrl.searchParams.set('page', '1');
@@ -4330,18 +4398,15 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
         headers: desktopHeaders(cookie, statusInfo.referer),
         onThrottle: throttleProgress(reportProgress, '桌面端接口'),
       });
-      totalNumber = finiteNumber(headJson?.total_number, totalNumber);
-      const headCandidates = desktopTimelineList(headJson)
-        .map((item) => normalizeCandidate(item, 'desktop-cookie'));
-      const merged = prependCandidates(candidateCollection, headCandidates);
-      headAddedCount = merged.addedCount;
-      hitCandidateCap ||= Boolean(candidateCollection.limitReason);
-      headReconciled = true;
-    } catch (error) {
-      throwIfTaskCancelled(signal);
-      headWarning = `最新转发复核失败：${error.message}`;
-    }
-  }
+      return {
+        items: desktopTimelineList(headJson),
+        totalNumber: finiteNumber(headJson?.total_number, totalNumber),
+        source: 'desktop-cookie',
+      };
+    },
+  });
+  totalNumber = headResult.totalNumber ?? totalNumber;
+  hitCandidateCap = headResult.hitCandidateCap;
   return {
     candidates: unique,
     meta: {
@@ -4350,19 +4415,19 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
       totalNumber,
       maxPage,
       statusInfo,
-      headReconciled,
-      headAddedCount,
+      headReconciled: headResult.reconciled,
+      headAddedCount: headResult.addedCount,
       ...candidateCollectionMeta(candidateCollection),
       complete: !hitPageCap
         && !hitCandidateCap
         && !repeatedPages
         && !stoppedOnEmptyPages
-        && !headWarning
+        && !headResult.warning
         && (totalNumber !== null || candidates.length > 0),
       warnings: [
         '已按桌面端微博页面脚本的方式请求 ajax/statuses/repostTimeline，并扫描接口声明的页数范围。',
-        ...(headAddedCount ? [`结束前补入 ${headAddedCount} 条刚新增的可见转发。`] : []),
-        ...(headWarning ? [headWarning] : []),
+        ...(headResult.addedCount ? [`结束前补入 ${headResult.addedCount} 条刚新增的可见转发。`] : []),
+        ...(headResult.warning ? [headResult.warning] : []),
         ...(repeatedPages ? ['桌面端接口连续返回重复页面，已停止无效分页请求。'] : []),
         ...(stoppedOnEmptyPages ? ['桌面端接口连续返回空页，已停止继续请求并尝试备用入口。'] : []),
         ...(hitPageCap ? [`为避免异常长任务，桌面端在 ${DESKTOP_MAX_PAGES} 页后停止。`] : []),
@@ -4582,16 +4647,15 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
   }
 
   const unique = candidates;
-  let headAddedCount = 0;
-  let headReconciled = false;
-  let headWarning = '';
-  if (shouldReconcileRepostHead({
+  const headResult = await reconcileRepostHead({
+    phase: 'mobile',
+    reportProgress,
     pageCount: pages.length,
-    elapsedMs: Date.now() - startedAt,
+    startedAt,
+    candidateCollection,
     hitCandidateCap,
-  })) {
-    try {
-      reportProgress?.({ phase: 'mobile', percent: 97, message: '核对抓取期间新增的转发' });
+    signal,
+    loadHead: async () => {
       const headUrl = new URL('https://m.weibo.cn/api/statuses/repostTimeline');
       headUrl.searchParams.set('id', statusId);
       headUrl.searchParams.set('page', '1');
@@ -4600,18 +4664,18 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
         headers: mobileHeaders(cookie, statusId),
         onThrottle: throttleProgress(reportProgress, 'H5 接口'),
       });
-      totalNumber = finiteNumber(headJson?.data?.total_number ?? headJson?.total_number, totalNumber);
-      const headCandidates = mobileTimelineList(headJson)
-        .map((item) => normalizeCandidate(item, 'mobile'));
-      const merged = prependCandidates(candidateCollection, headCandidates);
-      headAddedCount = merged.addedCount;
-      hitCandidateCap ||= Boolean(candidateCollection.limitReason);
-      headReconciled = true;
-    } catch (error) {
-      throwIfTaskCancelled(signal);
-      headWarning = `最新转发复核失败：${error.message}`;
-    }
-  }
+      return {
+        items: mobileTimelineList(headJson),
+        totalNumber: finiteNumber(
+          headJson?.data?.total_number ?? headJson?.total_number,
+          totalNumber,
+        ),
+        source: 'mobile',
+      };
+    },
+  });
+  totalNumber = headResult.totalNumber ?? totalNumber;
+  hitCandidateCap = headResult.hitCandidateCap;
   return {
     candidates: unique,
     meta: {
@@ -4619,20 +4683,20 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
       pages,
       totalNumber,
       maxPage,
-      headReconciled,
-      headAddedCount,
+      headReconciled: headResult.reconciled,
+      headAddedCount: headResult.addedCount,
       ...candidateCollectionMeta(candidateCollection),
       complete: !hitPageCap
         && !hitCandidateCap
         && !repeatedPages
         && !stoppedOnEmptyPages
-        && !headWarning
+        && !headResult.warning
         && (totalNumber !== null || candidates.length > 0),
       cookieMode: Boolean(cookie),
       warnings: [
         '已按 H5 接口返回的页数范围扫描可见转发。',
-        ...(headAddedCount ? [`结束前补入 ${headAddedCount} 条刚新增的可见转发。`] : []),
-        ...(headWarning ? [headWarning] : []),
+        ...(headResult.addedCount ? [`结束前补入 ${headResult.addedCount} 条刚新增的可见转发。`] : []),
+        ...(headResult.warning ? [headResult.warning] : []),
         ...(repeatedPages ? ['H5 接口连续返回重复页面，已停止无效分页请求。'] : []),
         ...(stoppedOnEmptyPages ? ['H5 接口连续返回空页，已停止继续请求并尝试备用入口。'] : []),
         ...(hitPageCap ? [`为避免异常长任务，本次在 ${MOBILE_MAX_PAGES} 页后停止。`] : []),
@@ -5195,7 +5259,9 @@ function runRepostsJob(job) {
 
 function drainJobQueue() {
   if (shutdownStarted) {
-    for (const job of [...jobQueue]) finishQueuedJob(job, '服务器正在重启，候选载入已取消', 'cancelled');
+    for (const job of jobQueue.slice()) {
+      finishQueuedJob(job, '服务器正在重启，候选载入已取消', 'cancelled');
+    }
     return;
   }
   updateQueuedProgress();
@@ -5270,7 +5336,7 @@ async function handleStartRepostsJob(req, res) {
       drawCount: drawStats.count,
       lastDrawnAt: drawStats.lastDrawnAt,
       meta: {
-        ...(snapshot.result.meta || {}),
+        ...snapshot.result.meta,
         snapshotAgeMs: snapshot.ageMs,
       },
     };
@@ -5687,19 +5753,12 @@ function emptyFileRemoval() {
 }
 
 function mergeFileRemoval(target, source) {
-  target.removedCount += Number(source?.removedCount || 0);
-  target.missingCount += Number(source?.missingCount || 0);
-  target.failedCount += Number(source?.failedCount || 0);
-  target.freedBytes += Number(source?.freedBytes || 0);
+  mergeRemovalCounters(target, source);
   target.attempted += Number(source?.attempted || 0);
   target.skippedRecent += Number(source?.skippedRecent || 0);
   target.scannedEntries += Number(source?.scannedEntries || 0);
   target.matchedFiles += Number(source?.matchedFiles || 0);
   target.pending = target.pending || Boolean(source?.pending);
-  for (const failure of source?.failures || []) {
-    if (target.failures.length >= 20) break;
-    target.failures.push(failure);
-  }
   return target;
 }
 
@@ -7530,30 +7589,54 @@ function staticCacheHeaders(filePath) {
   return { 'cache-control': 'public, max-age=3600' };
 }
 
-function adminAssetName(pathname) {
-  if (pathname === '/admin' || pathname === '/admin/') return 'admin.html';
-  if (pathname === '/admin/admin.css') return 'admin.css';
-  if (pathname === '/admin/admin.js') return 'admin.js';
-  if (pathname === '/admin/admin-list-state.js') return 'admin-list-state.js';
-  if (pathname === '/admin/api-response.js') return 'api-response.js';
-  return '';
+const ADMIN_ASSET_FILES = new Map([
+  ['', 'server-admin/admin.html'],
+  ['admin.css', 'server-admin/admin.css'],
+  ['admin.js', 'server-admin/admin.js'],
+  ['admin-list-state.js', 'server-admin/admin-list-state.js'],
+  ['admin-status.js', 'src/lib/adminStatus.js'],
+  ['api-response.js', 'src/lib/apiResponse.js'],
+]);
+
+// 后台入口默认叫 /admin，但可以换成一段不好猜的路径，减少被扫到后台页面的机会。
+function normalizeAdminBasePath(value) {
+  return String(value || '').trim().replace(/\/+$/, '') || '/admin';
+}
+
+function adminBasePathIsUsable(value) {
+  if (!/^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/.test(value)) return false;
+  return value !== '/api'
+    && !value.startsWith('/api/')
+    && value !== '/v1'
+    && !value.startsWith('/v1/');
+}
+
+function adminAssetPath(pathname) {
+  const base = adminBasePath;
+  const relative = pathname === base || pathname === `${base}/`
+    ? ''
+    : pathname.startsWith(`${base}/`)
+      ? pathname.slice(base.length + 1)
+      : null;
+  if (relative === null) return '';
+  return ADMIN_ASSET_FILES.get(relative) || '';
 }
 
 async function serveAdminAsset(req, res, pathname) {
-  const assetName = adminAssetName(pathname);
-  if (!assetName) return false;
+  const assetPath = adminAssetPath(pathname);
+  if (!assetPath) return false;
   if (req.method !== 'GET') {
     sendText(res, 405, 'Method Not Allowed');
     return true;
   }
-  const filePath = path.join(adminDir, assetName);
+  const filePath = path.join(rootDir, assetPath);
   try {
-    const safePath = await resolvePathWithin(adminRootRealPath, filePath);
+    const safePath = await resolvePathWithin(rootRealPath, filePath);
     const content = await fs.readFile(safePath);
     res.writeHead(200, {
       ...securityHeaders(),
       'content-type': MIME[path.extname(safePath)] || 'application/octet-stream',
-      'cache-control': assetName === 'admin.html' ? 'no-store' : 'no-cache',
+      'cache-control': path.basename(assetPath) === 'admin.html' ? 'no-store' : 'no-cache',
       'x-robots-tag': 'noindex, nofollow',
     });
     res.end(content);
@@ -7663,6 +7746,75 @@ async function serveStatic(req, res) {
   }
 }
 
+const EXACT_API_ROUTES = new Map([
+  ['GET /api/health', (_req, res) => sendJson(res, 200, {
+    ok: true,
+    service: 'sameko-weibo-lottery',
+    authRequired: Boolean(apiKey),
+  })],
+  ['POST /api/feedback', handleFeedback],
+  ['POST /api/admin/login', handleAdminLogin],
+  ['GET /api/admin/session', handleAdminSession],
+  ['POST /api/admin/logout', handleAdminLogout],
+  ['GET /api/admin/summary', handleAdminSummary],
+  ['POST /api/admin/weibo-login/start', handleAdminWeiboLoginStart],
+  ['GET /api/admin/weibo-login/status', handleAdminWeiboLoginStatus],
+  ['POST /api/admin/weibo-login/stop', handleAdminWeiboLoginStop],
+  ['POST /api/admin/weibo-login/refresh', handleAdminWeiboLoginRefresh],
+  ['GET /api/admin/draws', handleAdminDraws],
+  ['GET /api/admin/feedback', handleAdminFeedback],
+  ['GET /api/weibo/draw-count', handleDrawCount],
+  ['GET /api/weibo/avatar', handleAvatarProxy],
+  ['GET /api/weibo/cookie-status', handleCookieStatus],
+  [`GET ${COOKIE_CURRENT_PATH}`, handleCookieCurrent],
+  ['POST /api/weibo/reposts/jobs', handleStartRepostsJob],
+  ['POST /api/draws', handleSaveDraw],
+]);
+
+async function handleApplicationRoute(req, res, url) {
+  if (adminAssetPath(url.pathname)) {
+    await serveAdminAsset(req, res, url.pathname);
+    return true;
+  }
+
+  const handler = EXACT_API_ROUTES.get(`${req.method} ${url.pathname}`);
+  if (handler) {
+    await handler(req, res, url);
+    return true;
+  }
+
+  if (url.pathname.startsWith('/api/admin/feedback/')) {
+    if (req.method !== 'PATCH' && req.method !== 'DELETE') return false;
+    const feedbackId = decodeRequestPath(url.pathname.replace('/api/admin/feedback/', ''));
+    if (req.method === 'PATCH') await handleAdminFeedbackStatus(req, res, feedbackId);
+    else await handleAdminDeleteFeedback(req, res, feedbackId);
+    return true;
+  }
+
+  if (url.pathname.startsWith('/api/admin/draws/')) {
+    if (req.method !== 'GET' && req.method !== 'DELETE') return false;
+    const fileName = decodeRequestPath(url.pathname.replace('/api/admin/draws/', ''));
+    if (req.method === 'GET') await handleAdminDrawDetail(req, res, fileName);
+    else await handleAdminDeleteDraw(req, res, fileName);
+    return true;
+  }
+
+  if (url.pathname === COOKIE_CURRENT_PATH) {
+    await sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
+    return true;
+  }
+
+  if (url.pathname.startsWith('/api/weibo/reposts/jobs/')) {
+    if (req.method !== 'GET' && req.method !== 'DELETE') return false;
+    const jobId = decodeRequestPath(url.pathname.replace('/api/weibo/reposts/jobs/', ''));
+    if (req.method === 'GET') await handleGetRepostsJob(req, res, jobId);
+    else await handleCancelRepostsJob(req, res, jobId);
+    return true;
+  }
+
+  return false;
+}
+
 const server = http.createServer(async (req, res) => {
   const requestStarted = performance.now();
   res.once('finish', () => {
@@ -7705,85 +7857,7 @@ const server = http.createServer(async (req, res) => {
       }
       req.adminAuth = authorization;
     }
-    if (adminAssetName(url.pathname)) {
-      return await serveAdminAsset(req, res, url.pathname);
-    }
-    if (req.method === 'GET' && url.pathname === '/api/health') {
-      return sendJson(res, 200, {
-        ok: true,
-        service: 'sameko-weibo-lottery',
-      });
-    }
-    if (req.method === 'POST' && url.pathname === '/api/feedback') {
-      return await handleFeedback(req, res);
-    }
-    if (req.method === 'POST' && url.pathname === '/api/admin/login') {
-      return await handleAdminLogin(req, res);
-    }
-    if (req.method === 'GET' && url.pathname === '/api/admin/session') {
-      return await handleAdminSession(req, res);
-    }
-    if (req.method === 'POST' && url.pathname === '/api/admin/logout') {
-      return await handleAdminLogout(req, res);
-    }
-    if (req.method === 'GET' && url.pathname === '/api/admin/summary') {
-      return await handleAdminSummary(req, res);
-    }
-    if (req.method === 'POST' && url.pathname === '/api/admin/weibo-login/start') {
-      return await handleAdminWeiboLoginStart(req, res);
-    }
-    if (req.method === 'GET' && url.pathname === '/api/admin/weibo-login/status') {
-      return await handleAdminWeiboLoginStatus(req, res);
-    }
-    if (req.method === 'POST' && url.pathname === '/api/admin/weibo-login/stop') {
-      return await handleAdminWeiboLoginStop(req, res);
-    }
-    if (req.method === 'POST' && url.pathname === '/api/admin/weibo-login/refresh') {
-      return await handleAdminWeiboLoginRefresh(req, res);
-    }
-    if (req.method === 'GET' && url.pathname === '/api/admin/draws') {
-      return await handleAdminDraws(req, res, url);
-    }
-    if (req.method === 'GET' && url.pathname === '/api/admin/feedback') {
-      return await handleAdminFeedback(req, res, url);
-    }
-    if (url.pathname.startsWith('/api/admin/feedback/')) {
-      const feedbackId = decodeRequestPath(url.pathname.replace('/api/admin/feedback/', ''));
-      if (req.method === 'PATCH') return await handleAdminFeedbackStatus(req, res, feedbackId);
-      if (req.method === 'DELETE') return await handleAdminDeleteFeedback(req, res, feedbackId);
-    }
-    if (url.pathname.startsWith('/api/admin/draws/')) {
-      const fileName = decodeRequestPath(url.pathname.replace('/api/admin/draws/', ''));
-      if (req.method === 'GET') return await handleAdminDrawDetail(req, res, fileName);
-      if (req.method === 'DELETE') return await handleAdminDeleteDraw(req, res, fileName);
-    }
-    if (req.method === 'GET' && url.pathname === '/api/weibo/draw-count') {
-      return await handleDrawCount(req, res, url);
-    }
-    if (req.method === 'GET' && url.pathname === '/api/weibo/avatar') {
-      return await handleAvatarProxy(req, res, url);
-    }
-    if (req.method === 'GET' && url.pathname === '/api/weibo/cookie-status') {
-      return await handleCookieStatus(req, res, url);
-    }
-    if (url.pathname === COOKIE_CURRENT_PATH) {
-      if (req.method === 'GET') return await handleCookieCurrent(req, res);
-      return sendJson(res, 405, { ok: false, error: 'Method Not Allowed' });
-    }
-    if (req.method === 'POST' && url.pathname === '/api/weibo/reposts/jobs') {
-      return await handleStartRepostsJob(req, res);
-    }
-    if (req.method === 'GET' && url.pathname.startsWith('/api/weibo/reposts/jobs/')) {
-      const jobId = decodeRequestPath(url.pathname.replace('/api/weibo/reposts/jobs/', ''));
-      return await handleGetRepostsJob(req, res, jobId);
-    }
-    if (req.method === 'DELETE' && url.pathname.startsWith('/api/weibo/reposts/jobs/')) {
-      const jobId = decodeRequestPath(url.pathname.replace('/api/weibo/reposts/jobs/', ''));
-      return await handleCancelRepostsJob(req, res, jobId);
-    }
-    if (req.method === 'POST' && url.pathname === '/api/draws') {
-      return await handleSaveDraw(req, res);
-    }
+    if (await handleApplicationRoute(req, res, url)) return;
     if (isApiPath(url.pathname)) {
       return sendJson(res, 404, { ok: false, error: '接口不存在' });
     }
@@ -7941,6 +8015,9 @@ function startupConfigurationErrors() {
   if (requiresStrongSharedKeys && adminKey && Buffer.byteLength(adminKey, 'utf8') < 32) {
     errors.push('Refusing to start: ADMIN_KEY must be at least 32 bytes in production or on a non-loopback HOST.');
   }
+  if (configuredAdminBasePath && !adminBasePathIsUsable(adminBasePath)) {
+    errors.push('Refusing to start: ADMIN_BASE_PATH must be a path such as /ops-2026 and must not start with /api or /v1.');
+  }
   if (cookieReadApiEnabled && cookieReadKey) {
     if (!/^[0-9a-f]{64}$/i.test(cookieReadKey)) {
       errors.push('Refusing to start: COOKIE_READ_KEY must be exactly 64 hexadecimal characters.');
@@ -8022,6 +8099,10 @@ async function startServer() {
 
   if (isProduction && !apiKey && allowPublicApi) {
     console.warn('ALLOW_PUBLIC_API is enabled; public Weibo fetch and draw APIs are exposed without API_KEY.');
+  }
+
+  if (isProduction && apiKey) {
+    console.warn('API_KEY is set; every frontend that calls this server must send the same value, otherwise all API requests return 401.');
   }
 
   if (cookieReadApiEnabled) {

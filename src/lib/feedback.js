@@ -29,7 +29,10 @@ export function normalizeFeedbackSubmission(input) {
   const content = input.content
     .normalize('NFC')
     .replace(/\r\n?/g, '\n')
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u202A-\u202E\u2066-\u2069]/g, '')
+    .replace(
+      /[\p{Cc}\u202A-\u202E\u2066-\u2069]/gu,
+      (character) => character === '\n' || character === '\t' ? character : '',
+    )
     .trim();
 
   if (content.length < FEEDBACK_MIN_LENGTH) throw validationError('请再多写一点反馈内容');

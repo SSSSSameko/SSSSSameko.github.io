@@ -40,9 +40,21 @@ const LEGAL_JURISDICTION_TEXT = LEGAL_JURISDICTION_DISCLOSURE
   || '本站运营者与后端服务器均位于美国，适用美国怀俄明州法律及可适用的美国联邦法律。因本站产生的争议，应先通过下列联系渠道协商解决；协商不成的，提交怀俄明州有管辖权的法院处理。';
 const UPDATE_LOGS = [
   {
+    version: '3.4.1',
+    date: '2026 年 9 月 12 日',
+    label: '当前版本',
+    title: '上线前整体审查',
+    items: [
+      '修复公开部署下整站请求失败的问题',
+      '后端地址与后台入口不再对外显示',
+      '同一网络下的访客不再互相挤占请求额度',
+      '清理重复文件，精简代码与文档',
+    ],
+  },
+  {
     version: '3.4.0',
     date: '2026 年 9 月 10 日',
-    label: '当前版本',
+    label: '历史版本',
     title: '整体流畅度优化',
     items: [
       '打开速度优化',
@@ -308,4 +320,3 @@ export function buildLegalDocuments({ appVersion, publicAsset }) {
   },
   };
 }
-

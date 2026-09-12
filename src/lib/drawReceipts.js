@@ -1,4 +1,5 @@
 import { buildFilterSummary, DRAW_RANDOM_ALGORITHM, safeWeiboUrl } from './appCore.js';
+import { isQuotaError } from './storageErrors.js';
 
 export const DRAW_HISTORY_KEY = 'weibo-draw-history-v2';
 const LEGACY_DRAW_HISTORY_KEY = 'weibo-lottery-history';
@@ -27,14 +28,6 @@ function finiteNonNegative(value, fallback = 0) {
 
 function boundedText(value, maxLength) {
   return String(value || '').slice(0, maxLength);
-}
-
-function isQuotaError(error) {
-  const message = String(error?.message || '').toLowerCase();
-  return error?.name === 'QuotaExceededError'
-    || error?.code === 22
-    || error?.code === 1014
-    || message.includes('quota');
 }
 
 function positiveLimit(value, fallback) {

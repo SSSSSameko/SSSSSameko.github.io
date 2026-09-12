@@ -1,5 +1,6 @@
 import { DRAW_RANDOM_ALGORITHM, friendlyProviderText } from './appCore.js';
 import { avatarProxyUrl, safeAvatarUrl } from './avatar.js';
+import { formatDateTime } from './dateTime.js';
 
 const POSTER_WIDTH = 1080;
 const POSTER_MIN_HEIGHT = 1280;
@@ -46,19 +47,6 @@ function compactCode(value, empty = '未记录') {
   return `${text.slice(0, 8)}…${text.slice(-6)}`;
 }
 
-function posterDate(value) {
-  const date = value ? new Date(value) : new Date();
-  if (Number.isNaN(date.getTime())) return '';
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(date).replaceAll('/', '.');
-}
-
 export function buildResultPosterModel(payload = {}) {
   const allGroups = (Array.isArray(payload.results) ? payload.results : [])
     .filter((group) => Array.isArray(group?.winners) && group.winners.length);
@@ -99,7 +87,7 @@ export function buildResultPosterModel(payload = {}) {
     title: '微博转发抽奖',
     subtitle: '开奖结果',
     drawLabel: safeText(payload.drawCount, '未计入'),
-    drawnAt: posterDate(payload.drawnAt),
+    drawnAt: formatDateTime(payload.drawnAt, { useCurrentTime: true }),
     source: safeText(payload.statusUrl || payload.statusId, '手动导入名单'),
     winnerCount,
     displayedWinnerCount,

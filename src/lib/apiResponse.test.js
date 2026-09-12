@@ -25,6 +25,14 @@ test('readJsonResponse supports fallback and strict parse errors', async () => {
     readJsonResponse(new Response('not-json'), { timeoutMs: 50, strict: true }),
     { code: 'INVALID_RESPONSE_JSON' },
   );
+  await assert.rejects(
+    readJsonResponse(new Response('not-json'), {
+      timeoutMs: 50,
+      strict: true,
+      invalidJsonMessage: '服务器返回格式异常',
+    }),
+    /服务器返回格式异常/,
+  );
   assert.deepEqual(
     await readJsonResponse(new Response('not-json'), { timeoutMs: 50 }),
     {},

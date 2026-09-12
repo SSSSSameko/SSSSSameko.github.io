@@ -26,6 +26,7 @@ import {
 import { drawCountCopy, normalizeDrawReceipt } from '../lib/drawReceipts.js';
 import useSheetDrag from '../hooks/useSheetDrag.js';
 import useDialogStack from '../hooks/useDialogStack.js';
+import { trapDialogFocus } from '../lib/dialogFocus.js';
 import CandidateAvatar from './CandidateAvatar.jsx';
 
 const WINNERS_PER_GROUP = 12;
@@ -76,6 +77,7 @@ export default function DrawResultSheet({
   isCapturing = false,
   isSyncing = false,
   historyStorageAvailable = true,
+  returnFocusId = '',
   onClose,
   onSaveImage,
   onCopyPost,
@@ -162,38 +164,32 @@ export default function DrawResultSheet({
         event.stopImmediatePropagation();
         requestCloseRef.current?.();
       }
-      if (event.key !== 'Tab' || !dialogRef.current) return;
-      const controls = [...dialogRef.current.querySelectorAll(
-        'a[href], summary, button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
-      )].filter((element) => (!element.hidden && !element.closest('[inert]') && element.getClientRects().length));
-      if (!controls.length) return;
-      const first = controls[0];
-      const last = controls.at(-1);
-      if (!dialogRef.current.contains(document.activeElement)) {
-        event.preventDefault();
-        (event.shiftKey ? last : first).focus();
-        return;
-      }
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapDialogFocus(event, dialogRef.current);
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => {
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleKeyDown);
       window.clearTimeout(closeTimerRef.current);
-      if (previousFocus?.isConnected
+      const previousFocusAvailable = previousFocus
+        && previousFocus !== document.body
+        && previousFocus !== document.documentElement
+        && previousFocus.isConnected
         && previousFocus.getClientRects?.().length
-        && !previousFocus.closest?.('[inert]')) {
-        previousFocus.focus({ preventScroll: true });
-      }
+        && !previousFocus.closest?.('[inert]');
+      window.requestAnimationFrame(() => {
+        const preferredFocus = returnFocusId ? document.getElementById(returnFocusId) : null;
+        const focusTarget = previousFocusAvailable
+          ? previousFocus
+          : preferredFocus?.isConnected
+            && preferredFocus.getClientRects().length
+            && !preferredFocus.closest?.('[inert]')
+            ? preferredFocus
+            : null;
+        focusTarget?.focus({ preventScroll: true });
+      });
     };
-  }, [isTopDialog, receipt?.id]);
+  }, [isTopDialog, receipt?.id, returnFocusId]);
 
   if (!receipt) return null;
 

@@ -28,7 +28,11 @@ await clearDialog.waitFor({ state: 'detached' });
 
 await page.getByRole('button', { name: '设置', exact: true }).click();
 await page.locator('.flow-connection-details').filter({ hasText: '后端连接' }).locator('summary').click();
-assert.equal(await page.getByPlaceholder('仅支持预配置地址或本机地址').isVisible(), true);
+assert.equal(
+  await page.getByText('已使用预置服务地址，默认不在页面上显示。').isVisible(),
+  true,
+  '默认不应把真实后端地址显示在设置页',
+);
 const settingsActionLabels = await page.locator('.flow-settings-action-label').evaluateAll((labels) => (
   labels.map((label) => ({
     height: label.getBoundingClientRect().height,
@@ -36,6 +40,8 @@ const settingsActionLabels = await page.locator('.flow-settings-action-label').e
   }))
 ));
 assert.equal(settingsActionLabels.every(({ height, lineHeight }) => height <= lineHeight * 1.5), true);
+await page.getByRole('button', { name: '手动填写地址' }).click();
+assert.equal(await page.getByPlaceholder('例如 http://127.0.0.1:4173').isVisible(), true);
 await page.locator('.flow-sheet-close').click();
 await page.locator('.root-tabbar button').filter({ hasText: '名单' }).click();
 await page.locator('.v3-source-control').getByRole('button', { name: '官方接口', exact: true }).click();
