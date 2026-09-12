@@ -672,6 +672,32 @@ function ConfirmActionDialog({ action, motionPreference, onClose, onConfirm }) {
   );
 }
 
+function handleSheetBodyKeyDown(event) {
+  const body = event.currentTarget;
+  if (
+    event.target !== body
+    || event.altKey
+    || event.ctrlKey
+    || event.metaKey
+  ) {
+    return;
+  }
+
+  const maxScrollTop = body.scrollHeight - body.clientHeight;
+  if (maxScrollTop <= 0) return;
+
+  const pageStep = Math.max(1, Math.round(body.clientHeight * 0.85));
+  let nextScrollTop;
+  if (event.key === 'PageDown') nextScrollTop = body.scrollTop + pageStep;
+  else if (event.key === 'PageUp') nextScrollTop = body.scrollTop - pageStep;
+  else if (event.key === 'Home') nextScrollTop = 0;
+  else if (event.key === 'End') nextScrollTop = maxScrollTop;
+  else return;
+
+  event.preventDefault();
+  body.scrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
+}
+
 function SheetFrame({
   title,
   subtitle,
@@ -805,6 +831,7 @@ function SheetFrame({
           role={bodyScrollable ? 'region' : undefined}
           aria-label={bodyScrollable ? `${title}内容` : undefined}
           tabIndex={bodyScrollable ? 0 : undefined}
+          onKeyDown={handleSheetBodyKeyDown}
         >
           {typeof children === 'function' ? children(requestClose) : children}
         </div>
