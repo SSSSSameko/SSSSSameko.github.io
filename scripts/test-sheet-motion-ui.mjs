@@ -47,9 +47,11 @@ try {
     restorePage.setDefaultTimeout(8_000);
     await gotoUiPage(restorePage, baseUrl);
     const homeScroll = restorePage.locator('[data-root-view="home"] .root-scroll');
+    const sourceButton = restorePage.getByRole('button', { name: '或手动导入候选名单', exact: true });
+    await sourceButton.scrollIntoViewIfNeeded();
     const initialScrollTop = await homeScroll.evaluate((element) => element.scrollTop);
 
-    await restorePage.getByRole('button', { name: '或手动导入候选名单', exact: true }).click();
+    await sourceButton.click();
     const sourceDialog = restorePage.getByRole('dialog', { name: '候选来源' });
     await sourceDialog.getByRole('textbox', { name: '弹窗手动候选名单' }).fill('滚动恢复候选');
     await sourceDialog.getByRole('button', { name: '替换名单', exact: true }).click();

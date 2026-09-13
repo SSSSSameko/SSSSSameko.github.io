@@ -752,6 +752,11 @@ function SheetFrame({
     const previousOverflow = document.body.style.overflow;
     const scrollContainer = document.querySelector('.root-view.is-active .root-scroll');
     const previousScrollTop = scrollContainer?.scrollTop;
+    const restorePageScroll = () => {
+      if (scrollContainer?.isConnected && Number.isFinite(previousScrollTop)) {
+        scrollContainer.scrollTop = previousScrollTop;
+      }
+    };
     document.body.style.overflow = 'hidden';
     const initialFocus = initialFocusRef?.current;
     const focusTarget = initialFocus?.getClientRects().length ? initialFocus : closeButtonRef.current;
@@ -770,18 +775,14 @@ function SheetFrame({
       document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', handleKeyDown);
       window.clearTimeout(closeTimerRef.current);
-      if (scrollContainer?.isConnected && Number.isFinite(previousScrollTop)) {
-        scrollContainer.scrollTop = previousScrollTop;
-      }
+      restorePageScroll();
       window.requestAnimationFrame(() => {
         const preferredFocus = returnFocusId ? document.getElementById(returnFocusId) : null;
         if (preferredFocus?.isConnected
           && preferredFocus.getClientRects().length
           && !preferredFocus.closest?.('[inert]')) {
           preferredFocus.focus({ preventScroll: true });
-          if (scrollContainer?.isConnected && Number.isFinite(previousScrollTop)) {
-            scrollContainer.scrollTop = previousScrollTop;
-          }
+          restorePageScroll();
           return;
         }
         const wasInteractive = previousFocus?.matches?.(
@@ -792,9 +793,7 @@ function SheetFrame({
           && previousFocus.getClientRects().length
           && !previousFocus.closest?.('[inert]')) {
           previousFocus.focus({ preventScroll: true });
-          if (scrollContainer?.isConnected && Number.isFinite(previousScrollTop)) {
-            scrollContainer.scrollTop = previousScrollTop;
-          }
+          restorePageScroll();
           return;
         }
       });
