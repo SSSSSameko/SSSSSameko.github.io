@@ -9,7 +9,6 @@ import {
   RefreshCw,
   Share2,
   ShieldCheck,
-  Sparkles,
   X,
 } from 'lucide-react';
 
@@ -24,6 +23,7 @@ import {
   DRAW_ANNOUNCEMENT_TEMPLATES,
 } from '../lib/drawAnnouncements.js';
 import { drawCountCopy, normalizeDrawReceipt } from '../lib/drawReceipts.js';
+import { formatDateTime } from '../lib/dateTime.js';
 import useSheetDrag from '../hooks/useSheetDrag.js';
 import useDialogStack from '../hooks/useDialogStack.js';
 import { trapDialogFocus } from '../lib/dialogFocus.js';
@@ -33,17 +33,7 @@ const WINNERS_PER_GROUP = 12;
 const WINNER_BATCH_SIZE = 50;
 
 function formatReceiptDate(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '时间未记录';
-  return new Intl.DateTimeFormat('zh-CN', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  }).format(date).replace(/\//g, '.');
+  return formatDateTime(value, { fallback: '时间未记录' }).replace(/\s+/, ' · ');
 }
 
 function compactHash(value) {
@@ -238,7 +228,7 @@ export default function DrawResultSheet({
   async function shareAnnouncement() {
     try {
       await navigator.share({
-        title: '微博转发抽奖结果',
+        title: '微博转发抽奖｜开奖公示',
         text: announcementText,
       });
     } catch (error) {
@@ -259,7 +249,7 @@ export default function DrawResultSheet({
         <div className="receipt-grabber" aria-hidden="true" {...sheetDrag} />
         <header className="receipt-header">
           <span className="receipt-title-icon" aria-hidden="true">
-            <Sparkles />
+            <CheckCircle2 />
           </span>
           <div>
             <h2 id="receipt-title">{isPractice ? '本地演练结果' : '开奖结果'}</h2>
@@ -278,35 +268,51 @@ export default function DrawResultSheet({
 
         <div className="receipt-content">
           <section className="receipt-summary">
-            <div className="receipt-summary-copy">
-              <span><CheckCircle2 /> {isPractice ? '演练完成' : '开奖完成'}</span>
-              <strong>{winnerCount} 位中奖用户</strong>
-              <p>{drawLabel} · {prizeCount} 个奖项</p>
+            <div className="receipt-summary-head">
+              <div className="receipt-summary-copy">
+                <span><CheckCircle2 /> {isPractice ? '演练完成' : '开奖完成'}</span>
+                <strong>{winnerCount} 位中奖用户</strong>
+                <p>{drawLabel} · {prizeCount} 个奖项</p>
+              </div>
+              <div
+                className={`receipt-avatar-stack ${singleWinner ? 'is-single' : ''}`}
+                role="group"
+                aria-label="中奖用户摘要"
+              >
+                {displayedWinners.map((winner, index) => (
+                  <CandidateAvatar
+                    key={winner.id || winner.uid || winner.screenName || index}
+                    candidate={winner}
+                    className="receipt-stack-avatar"
+                    apiBase={apiBase}
+                    decorative
+                    priority
+                  />
+                ))}
+                {singleWinner && (
+                  <span className="receipt-single-winner">
+                    <strong>{singleWinner.screenName || singleWinner.uid || '中奖用户'}</strong>
+                    <small>{winnerIdentity(singleWinner)}</small>
+                  </span>
+                )}
+                {winnerCount > displayedWinners.length && (
+                  <span className="receipt-stack-more">+{winnerCount - displayedWinners.length}</span>
+                )}
+              </div>
             </div>
-            <div
-              className={`receipt-avatar-stack ${singleWinner ? 'is-single' : ''}`}
-              role="group"
-              aria-label="中奖用户摘要"
-            >
-              {displayedWinners.map((winner, index) => (
-                <CandidateAvatar
-                  key={winner.id || winner.uid || winner.screenName || index}
-                  candidate={winner}
-                  className="receipt-stack-avatar"
-                  apiBase={apiBase}
-                  decorative
-                  priority
-                />
-              ))}
-              {singleWinner && (
-                <span className="receipt-single-winner">
-                  <strong>{singleWinner.screenName || singleWinner.uid || '中奖用户'}</strong>
-                  <small>{winnerIdentity(singleWinner)}</small>
-                </span>
-              )}
-              {winnerCount > displayedWinners.length && (
-                <span className="receipt-stack-more">+{winnerCount - displayedWinners.length}</span>
-              )}
+            <div className="receipt-summary-metrics">
+              <span>
+                <small>候选范围</small>
+                <strong>{receipt.eligibleCount} / {receipt.candidateCount}</strong>
+              </span>
+              <span>
+                <small>奖项</small>
+                <strong>{prizeCount} 项</strong>
+              </span>
+              <span>
+                <small>数据来源</small>
+                <strong>{sourceScope(receipt)}</strong>
+              </span>
             </div>
           </section>
 
@@ -468,7 +474,7 @@ export default function DrawResultSheet({
 
             {isPractice ? (
               <div className="receipt-local-note is-practice" role="status">
-                <Sparkles />
+                <ShieldCheck />
                 <span>
                   <strong>本地演练结果</strong>
                   <small>仅用于核对动画与设置，不保存记录，也不计入本链接开奖次数。</small>
@@ -520,54 +526,65 @@ export default function DrawResultSheet({
           <section className="receipt-copy-details">
             <header>
               <div>
-                <span>公示文案</span>
-                <strong>选择格式并复制</strong>
+                <span>发布文案</span>
+                <strong>选择一版直接分享</strong>
               </div>
-              <select
-                value={announcementTemplate}
-                onChange={(event) => setAnnouncementTemplate(event.target.value)}
-                aria-label="公示文案格式"
-              >
-                {DRAW_ANNOUNCEMENT_TEMPLATES.map((template) => (
-                  <option key={template.value} value={template.value}>{template.label}</option>
-                ))}
-              </select>
+              <small className="receipt-copy-count">{announcementText.length} 字</small>
             </header>
+            <div className="receipt-template-tabs" role="group" aria-label="公示文案格式">
+              {DRAW_ANNOUNCEMENT_TEMPLATES.map((template) => {
+                const selected = template.value === announcementTemplate;
+                return (
+                  <button
+                    key={template.value}
+                    type="button"
+                    className={selected ? 'is-selected' : undefined}
+                    aria-pressed={selected}
+                    aria-controls="receipt-copy-preview"
+                    onClick={() => setAnnouncementTemplate(template.value)}
+                  >
+                    {template.label}
+                  </button>
+                );
+              })}
+            </div>
             <p className="receipt-copy-hint">
               {DRAW_ANNOUNCEMENT_TEMPLATES.find((template) => template.value === announcementTemplate)?.hint}
             </p>
-            <pre tabIndex={0} role="region" aria-label="公示文案预览">{announcementText}</pre>
+            <pre id="receipt-copy-preview" tabIndex={0} role="region" aria-label="公示文案预览">{announcementText}</pre>
           </section>
         </div>
 
         <div className="receipt-actions">
-          <button
-            type="button"
-            className="receipt-action-primary v3-primary-action"
-            onClick={onSaveImage}
-            disabled={isCapturing}
-          >
-            <Image />
-            {isCapturing ? '正在生成' : '保存结果图'}
-          </button>
-          <button type="button" className="receipt-action-secondary" onClick={() => onCopyPost?.(announcementTemplate)}>
-            <Copy />
-            复制文案
-          </button>
-          {shareAvailable && (
-            <button type="button" className="receipt-action-secondary" onClick={shareAnnouncement}>
-              <Share2 />
-              分享文案
+          <div className="receipt-actions-secondary">
+            <button
+              type="button"
+              className="receipt-action-secondary"
+              onClick={onSaveImage}
+              disabled={isCapturing}
+            >
+              <Image />
+              {isCapturing ? '正在生成' : '保存结果图'}
             </button>
-          )}
-          <button type="button" className="receipt-action-secondary" onClick={onCopyWinners}>
-            <Copy />
-            复制名单
-          </button>
-          <button type="button" className="receipt-action-secondary" onClick={onExportWinners}>
-            <Download />
-            导出 CSV
-          </button>
+            <button type="button" className="receipt-action-secondary" onClick={() => onCopyPost?.(announcementTemplate)}>
+              <Copy />
+              复制文案
+            </button>
+            {shareAvailable && (
+              <button type="button" className="receipt-action-secondary" onClick={shareAnnouncement}>
+                <Share2 />
+                分享文案
+              </button>
+            )}
+            <button type="button" className="receipt-action-secondary" onClick={onCopyWinners}>
+              <Copy />
+              复制名单
+            </button>
+            <button type="button" className="receipt-action-secondary" aria-label="导出名单 CSV" onClick={onExportWinners}>
+              <Download />
+              导出名单
+            </button>
+          </div>
         </div>
       </section>
     </div>

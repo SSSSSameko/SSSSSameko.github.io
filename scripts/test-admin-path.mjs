@@ -66,9 +66,19 @@ let running = null;
 try {
   running = await startServer({ ADMIN_BASE_PATH: customPath });
 
-  const admin = await fetch(`${running.baseUrl}${customPath}`);
+  const adminRedirect = await fetch(`${running.baseUrl}${customPath}`, {
+    redirect: 'manual',
+  });
+  assert.equal(adminRedirect.status, 308);
+  assert.equal(adminRedirect.headers.get('location'), `${customPath}/`);
+
+  const admin = await fetch(`${running.baseUrl}${customPath}/`);
   assert.equal(admin.status, 200);
-  assert.match(await admin.text(), /id="loginPanel"/);
+  const adminHtml = await admin.text();
+  assert.match(adminHtml, /id="loginPanel"/);
+  assert.match(adminHtml, /href="\.\/admin\.css"/);
+  assert.match(adminHtml, /src="\.\/admin\.js"/);
+  assert.doesNotMatch(adminHtml, /\/admin\/admin\.(?:css|js)/);
   assert.equal(admin.headers.get('x-robots-tag'), 'noindex, nofollow');
 
   for (const asset of ['admin.js', 'admin.css', 'api-response.js', 'admin-status.js']) {

@@ -1,6 +1,6 @@
 # 微博转发抽奖助手
 
-当前版本：`3.4.1`（2026 年 9 月 12 日）
+当前版本：`3.5.0`（2026 年 9 月 13 日）
 
 用于微博转发抽奖的网页工具，支持候选抓取、名单导入、滚动开奖、开奖记录图和后台管理。
 
@@ -33,7 +33,7 @@ http://127.0.0.1:4173/
 
 前端可托管到 GitHub Pages，后端部署到服务器。公开前端通过 `static/config.js` 指向后端 API。
 
-公开部署前只需要在 `static/config.js` 填写两项：运营者署名和一条长期有效的联系邮箱。地址、托管服务商、机房区域和保存规则都是选填，留空时按程序的实际运行参数自动生成。本仓库默认按「GitHub Pages 静态前端 + 美国自建后端、适用怀俄明州法律」撰写接收方与管辖说明，换成别的托管方式或地区时需要覆盖。示例：
+公开部署前只需要在 `static/config.js` 填写两项：运营者署名和一条长期有效的联系邮箱。地址、托管服务商、机房区域和保存规则都是选填，留空时按程序的实际运行参数自动生成。当前部署按「GitHub Pages 静态前端 + 中国天津自建后端」填写接收方与地域说明；更换服务器或托管方式时必须同步覆盖。示例：
 
 ```js
 window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
@@ -42,7 +42,7 @@ window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
   // 以下均选填，留空时由程序生成；与实际部署不符时再覆盖
   operatorAddress: '',
   hostingProvider: '',                      // 如“自建机房”“Vultr”
-  serverRegion: '',                         // 如“美国（怀俄明州）”
+  serverRegion: '中国天津',
   dataRecipientDisclosure: '',
   jurisdictionDisclosure: '',
   recordRetentionDisclosure: '',
@@ -51,6 +51,8 @@ window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
 ```
 
 可先运行 `npm run legal:check`；正式安装脚本也会执行同一校验，必填项为空或任何已填字段仍是占位内容时拒绝部署。该工程校验只能防止遗漏，不构成法律意见。
+
+前端默认不显示预置后端地址，设置页只保留自行填写入口；浏览器仍需在请求层访问真实接口，因此不能通过前端代码隐藏网络目标。正式部署建议使用独立域名和 HTTPS，不要把裸 IP 当作长期公开入口。
 
 常用环境变量：
 
@@ -94,7 +96,12 @@ window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
 - `MAX_RETAINED_JOB_RESPONSE_BYTES=33554432`（限制已完成响应的合计暂存体积）
 - `MAX_JOB_SUBSCRIBERS=32`（限制同一抓取任务的并发页面订阅数）
 - `DESKTOP_MAX_PAGES=1000`
-- `PAGE_DELAY_JITTER_MS=450`
+- `PAGE_DELAY_JITTER_MS=1000`（分页等待在基准值上增加 0-1 秒随机抖动）
+- `PROVIDER_SWITCH_DELAY_MS=6000`（桌面端、H5、旧版页面之间切换入口的基准等待，连同抖动后为 6-7 秒）
+- `OFFICIAL_PAGE_DELAY_MS=6000`
+- `DESKTOP_PAGE_DELAY_MS=6000`
+- `LEGACY_PAGE_DELAY_MS=6000`
+- `MOBILE_PAGE_DELAY_MS=6000`
 - `PAGE_COOLDOWN_EVERY=8`
 - `PAGE_COOLDOWN_MS=5000`
 - `WEIBO_THROTTLE_RETRY_MAX=2`
@@ -112,7 +119,7 @@ window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
 
 生产环境必须使用至少 32 字节的 `ADMIN_SESSION_SECRET`。`COOKIE_WRITE_KEY` 未配置时，公开抓取请求无法写入或校验服务器 Cookie 池；配置时使用 64 位十六进制字符。`SOURCE_FINGERPRINT_SECRET` 未配置时复用 `ADMIN_SESSION_SECRET`，配置时使用 64 位十六进制字符。服务器登录态不可用时才会尝试用户填写的备用 Cookie，该内容仅用于当前任务。
 
-分页抓取会在每页之间随机等待，并按固定页数进行额外冷却。主入口返回不完整时会继续通过备用入口补齐并按转发记录去重；连续空页会提前停止，避免无效请求。较长的任务结束前会补查最新一页，合并抓取期间刚出现的转发；同一微博的并发请求会共享任务。遇到微博 `418`、`429` 或临时 `503` 时，服务会尊重 `Retry-After` 并退避重试。候选数硬上限为 20,000，极端长文本名单还会受总数据体积限制；实际候选数量仍取决于微博接口可见范围、账号权限和接口返回的最大页数。
+分页抓取会在每页之间以及切换桌面端、H5、旧版入口之间随机等待 6-7 秒，并按固定页数进行额外冷却。主入口到达接口声明的最后一页后会直接采用其结果；微博统计总数与可见候选数不一致时只提示差额，不再为此重复轮询其他入口。只有分页未完成、连续空页或接口失败时才继续通过备用入口补齐并按转发记录去重。较长的任务结束前会补查最新一页，合并抓取期间刚出现的转发；同一微博的并发请求会共享任务。遇到微博 `418`、`429` 或临时 `503` 时，服务会尊重 `Retry-After` 并退避重试。候选数硬上限为 20,000，极端长文本名单还会受总数据体积限制；实际候选数量仍取决于微博接口可见范围、账号权限和接口返回的最大页数。
 
 运行数据保存在 `output/`，浏览器登录资料保存在 `output/auth/weibo-login-profile/`。Chromium 的网络和媒体缓存写入 `output/runtime-cache/` 并定期回收；旧 Profile 中的 `Cache`、`Code Cache` 和着色器缓存也会清理，但不会删除 Cookies、Local Storage、IndexedDB 等登录资料。这些目录不提交到 Git。
 

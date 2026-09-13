@@ -58,8 +58,8 @@ test('measureResultPoster grows with the number of winners without excess empty 
 
   const shortLayout = measureResultPoster(shortModel);
   const longLayout = measureResultPoster(longModel);
-  assert.equal(shortLayout.width, 1080);
-  assert.ok(shortLayout.height >= 1280);
+  assert.equal(shortLayout.width, 680);
+  assert.ok(shortLayout.height >= 1480);
   assert.ok(longLayout.height > shortLayout.height);
   assert.ok(longLayout.height - shortLayout.height < 1400);
 });

@@ -126,7 +126,7 @@ try {
     const closeButton = dialog.getByRole('button', { name: /关闭开奖结果/ });
     assert.equal(await closeButton.evaluate((element) => element === document.activeElement), true);
     await page.keyboard.press('Shift+Tab');
-    assert.equal(await dialog.getByRole('button', { name: /导出 CSV/ }).evaluate((element) => element === document.activeElement), true);
+    assert.equal(await dialog.getByRole('button', { name: /导出名单 CSV/ }).evaluate((element) => element === document.activeElement), true);
     await page.keyboard.press('Tab');
     assert.equal(await closeButton.evaluate((element) => element === document.activeElement), true);
     await dialog.getByText('查看完整记录', { exact: true }).click();
@@ -136,10 +136,10 @@ try {
     assert.equal(await finalWinner.isVisible(), true);
     const copyDetails = dialog.locator('.receipt-copy-details');
     await copyDetails.scrollIntoViewIfNeeded();
-    const copyFormat = copyDetails.getByRole('combobox', { name: '公示文案格式' });
+    const copyFormat = copyDetails.getByRole('group', { name: '公示文案格式' });
     assert.equal(await copyFormat.isVisible(), true);
-    assert.deepEqual(await copyFormat.locator('option').allTextContents(), ['简洁版', '分组版', '记录版']);
-    await copyFormat.selectOption('record');
+    assert.deepEqual(await copyFormat.getByRole('button').allTextContents(), ['公示版', '名单版', '记录版']);
+    await copyFormat.getByRole('button', { name: '记录版' }).click();
     assert.match(await copyDetails.locator('pre').textContent(), /随机规则：SHA-256 · Fisher–Yates/);
     if (item.name === '390x844') {
       await page.screenshot({
@@ -183,7 +183,7 @@ try {
       JSON.stringify({ actionBox, layout, viewport: item.viewport }),
     );
     if (item.name === '320x256') {
-      const actionNames = ['复制文案', '导出 CSV'];
+      const actionNames = ['复制文案', '导出名单'];
       for (const actionName of actionNames) {
         const action = dialog.getByRole('button', { name: actionName });
         await action.scrollIntoViewIfNeeded();
@@ -268,7 +268,7 @@ try {
       await download.saveAs(posterPath);
       const png = await readFile(posterPath);
       assert.equal(png.subarray(1, 4).toString('ascii'), 'PNG');
-      assert.equal(png.readUInt32BE(16), 1080);
+      assert.equal(png.readUInt32BE(16), 680);
       assert.ok(png.readUInt32BE(20) >= 1280);
     }
     const overflow = await page.evaluate(() => (

@@ -132,14 +132,15 @@ const throwIfAborted = (signal) => {
   throw new DOMException('操作已取消', 'AbortError');
 };
 const publicAsset = (name) => `${import.meta.env.BASE_URL}${name}`;
-const APP_VERSION = '3.4.1';
+const APP_VERSION = '3.5.0';
 const REPOST_JOB_TIMEOUT_MS = 90 * 60 * 1000;
 const REPOST_JOB_POLL_MS = 1200;
 const REPOST_JOB_RECONNECT_ATTEMPTS = 4;
 const REPOST_JOB_RECONNECT_BASE_MS = 900;
 const API_FETCH_TIMEOUT_MS = 45_000;
-const CANDIDATE_BATCH_SIZE = 100;
-const CANDIDATE_RENDER_LIMIT = 1000;
+// Keep the full roster in memory for a fair draw, but only render a small page at a time.
+const CANDIDATE_PAGE_SIZE = 20;
+const CANDIDATE_RENDER_LIMIT = 200;
 const MAX_DRAW_WINNERS = 500;
 const MAX_DRAW_RESULT_GROUPS = 20;
 const MAX_HISTORY_BACKUP_BYTES = 2 * 1024 * 1024;
@@ -1469,7 +1470,9 @@ function RollingName({ fallback = '候选用户' }) {
 function AppleNavigationV3({ controller: c }) {
   const drawState = c.isDrawing ? 'running' : c.hasResults ? 'finished' : 'ready';
   const [mountedTabs, setMountedTabs] = useState(() => new Set([c.activeTab]));
-  const [candidateLimit, setCandidateLimit] = useState(CANDIDATE_BATCH_SIZE);
+  const [chromeState, setChromeState] = useState('expanded');
+  const [pageDirection, setPageDirection] = useState(1);
+  const [candidateLimit, setCandidateLimit] = useState(CANDIDATE_PAGE_SIZE);
   const [selectedCandidateEntry, setSelectedCandidateEntry] = useState(null);
   const [settingsDisclosures, setSettingsDisclosures] = useState({ cookie: false, backend: false });
   const drawDeckRef = useRef(null);
@@ -1507,6 +1510,38 @@ function AppleNavigationV3({ controller: c }) {
     setMountedTabs((current) => (current.has(c.activeTab) ? current : new Set(current).add(c.activeTab)));
   }, [c.activeTab]);
 
+  useEffect(() => {
+    const scrollRoot = document.querySelector(`[data-root-view="${c.activeTab}"] .root-scroll`);
+    if (!scrollRoot) {
+      setChromeState('expanded');
+      return undefined;
+    }
+
+    let lastScrollTop = scrollRoot.scrollTop;
+    let animationFrame = 0;
+    const updateChrome = () => {
+      animationFrame = 0;
+      const nextScrollTop = scrollRoot.scrollTop;
+      const delta = nextScrollTop - lastScrollTop;
+      lastScrollTop = nextScrollTop;
+      if (nextScrollTop <= 24 || delta < -6) {
+        setChromeState((current) => (current === 'expanded' ? current : 'expanded'));
+      } else if (nextScrollTop > 72 && delta > 6) {
+        setChromeState((current) => (current === 'compact' ? current : 'compact'));
+      }
+    };
+    const handleScroll = () => {
+      if (!animationFrame) animationFrame = window.requestAnimationFrame(updateChrome);
+    };
+
+    setChromeState('expanded');
+    scrollRoot.addEventListener('scroll', handleScroll, { passive: true });
+    return () => {
+      scrollRoot.removeEventListener('scroll', handleScroll);
+      window.cancelAnimationFrame(animationFrame);
+    };
+  }, [c.activeTab]);
+
   const tabIndex = { home: 0, candidates: 1, history: 2, more: 3 }[c.activeTab] ?? 0;
   const tabOrder = ['home', 'candidates', 'history', 'more'];
   const candidateSegmentIndex = { eligible: 0, all: 1, excluded: 2 }[c.candidateSegment] ?? 0;
@@ -1542,7 +1577,7 @@ function AppleNavigationV3({ controller: c }) {
   const searchOnlyCandidates = Math.max(0, matchingCandidates.length - browsableCandidateCount);
 
   useLayoutEffect(() => {
-    setCandidateLimit(CANDIDATE_BATCH_SIZE);
+    setCandidateLimit(CANDIDATE_PAGE_SIZE);
   }, [c.candidateSegment, c.candidates, deferredCandidateQuery]);
   const deferredHistoryQuery = useDeferredValue(c.historyQuery);
   const historySearch = String(deferredHistoryQuery || '').trim().toLowerCase();
@@ -1671,6 +1706,12 @@ function AppleNavigationV3({ controller: c }) {
   }, [c.motionPreference, c.settingsTarget, c.showSettings]);
 
   const switchTab = (tab, { focus = false } = {}) => {
+    if (tab !== c.activeTab) {
+      const currentIndex = tabOrder.indexOf(c.activeTab);
+      const nextIndex = tabOrder.indexOf(tab);
+      setPageDirection(nextIndex >= currentIndex ? 1 : -1);
+      setChromeState('expanded');
+    }
     setMountedTabs((current) => (current.has(tab) ? current : new Set(current).add(tab)));
     c.setActiveTab(tab);
     window.requestAnimationFrame(() => {
@@ -1722,7 +1763,12 @@ function AppleNavigationV3({ controller: c }) {
       data-intake-state={intakeState}
       data-motion={c.motionPreference}
       data-setup={c.drawSetupConfirmed ? 'confirmed' : 'unconfirmed'}
+      data-chrome={chromeState}
       data-root-tab={c.activeTab === 'home' ? 'draw' : c.activeTab}
+      style={{
+        '--page-direction': String(pageDirection),
+        '--page-enter-x': `${pageDirection * 12}px`,
+      }}
     >
       <a className="skip-link" href="#main-content" inert={contentInert ? '' : undefined}>跳到主要内容</a>
       <header className="root-navbar glass" inert={contentInert ? '' : undefined}>
@@ -2184,18 +2230,18 @@ function AppleNavigationV3({ controller: c }) {
               )}
               {remainingCandidates > 0 && (
                 <div className="candidate-load-more">
-                  <span>已显示 {visibleCandidates.length.toLocaleString()} / {matchingCandidates.length.toLocaleString()}</span>
+                  <span>已显示 {visibleCandidates.length.toLocaleString()} / {matchingCandidates.length.toLocaleString()} · 开奖使用完整名单</span>
                   <button
                     type="button"
-                    onClick={() => setCandidateLimit((current) => current + CANDIDATE_BATCH_SIZE)}
+                    onClick={() => setCandidateLimit((current) => current + CANDIDATE_PAGE_SIZE)}
                   >
-                    继续显示 {Math.min(CANDIDATE_BATCH_SIZE, remainingCandidates).toLocaleString()} 人
+                    继续显示 {Math.min(CANDIDATE_PAGE_SIZE, remainingCandidates).toLocaleString()} 人
                   </button>
                 </div>
               )}
               {!remainingCandidates && searchOnlyCandidates > 0 && (
                 <div className="candidate-load-more" role="note">
-                  <span>已显示前 {CANDIDATE_RENDER_LIMIT.toLocaleString()} 人，搜索或导出可查看完整名单</span>
+                  <span>已显示前 {CANDIDATE_RENDER_LIMIT.toLocaleString()} 人，搜索或导出可查看完整名单；开奖仍使用完整可抽名单</span>
                 </div>
               )}
             </section>

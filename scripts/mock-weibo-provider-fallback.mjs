@@ -130,6 +130,94 @@ function partialMobile(url) {
   return null;
 }
 
+function nearTotalDesktop(url) {
+  const statusId = statusIdFromUrl(url);
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 4);
+  if (url.pathname === '/ajax/statuses/repostTimeline') {
+    const page = Number(url.searchParams.get('page') || 1);
+    if (page === 1) {
+      return desktopTimeline([
+        candidate('near-total-1', 'near-total-user-1', '近完整候选一'),
+        candidate('near-total-2', 'near-total-user-2', '近完整候选二'),
+      ], 4, 2);
+    }
+    if (page === 2) {
+      return desktopTimeline([
+        candidate('near-total-3', 'near-total-user-3', '近完整候选三'),
+      ], 4, 2);
+    }
+  }
+  if (url.pathname === '/api/statuses/repostTimeline') {
+    return mobileTimeline([candidate('should-not-load', 'backup-user', '备用入口候选')], 4);
+  }
+  return null;
+}
+
+function declaredShortPage(url) {
+  const statusId = statusIdFromUrl(url);
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 100);
+  if (url.pathname === '/ajax/statuses/repostTimeline') {
+    const page = Number(url.searchParams.get('page') || 1);
+    return page === 1
+      ? desktopTimeline([candidate('declared-short-desktop', 'short-desktop-user', '短页候选')], 100, 10)
+      : desktopTimeline([], 100, 10);
+  }
+  if (url.pathname === '/api/statuses/repostTimeline') {
+    return mobileTimeline([candidate('declared-short-mobile', 'short-mobile-user', 'H5 补齐候选')], 100, 10);
+  }
+  return null;
+}
+
+function aggregateTotalMismatch(url) {
+  const statusId = statusIdFromUrl(url);
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 100);
+  if (url.pathname === '/ajax/statuses/repostTimeline') {
+    const page = Number(url.searchParams.get('page') || 1);
+    return page === 1
+      ? desktopTimeline([candidate('aggregate-desktop', 'aggregate-desktop-user', '聚合桌面候选')], 100, 10)
+      : desktopTimeline([], 100, 10);
+  }
+  if (url.pathname === '/api/statuses/repostTimeline') {
+    return mobileTimeline([candidate('aggregate-mobile', 'aggregate-mobile-user', '局部完整候选')], 1);
+  }
+  return null;
+}
+
+function trustedTailDesktop(url) {
+  const statusId = statusIdFromUrl(url);
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 100);
+  if (url.pathname === '/ajax/statuses/repostTimeline') {
+    const page = Number(url.searchParams.get('page') || 1);
+    return page === 1
+      ? desktopTimeline([
+        candidate('trusted-tail-1', 'trusted-tail-user-1', '尾页候选一'),
+        candidate('trusted-tail-2', 'trusted-tail-user-2', '尾页候选二'),
+      ], 100, 2)
+      : desktopTimeline([
+        candidate('trusted-tail-3', 'trusted-tail-user-3', '尾页候选三'),
+      ], 100, 2);
+  }
+  if (url.pathname === '/api/statuses/repostTimeline') {
+    return mobileTimeline([candidate('should-not-load-tail', 'tail-backup-user', '不应加载')], 100);
+  }
+  return null;
+}
+
+function legacyMissingIdentity(url) {
+  const statusId = statusIdFromUrl(url);
+  if (url.pathname === '/ajax/statuses/show') {
+    return json({
+      idstr: statusId,
+      mid: statusId,
+      reposts_count: 100,
+      user: { idstr: `owner-${statusId}` },
+    });
+  }
+  if (url.pathname === '/ajax/statuses/repostTimeline') return desktopTimeline([], 100, 1);
+  if (url.pathname === '/api/statuses/repostTimeline') return mobileTimeline([], 100, 1);
+  return null;
+}
+
 function cookieRotation(url, headers) {
   const statusId = statusIdFromUrl(url);
   const badCookie = cookieLabel(headers.get('cookie') || '') === 'bad';
@@ -190,6 +278,25 @@ function legacyId(url) {
   return null;
 }
 
+function legacyAttitudeId(url) {
+  const statusId = statusIdFromUrl(url);
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 1);
+  if (url.pathname === '/ajax/statuses/repostTimeline') return desktopTimeline([], 1);
+  if (url.pathname === '/api/statuses/repostTimeline') return mobileTimeline([], 1);
+  if (url.hostname === 'weibo.cn' && url.pathname.startsWith('/repost/')) {
+    return html([
+      '<html><body>',
+      '<input name="mp" value="1">',
+      '<div class="c">',
+      '<a href="/u/710002">旧版 attitude 候选</a>: 转发测试 ',
+      '<a href="/attitude/987654322">赞[1]</a>',
+      '</div>',
+      '</body></html>',
+    ].join(''));
+  }
+  return null;
+}
+
 function headMeta(url) {
   const statusId = statusIdFromUrl(url);
   if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 3);
@@ -228,11 +335,17 @@ function unknownDesktop(url) {
 function allScenarios(url, headers) {
   const handlersByStatus = {
     910001: partialMobile,
+    910002: nearTotalDesktop,
+    910003: declaredShortPage,
+    910004: aggregateTotalMismatch,
+    910005: legacyMissingIdentity,
+    910006: trustedTailDesktop,
     920001: cookieRotation,
     930001: emptyPages,
     940001: candidateCap,
     940002: candidateCap,
     950001: legacyId,
+    950002: legacyAttitudeId,
     960001: headMeta,
     970001: unknownDesktop,
     970002: unknownDesktop,
@@ -242,10 +355,12 @@ function allScenarios(url, headers) {
 
 const handlers = {
   'partial-mobile': partialMobile,
+  'near-total-desktop': nearTotalDesktop,
   'cookie-rotation': cookieRotation,
   'empty-pages': emptyPages,
   'candidate-cap': candidateCap,
   'legacy-id': legacyId,
+  'legacy-attitude-id': legacyAttitudeId,
   'head-meta': headMeta,
   'unknown-desktop': unknownDesktop,
   all: allScenarios,

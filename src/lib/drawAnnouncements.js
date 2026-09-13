@@ -3,8 +3,8 @@ import { formatDateTime } from './dateTime.js';
 import { drawCountCopy, normalizeDrawReceipt } from './drawReceipts.js';
 
 export const DRAW_ANNOUNCEMENT_TEMPLATES = Object.freeze([
-  { value: 'concise', label: '简洁版', hint: '奖项与获奖用户' },
-  { value: 'grouped', label: '分组版', hint: '按奖项列出序号' },
+  { value: 'concise', label: '公示版', hint: '奖项与名单，适合直接发布' },
+  { value: 'grouped', label: '名单版', hint: '按奖项编号，方便复核' },
   { value: 'record', label: '记录版', hint: '附时间、范围与随机规则' },
 ]);
 
@@ -35,22 +35,24 @@ function groupedLines(receipt, numbered = false) {
     .flatMap((group) => {
       const names = group.winners.map((winner, index) => (
         numbered
-          ? `${index + 1}. ${winnerMention(winner, index)}`
+          ? `${String(index + 1).padStart(2, '0')} ${winnerMention(winner, index)}`
           : winnerMention(winner, index)
       ));
       return numbered
-        ? [group.prize.name, ...names]
-        : [`${group.prize.name}：${names.join(' ')}`];
+        ? [`【${group.prize.name}】`, ...names]
+        : [`${group.prize.name}：${names.join('  ')}`];
     });
 }
 
 function recordDetails(receipt) {
   const filterText = receipt.rules?.filters
     ? buildFilterSummary(receipt.rules.filters)
+      .replaceAll('同一用户只保留一次', '同用户仅一次')
+      .replaceAll('排除当前任务已中奖用户', '排除本轮已中奖')
     : '未记录';
   const label = drawLabel(receipt);
   return [
-    label,
+    label ? `开奖次数：${label}` : '',
     `开奖时间：${formatDateTime(receipt.drawnAt, { fallback: '时间未记录' })}`,
     `候选范围：载入 ${receipt.candidateCount} 人 · 可抽 ${receipt.eligibleCount} 人`,
     `筛选规则：${filterText}`,
@@ -66,13 +68,23 @@ export function buildAnnouncementText(input = {}, template = 'concise') {
   const groups = groupedLines(receipt, selected === 'grouped' || selected === 'record');
   if (!groups.length) return '';
 
-  const lines = ['微博转发抽奖结果'];
+  const lines = [
+    selected === 'record'
+      ? '微博转发抽奖｜完整开奖记录'
+      : '微博转发抽奖｜开奖公示',
+  ];
   if (selected === 'record') {
+    lines.push('');
     lines.push(...recordDetails(receipt));
   } else if (selected === 'grouped' && drawLabel(receipt)) {
     lines.push(drawLabel(receipt));
   }
-  lines.push('', ...groups, '', '请获奖用户留意私信。');
+  lines.push(
+    '',
+    ...groups,
+    '',
+    selected === 'record' ? '以上为本次完整开奖记录。' : '请中奖用户留意后续私信。',
+  );
   if (receipt.statusUrl) lines.push('', `原微博：${receipt.statusUrl}`);
   return lines.join('\n');
 }

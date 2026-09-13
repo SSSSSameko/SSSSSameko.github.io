@@ -2,25 +2,25 @@ import { DRAW_RANDOM_ALGORITHM, friendlyProviderText } from './appCore.js';
 import { avatarProxyUrl, safeAvatarUrl } from './avatar.js';
 import { formatDateTime } from './dateTime.js';
 
-const POSTER_WIDTH = 1080;
-const POSTER_MIN_HEIGHT = 1280;
-const POSTER_PADDING = 64;
+const POSTER_WIDTH = 680;
+const POSTER_MIN_HEIGHT = 1480;
+const POSTER_PADDING = 40;
 const POSTER_INNER_WIDTH = POSTER_WIDTH - POSTER_PADDING * 2;
 const FONT_STACK = '"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif';
-const WINNER_ROW_HEIGHT = 94;
-const GROUP_HEADER_HEIGHT = 88;
-const GROUP_BOTTOM_PADDING = 22;
-const GROUP_GAP = 22;
+const WINNER_ROW_HEIGHT = 82;
+const GROUP_HEADER_HEIGHT = 76;
+const GROUP_BOTTOM_PADDING = 18;
+const GROUP_GAP = 16;
 const POSTER_WINNER_LIMIT = 60;
 const POSTER_GROUP_LIMIT = 20;
 const IMAGE_CACHE_LIMIT = 80;
 const imageCache = new Map();
 const TONES = [
-  { fill: '#fff0f4', strong: '#df6f8d', soft: '#f7a7bc' },
-  { fill: '#eef5ff', strong: '#577fd8', soft: '#9bbcf7' },
-  { fill: '#f3efff', strong: '#7560d8', soft: '#b5a6ef' },
-  { fill: '#eafaf6', strong: '#289d87', soft: '#84d6c4' },
-  { fill: '#fff5e9', strong: '#c77a3a', soft: '#f0b77d' },
+  { fill: '#fff0f3', strong: '#b83f62', soft: '#ef9db4' },
+  { fill: '#edf4fb', strong: '#315f8b', soft: '#8eb8dc' },
+  { fill: '#f1effa', strong: '#6656ae', soft: '#a99ce0' },
+  { fill: '#eaf7f4', strong: '#227b6f', soft: '#77c6ba' },
+  { fill: '#fff4e8', strong: '#a86431', soft: '#dba16c' },
 ];
 
 function safeText(value, fallback = '') {
@@ -111,7 +111,7 @@ export function measureResultPoster(model) {
     (total, group) => total + GROUP_HEADER_HEIGHT + group.winners.length * WINNER_ROW_HEIGHT + GROUP_BOTTOM_PADDING + GROUP_GAP,
     0,
   );
-  const fixedHeight = 64 + 160 + 252 + 128 + 166 + 58 + 364 + 90 + (model.omittedWinnerCount ? 84 : 0);
+  const fixedHeight = 48 + 140 + 228 + 112 + 142 + 54 + 318 + 80 + (model.omittedWinnerCount ? 72 : 0);
   return {
     width: POSTER_WIDTH,
     height: Math.max(POSTER_MIN_HEIGHT, fixedHeight + groupsHeight),
@@ -144,12 +144,12 @@ function roundedRect(ctx, x, y, width, height, radius, fill, stroke = '') {
 
 function glassPanel(ctx, x, y, width, height, radius = 34, fill = 'rgba(255,255,255,0.84)') {
   ctx.save();
-  ctx.shadowColor = 'rgba(40, 53, 78, 0.12)';
-  ctx.shadowBlur = 38;
-  ctx.shadowOffsetY = 16;
-  roundedRect(ctx, x, y, width, height, radius, fill, 'rgba(255,255,255,0.96)');
+  ctx.shadowColor = 'rgba(34, 43, 60, 0.07)';
+  ctx.shadowBlur = 22;
+  ctx.shadowOffsetY = 8;
+  roundedRect(ctx, x, y, width, height, radius, fill, 'rgba(31, 38, 52, 0.08)');
   ctx.restore();
-  roundedRect(ctx, x + 2, y + 2, width - 4, Math.max(24, height * 0.36), Math.max(12, radius - 2), 'rgba(255,255,255,0.16)');
+  roundedRect(ctx, x + 1, y + 1, width - 2, 1, radius, 'rgba(255,255,255,0.78)');
 }
 
 function fillText(ctx, text, x, y, {
@@ -198,20 +198,6 @@ function wrapLines(ctx, value, maxWidth, maxLines = Infinity) {
     lines[last] = `${lines[last]}…`;
   }
   return lines;
-}
-
-function drawSparkle(ctx, x, y, size, color) {
-  ctx.save();
-  ctx.translate(x, y);
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.moveTo(0, -size);
-  ctx.bezierCurveTo(size * 0.16, -size * 0.24, size * 0.24, -size * 0.16, size, 0);
-  ctx.bezierCurveTo(size * 0.24, size * 0.16, size * 0.16, size * 0.24, 0, size);
-  ctx.bezierCurveTo(-size * 0.16, size * 0.24, -size * 0.24, size * 0.16, -size, 0);
-  ctx.bezierCurveTo(-size * 0.24, -size * 0.16, -size * 0.16, -size * 0.24, 0, -size);
-  ctx.fill();
-  ctx.restore();
 }
 
 function drawInitialAvatar(ctx, winner, x, y, size, borderWidth = 4) {
@@ -357,121 +343,107 @@ async function loadWinnerAvatars(model, apiBase) {
 
 function drawBackground(ctx, width, height) {
   const background = ctx.createLinearGradient(0, 0, width, height);
-  background.addColorStop(0, '#f8f8fc');
-  background.addColorStop(0.38, '#eef5ff');
-  background.addColorStop(0.7, '#fff4f7');
-  background.addColorStop(1, '#f1f8f6');
+  background.addColorStop(0, '#f7f7fa');
+  background.addColorStop(0.58, '#f2f2f7');
+  background.addColorStop(1, '#fafafd');
   ctx.fillStyle = background;
   ctx.fillRect(0, 0, width, height);
-
-  const light = ctx.createLinearGradient(0, 0, width, 0);
-  light.addColorStop(0, 'rgba(255,255,255,0.78)');
-  light.addColorStop(0.48, 'rgba(255,255,255,0.16)');
-  light.addColorStop(1, 'rgba(255,255,255,0.68)');
-  ctx.fillStyle = light;
-  ctx.fillRect(0, 0, width, height);
-
-  ctx.fillStyle = 'rgba(255,255,255,0.38)';
-  ctx.fillRect(0, 0, width, 7);
 }
 
 function drawBrandHeader(ctx, model, y, brandImage) {
-  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 132, 38, 'rgba(255,255,255,0.78)');
-  const iconX = POSTER_PADDING + 24;
-  const iconY = y + 24;
-  const iconSize = 84;
+  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 116, 30, 'rgba(255,255,255,0.96)');
+  const iconX = POSTER_PADDING + 20;
+  const iconY = y + 20;
+  const iconSize = 76;
   if (brandImage) {
-    drawCoverImage(ctx, brandImage, iconX, iconY, iconSize, iconSize, 28);
-    roundedRect(ctx, iconX, iconY, iconSize, iconSize, 28, '', 'rgba(255,255,255,0.92)');
+    drawCoverImage(ctx, brandImage, iconX, iconY, iconSize, iconSize, 24);
+    roundedRect(ctx, iconX, iconY, iconSize, iconSize, 24, '', 'rgba(255,255,255,0.92)');
   } else {
-    const iconFill = ctx.createLinearGradient(iconX, iconY, iconX + iconSize, iconY + iconSize);
-    iconFill.addColorStop(0, '#fff0f4');
-    iconFill.addColorStop(0.48, '#eef5ff');
-    iconFill.addColorStop(1, '#f0edff');
-    roundedRect(ctx, iconX, iconY, iconSize, iconSize, 28, iconFill, '#ffffff');
-    drawSparkle(ctx, iconX + iconSize / 2, iconY + iconSize / 2, 22, '#7767ed');
+    roundedRect(ctx, iconX, iconY, iconSize, iconSize, 24, '#f2f2f7', 'rgba(60, 60, 67, 0.1)');
+    fillText(ctx, 'S', iconX + iconSize / 2, iconY + 20, {
+      color: '#3a3a3c',
+      font: `700 34px ${FONT_STACK}`,
+      align: 'center',
+    });
   }
 
-  fillText(ctx, model.title, iconX + 110, y + 31, {
-    font: `700 30px ${FONT_STACK}`,
+  fillText(ctx, model.title, iconX + 96, y + 27, {
+    font: `700 27px ${FONT_STACK}`,
   });
-  fillText(ctx, 'by.sameko', iconX + 110, y + 76, {
+  fillText(ctx, 'by.sameko', iconX + 96, y + 68, {
     color: '#737884',
-    font: `500 18px ${FONT_STACK}`,
+    font: `500 16px ${FONT_STACK}`,
   });
 
-  const pillWidth = 210;
-  const pillX = POSTER_WIDTH - POSTER_PADDING - pillWidth - 22;
-  roundedRect(ctx, pillX, y + 39, pillWidth, 54, 27, 'rgba(245,241,255,0.88)', 'rgba(255,255,255,0.96)');
-  ctx.font = `650 19px ${FONT_STACK}`;
-  fillText(ctx, fitText(ctx, model.drawLabel, pillWidth - 24), pillX + pillWidth / 2, y + 52, {
-    color: '#6655cc',
-    font: `650 19px ${FONT_STACK}`,
+  const pillWidth = 190;
+  const pillX = POSTER_WIDTH - POSTER_PADDING - pillWidth - 18;
+  roundedRect(ctx, pillX, y + 33, pillWidth, 50, 16, '#eef5ff', 'rgba(10, 124, 255, 0.1)');
+  ctx.font = `650 17px ${FONT_STACK}`;
+  fillText(ctx, fitText(ctx, model.drawLabel, pillWidth - 22), pillX + pillWidth / 2, y + 46, {
+    color: '#1268c4',
+    font: `650 17px ${FONT_STACK}`,
     align: 'center',
   });
 }
 
 function drawHero(ctx, model, y, avatarImages) {
-  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 232, 38, 'rgba(255,255,255,0.82)');
-  roundedRect(ctx, POSTER_PADDING + 28, y + 28, 126, 42, 21, '#eafaf6');
-  fillText(ctx, '开奖完成', POSTER_PADDING + 91, y + 38, {
-    color: '#218b78',
-    font: `650 17px ${FONT_STACK}`,
+  ctx.save();
+  ctx.shadowColor = 'rgba(35, 40, 52, 0.08)';
+  ctx.shadowBlur = 26;
+  ctx.shadowOffsetY = 10;
+  roundedRect(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 208, 34, '#ffffff', 'rgba(60, 60, 67, 0.1)');
+  ctx.restore();
+  roundedRect(ctx, POSTER_PADDING + 24, y + 24, 112, 36, 18, '#e8f7f0');
+  fillText(ctx, '开奖完成', POSTER_PADDING + 80, y + 32, {
+    color: '#1f7a5d',
+    font: `650 15px ${FONT_STACK}`,
     align: 'center',
   });
-  drawSparkle(ctx, POSTER_PADDING + 178, y + 49, 10, '#ee8fa1');
 
-  fillText(ctx, `${model.winnerCount} 位中奖用户`, POSTER_PADDING + 28, y + 91, {
-    font: `760 54px ${FONT_STACK}`,
+  fillText(ctx, `${model.winnerCount} 位中奖用户`, POSTER_PADDING + 24, y + 75, {
+    color: '#1d1d1f',
+    font: `760 46px ${FONT_STACK}`,
   });
-  fillText(ctx, `${model.groups.length} 个奖项 · ${model.drawnAt}`, POSTER_PADDING + 30, y + 164, {
-    color: '#7e8390',
-    font: `500 19px ${FONT_STACK}`,
+  fillText(ctx, `${model.groups.length} 个奖项 · ${model.drawnAt}`, POSTER_PADDING + 26, y + 145, {
+    color: '#6e6e73',
+    font: `500 17px ${FONT_STACK}`,
   });
 
-  const visibleWinners = model.groups.flatMap((group) => group.winners).slice(0, 5);
+  const visibleWinners = model.groups.flatMap((group) => group.winners).slice(0, 3);
   const remaining = model.winnerCount - visibleWinners.length;
-  const avatarSize = 68;
-  const overlap = 18;
+  const avatarSize = 60;
+  const overlap = 14;
   const stackItems = visibleWinners.length + (remaining > 0 ? 1 : 0);
   const stackWidth = stackItems
     ? avatarSize + (stackItems - 1) * (avatarSize - overlap)
     : 0;
-  const stackX = POSTER_WIDTH - POSTER_PADDING - 30 - stackWidth;
+  const stackX = POSTER_WIDTH - POSTER_PADDING - 24 - stackWidth;
   visibleWinners.forEach((winner, index) => {
-    drawAvatar(ctx, winner, avatarImages, stackX + index * (avatarSize - overlap), y + 92, avatarSize);
+    drawAvatar(ctx, winner, avatarImages, stackX + index * (avatarSize - overlap), y + 78, avatarSize);
   });
   if (remaining > 0) {
     const moreX = stackX + visibleWinners.length * (avatarSize - overlap);
-    roundedRect(ctx, moreX, y + 92, avatarSize, avatarSize, 23, '#f3efff', '#ffffff');
-    fillText(ctx, `+${remaining}`, moreX + avatarSize / 2, y + 113, {
-      color: '#7560d8',
-      font: `700 22px ${FONT_STACK}`,
+    roundedRect(ctx, moreX, y + 78, avatarSize, avatarSize, 21, '#f1efff', '#ffffff');
+    fillText(ctx, `+${remaining}`, moreX + avatarSize / 2, y + 97, {
+      color: '#5e5ce6',
+      font: `700 20px ${FONT_STACK}`,
       align: 'center',
     });
   }
 }
 
 function drawSource(ctx, model, y) {
-  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 108, 30, 'rgba(255,255,255,0.72)');
-  roundedRect(ctx, POSTER_PADDING + 22, y + 22, 64, 64, 22, '#fff0f4', '#ffffff');
-  ctx.strokeStyle = '#df6f8d';
-  ctx.lineWidth = 5;
-  ctx.lineCap = 'round';
-  ctx.beginPath();
-  ctx.arc(POSTER_PADDING + 50, y + 54, 12, Math.PI * 0.28, Math.PI * 1.72);
-  ctx.arc(POSTER_PADDING + 59, y + 54, 12, Math.PI * 1.28, Math.PI * 0.72);
-  ctx.stroke();
-  fillText(ctx, '微博来源', POSTER_PADDING + 108, y + 20, {
+  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 92, 26, 'rgba(255,255,255,0.94)');
+  fillText(ctx, '微博来源', POSTER_PADDING + 24, y + 15, {
     color: '#858a96',
-    font: `500 16px ${FONT_STACK}`,
+    font: `500 14px ${FONT_STACK}`,
   });
-  ctx.font = `560 20px ${FONT_STACK}`;
-  const lines = wrapLines(ctx, model.source, POSTER_INNER_WIDTH - 158, 2);
+  ctx.font = `560 17px ${FONT_STACK}`;
+  const lines = wrapLines(ctx, model.source, POSTER_INNER_WIDTH - 48, 2);
   lines.forEach((line, index) => {
-    fillText(ctx, line, POSTER_PADDING + 108, y + 49 + index * 26, {
+    fillText(ctx, line, POSTER_PADDING + 24, y + 39 + index * 23, {
       color: '#343842',
-      font: `560 20px ${FONT_STACK}`,
+      font: `560 17px ${FONT_STACK}`,
     });
   });
 }
@@ -482,22 +454,22 @@ function drawStats(ctx, model, y) {
     ['符合规则', model.fairness.eligibleCount.toLocaleString('zh-CN'), TONES[3]],
     ['中奖人数', model.winnerCount.toLocaleString('zh-CN'), TONES[0]],
   ];
-  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 128, 32, 'rgba(255,255,255,0.76)');
+  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 116, 28, 'rgba(255,255,255,0.94)');
   const cellWidth = POSTER_INNER_WIDTH / values.length;
   values.forEach(([label, value, tone], index) => {
     const x = POSTER_PADDING + index * cellWidth;
     if (index) {
       ctx.fillStyle = 'rgba(31,31,38,0.08)';
-      ctx.fillRect(x, y + 28, 1.5, 72);
+      ctx.fillRect(x, y + 24, 1.5, 68);
     }
-    fillText(ctx, label, x + cellWidth / 2, y + 27, {
+    fillText(ctx, label, x + cellWidth / 2, y + 22, {
       color: '#8b909b',
-      font: `500 16px ${FONT_STACK}`,
+      font: `500 14px ${FONT_STACK}`,
       align: 'center',
     });
-    fillText(ctx, value, x + cellWidth / 2, y + 56, {
+    fillText(ctx, value, x + cellWidth / 2, y + 49, {
       color: tone.strong,
-      font: `730 34px ${FONT_STACK}`,
+      font: `730 32px ${FONT_STACK}`,
       align: 'center',
     });
   });
@@ -505,31 +477,31 @@ function drawStats(ctx, model, y) {
 
 function drawSectionTitle(ctx, model, y) {
   fillText(ctx, '中奖名单', POSTER_PADDING + 2, y, {
-    font: `730 34px ${FONT_STACK}`,
+    font: `730 30px ${FONT_STACK}`,
   });
-  fillText(ctx, `共 ${model.winnerCount} 人`, POSTER_WIDTH - POSTER_PADDING - 2, y + 8, {
+  fillText(ctx, `共 ${model.winnerCount} 人`, POSTER_WIDTH - POSTER_PADDING - 2, y + 7, {
     color: '#858a96',
-    font: `520 18px ${FONT_STACK}`,
+    font: `520 17px ${FONT_STACK}`,
     align: 'right',
   });
 }
 
 function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
   const height = GROUP_HEADER_HEIGHT + group.winners.length * WINNER_ROW_HEIGHT + GROUP_BOTTOM_PADDING;
-  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, height, 34, 'rgba(255,255,255,0.86)');
-  roundedRect(ctx, POSTER_PADDING + 24, y + 22, 54, 54, 18, group.tone.fill, '#ffffff');
-  fillText(ctx, String(groupIndex + 1), POSTER_PADDING + 51, y + 34, {
+  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, height, 26, 'rgba(255,255,255,0.96)');
+  roundedRect(ctx, POSTER_PADDING + 20, y + 18, 48, 48, 16, group.tone.fill, '#ffffff');
+  fillText(ctx, String(groupIndex + 1), POSTER_PADDING + 44, y + 28, {
     color: group.color,
-    font: `720 22px ${FONT_STACK}`,
+    font: `720 20px ${FONT_STACK}`,
     align: 'center',
   });
-  ctx.font = `680 27px ${FONT_STACK}`;
-  fillText(ctx, fitText(ctx, group.name, POSTER_INNER_WIDTH - 230), POSTER_PADDING + 98, y + 25, {
-    font: `680 27px ${FONT_STACK}`,
+  ctx.font = `680 24px ${FONT_STACK}`;
+  fillText(ctx, fitText(ctx, group.name, POSTER_INNER_WIDTH - 190), POSTER_PADDING + 84, y + 21, {
+    font: `680 24px ${FONT_STACK}`,
   });
-  fillText(ctx, `${group.totalWinnerCount} 名`, POSTER_WIDTH - POSTER_PADDING - 26, y + 34, {
+  fillText(ctx, `${group.totalWinnerCount} 名`, POSTER_WIDTH - POSTER_PADDING - 22, y + 28, {
     color: '#858a96',
-    font: `520 18px ${FONT_STACK}`,
+    font: `520 17px ${FONT_STACK}`,
     align: 'right',
   });
 
@@ -537,22 +509,22 @@ function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
     const rowY = y + GROUP_HEADER_HEIGHT + winnerIndex * WINNER_ROW_HEIGHT;
     if (winnerIndex) {
       ctx.fillStyle = 'rgba(31,31,38,0.075)';
-      ctx.fillRect(POSTER_PADDING + 104, rowY, POSTER_INNER_WIDTH - 132, 1.5);
+      ctx.fillRect(POSTER_PADDING + 88, rowY, POSTER_INNER_WIDTH - 112, 1.5);
     }
-    drawAvatar(ctx, winner, avatarImages, POSTER_PADDING + 24, rowY + 13, 66);
-    ctx.font = `650 24px ${FONT_STACK}`;
-    fillText(ctx, fitText(ctx, winner.name, POSTER_INNER_WIDTH - 220), POSTER_PADDING + 112, rowY + 16, {
-      font: `650 24px ${FONT_STACK}`,
+    drawAvatar(ctx, winner, avatarImages, POSTER_PADDING + 20, rowY + 11, 58);
+    ctx.font = `650 22px ${FONT_STACK}`;
+    fillText(ctx, fitText(ctx, winner.name, POSTER_INNER_WIDTH - 184), POSTER_PADDING + 92, rowY + 12, {
+      font: `650 22px ${FONT_STACK}`,
     });
-    ctx.font = `500 16px ${FONT_STACK}`;
+    ctx.font = `500 15px ${FONT_STACK}`;
     const uid = winner.uid === 'UID 未记录' ? winner.uid : `UID ${winner.uid}`;
-    fillText(ctx, fitText(ctx, uid, POSTER_INNER_WIDTH - 220), POSTER_PADDING + 112, rowY + 52, {
+    fillText(ctx, fitText(ctx, uid, POSTER_INNER_WIDTH - 184), POSTER_PADDING + 92, rowY + 44, {
       color: '#8b909b',
-      font: `500 16px ${FONT_STACK}`,
+      font: `500 15px ${FONT_STACK}`,
     });
-    fillText(ctx, String(winner.rank).padStart(2, '0'), POSTER_WIDTH - POSTER_PADDING - 28, rowY + 30, {
+    fillText(ctx, String(winner.rank).padStart(2, '0'), POSTER_WIDTH - POSTER_PADDING - 22, rowY + 25, {
       color: group.color,
-      font: `700 18px ${FONT_STACK}`,
+      font: `700 17px ${FONT_STACK}`,
       align: 'right',
     });
   });
@@ -560,24 +532,34 @@ function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
 }
 
 function drawOmittedWinners(ctx, displayedCount, omittedCount, y) {
-  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 62, 22, 'rgba(255,255,255,0.72)');
-  fillText(ctx, `结果图展示 ${displayedCount} 位，另有 ${omittedCount} 位请在开奖记录中查看`, POSTER_WIDTH / 2, y + 19, {
+  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 56, 20, 'rgba(255,255,255,0.78)');
+  fillText(ctx, `结果图展示 ${displayedCount} 位，另有 ${omittedCount} 位请在开奖记录中查看`, POSTER_WIDTH / 2, y + 17, {
     color: '#737884',
-    font: `520 17px ${FONT_STACK}`,
+    font: `520 16px ${FONT_STACK}`,
     align: 'center',
   });
 }
 
 function drawFairness(ctx, model, y) {
-  glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 330, 36, 'rgba(255,255,255,0.8)');
-  roundedRect(ctx, POSTER_PADDING + 24, y + 24, 62, 62, 22, '#eafaf6', '#ffffff');
-  drawSparkle(ctx, POSTER_PADDING + 55, y + 55, 17, '#289d87');
-  fillText(ctx, '随机过程记录', POSTER_PADDING + 106, y + 25, {
-    font: `700 29px ${FONT_STACK}`,
+  ctx.save();
+  ctx.shadowColor = 'rgba(35, 40, 52, 0.07)';
+  ctx.shadowBlur = 24;
+  ctx.shadowOffsetY = 9;
+  roundedRect(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 292, 30, '#ffffff', 'rgba(60, 60, 67, 0.1)');
+  ctx.restore();
+  roundedRect(ctx, POSTER_PADDING + 20, y + 20, 56, 56, 18, '#f2f2f7', 'rgba(60, 60, 67, 0.1)');
+  fillText(ctx, 'SHA', POSTER_PADDING + 48, y + 39, {
+    color: '#636366',
+    font: `700 14px ${FONT_STACK}`,
+    align: 'center',
   });
-  fillText(ctx, model.drawLabel, POSTER_PADDING + 106, y + 63, {
-    color: '#7f8490',
-    font: `520 17px ${FONT_STACK}`,
+  fillText(ctx, '随机过程记录', POSTER_PADDING + 94, y + 20, {
+    color: '#1d1d1f',
+    font: `700 27px ${FONT_STACK}`,
+  });
+  fillText(ctx, model.drawLabel, POSTER_PADDING + 94, y + 55, {
+    color: '#6e6e73',
+    font: `520 16px ${FONT_STACK}`,
   });
 
   const cells = [
@@ -586,41 +568,41 @@ function drawFairness(ctx, model, y) {
     ['随机算法', model.fairness.algorithm],
     ['开奖时间', model.drawnAt],
   ];
-  const gridX = POSTER_PADDING + 24;
-  const gridY = y + 112;
-  const cellWidth = (POSTER_INNER_WIDTH - 48) / 2;
-  const cellHeight = 76;
+  const gridX = POSTER_PADDING + 20;
+  const gridY = y + 98;
+  const cellWidth = (POSTER_INNER_WIDTH - 40) / 2;
+  const cellHeight = 68;
   cells.forEach(([label, value], index) => {
     const x = gridX + (index % 2) * cellWidth;
     const cellY = gridY + Math.floor(index / 2) * cellHeight;
     fillText(ctx, label, x, cellY, {
-      color: '#9196a1',
-      font: `500 15px ${FONT_STACK}`,
+      color: '#8e8e93',
+      font: `500 14px ${FONT_STACK}`,
     });
-    ctx.font = `600 18px ${FONT_STACK}`;
-    const lines = wrapLines(ctx, value, cellWidth - 26, 2);
+    ctx.font = `600 17px ${FONT_STACK}`;
+    const lines = wrapLines(ctx, value, cellWidth - 22, 2);
     lines.forEach((line, lineIndex) => {
-      fillText(ctx, line, x, cellY + 26 + lineIndex * 22, {
-        color: '#343842',
-        font: `600 18px ${FONT_STACK}`,
+      fillText(ctx, line, x, cellY + 23 + lineIndex * 20, {
+        color: '#2c2c2e',
+        font: `600 17px ${FONT_STACK}`,
       });
     });
   });
 
-  ctx.fillStyle = 'rgba(31,31,38,0.075)';
-  ctx.fillRect(POSTER_PADDING + 24, y + 260, POSTER_INNER_WIDTH - 48, 1.5);
-  fillText(ctx, `随机种子 ${model.fairness.seed}`, POSTER_PADDING + 24, y + 276, {
-    color: '#8b909b',
-    font: `500 14px ${FONT_STACK}`,
+  ctx.fillStyle = 'rgba(60,60,67,0.1)';
+  ctx.fillRect(POSTER_PADDING + 20, y + 226, POSTER_INNER_WIDTH - 40, 1.5);
+  fillText(ctx, `随机种子 ${model.fairness.seed}`, POSTER_PADDING + 20, y + 240, {
+    color: '#8e8e93',
+    font: `500 13px ${FONT_STACK}`,
   });
-  fillText(ctx, `名单指纹 ${model.fairness.digest}`, POSTER_WIDTH - POSTER_PADDING - 24, y + 276, {
-    color: '#8b909b',
-    font: `500 14px ${FONT_STACK}`,
+  fillText(ctx, `名单指纹 ${model.fairness.digest}`, POSTER_WIDTH - POSTER_PADDING - 20, y + 240, {
+    color: '#8e8e93',
+    font: `500 13px ${FONT_STACK}`,
     align: 'right',
   });
-  fillText(ctx, `过程哈希 ${model.fairness.auditHash}`, POSTER_PADDING + 24, y + 303, {
-    color: '#737884',
-    font: `540 14px ${FONT_STACK}`,
+  fillText(ctx, `过程哈希 ${model.fairness.auditHash}`, POSTER_PADDING + 20, y + 264, {
+    color: '#6e6e73',
+    font: `540 13px ${FONT_STACK}`,
   });
 }
 
@@ -629,11 +611,11 @@ function drawFooter(ctx, model, y) {
   ctx.fillRect(POSTER_PADDING, y, POSTER_INNER_WIDTH, 1.5);
   fillText(ctx, '微博转发抽奖助手 · by.sameko', POSTER_PADDING, y + 28, {
     color: '#737884',
-    font: `560 17px ${FONT_STACK}`,
+    font: `560 16px ${FONT_STACK}`,
   });
   fillText(ctx, model.drawnAt, POSTER_WIDTH - POSTER_PADDING, y + 28, {
     color: '#9297a3',
-    font: `500 17px ${FONT_STACK}`,
+    font: `500 16px ${FONT_STACK}`,
     align: 'right',
   });
 }
@@ -656,26 +638,26 @@ export async function createResultPoster(payload, {
     loadImage(brandAssetUrl),
     loadWinnerAvatars(model, avatarProxyBase),
   ]);
-  let y = 64;
+  let y = 48;
   drawBrandHeader(ctx, model, y, brandImage);
-  y += 160;
+  y += 140;
   drawHero(ctx, model, y, avatarImages);
-  y += 252;
+  y += 228;
   drawSource(ctx, model, y);
-  y += 128;
+  y += 112;
   drawStats(ctx, model, y);
-  y += 166;
+  y += 142;
   drawSectionTitle(ctx, model, y);
-  y += 58;
+  y += 54;
   model.groups.forEach((group, index) => {
     y += drawWinnerGroup(ctx, group, index, y, avatarImages) + GROUP_GAP;
   });
   if (model.omittedWinnerCount) {
     drawOmittedWinners(ctx, model.displayedWinnerCount, model.omittedWinnerCount, y);
-    y += 84;
+    y += 72;
   }
   drawFairness(ctx, model, y);
-  y += 364;
+  y += 318;
   drawFooter(ctx, model, y);
   return canvas;
 }

@@ -40,11 +40,11 @@ test('announcement templates expose concise, grouped and record variants', () =>
 
 test('concise announcement keeps the post easy to publish', () => {
   assert.equal(buildAnnouncementText(receipt, 'concise'), [
-    '微博转发抽奖结果',
+    '微博转发抽奖｜开奖公示',
     '',
-    '一等奖：@小花 @Alice',
+    '一等奖：@小花  @Alice',
     '',
-    '请获奖用户留意私信。',
+    '请中奖用户留意后续私信。',
     '',
     '原微博：https://weibo.com/1/example',
   ].join('\n'));
@@ -53,11 +53,12 @@ test('concise announcement keeps the post easy to publish', () => {
 test('grouped announcement includes the draw number and winner order', () => {
   const text = buildAnnouncementText(receipt, 'grouped');
   assert.match(text, /本链接第 3 次开奖/);
-  assert.match(text, /一等奖\n1\. @小花\n2\. @Alice/);
+  assert.match(text, /【一等奖】\n01 @小花\n02 @Alice/);
 });
 
 test('record announcement includes the recorded random method', () => {
   const text = buildAnnouncementText(receipt, 'record');
+  assert.match(text, /开奖次数：本链接第 3 次开奖/);
   assert.match(text, /开奖时间：/);
   assert.match(text, /候选范围：载入 20 人 · 可抽 18 人/);
   assert.match(text, /随机规则：SHA-256 · Fisher–Yates/);

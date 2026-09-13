@@ -45,10 +45,11 @@ try {
   await resultSheet.waitFor({ state: 'visible' });
   assert.equal(await resultSheet.getByText('本地演练 · 不计入开奖次数', { exact: true }).isVisible(), true);
   assert.equal(await resultSheet.getByText('仅用于核对动画与设置，不保存记录，也不计入本链接开奖次数。', { exact: true }).isVisible(), true);
-  assert.equal(await resultSheet.getByRole('combobox', { name: '公示文案格式' }).isVisible(), true);
+  const copyFormat = resultSheet.getByRole('group', { name: '公示文案格式' });
+  assert.equal(await copyFormat.isVisible(), true);
   assert.deepEqual(
-    await resultSheet.getByRole('combobox', { name: '公示文案格式' }).locator('option').allTextContents(),
-    ['简洁版', '分组版', '记录版'],
+    await copyFormat.getByRole('button').allTextContents(),
+    ['公示版', '名单版', '记录版'],
   );
   assert.equal(await resultSheet.getByRole('button', { name: '重新保存' }).count(), 0);
   assert.equal(drawRequests.length, 0, '本地演练不应请求正式开奖记录接口');

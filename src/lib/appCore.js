@@ -90,14 +90,24 @@ export function buildFilterSummary({ keyword, mentionMin, uniqueByUser, excludeP
 }
 
 export function candidateLoadWarning(meta) {
-  if (!meta || meta.complete !== false) return '';
+  if (!meta) return '';
+  const totalNumber = Number(meta.totalNumber);
+  const visibleNumber = Number(meta.visibleNumber);
+  const hasCountMismatch = Number.isFinite(totalNumber)
+    && Number.isFinite(visibleNumber)
+    && visibleNumber < totalNumber;
+  if (meta.complete !== false && !hasCountMismatch) return '';
   const warnings = Array.isArray(meta.warnings)
     ? [...new Set(meta.warnings.map((item) => String(item || '').trim()).filter(Boolean))]
     : [];
-  const important = warnings.filter((message) => (
-    /失败|停止|上限|最多|只拿到|差额|重复|风控|不可见/.test(message)
-  ));
-  return important.slice(-2).join('；')
+  const important = warnings.filter((message) => {
+    if (!/失败|停止|上限|最多|只拿到|差额|重复|风控|不可见/.test(message)) return false;
+    return !hasCountMismatch || !/接口显示|只拿到.*条|差额/.test(message);
+  });
+  const countWarning = hasCountMismatch
+    ? `接口显示总数 ${totalNumber}，当前可见 ${visibleNumber}`
+    : '';
+  return [countWarning, ...important.slice(-2)].filter(Boolean).join('；')
     || '微博接口只返回了当前登录态可见的部分转发，请核对名单后再开奖。';
 }
 

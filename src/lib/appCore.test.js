@@ -45,6 +45,12 @@ test('candidate load warning keeps the useful incomplete-range reason', () => {
     ],
   }), /最多载入 20000/);
   assert.equal(candidateLoadWarning({ complete: true, warnings: ['忽略'] }), '');
+  assert.equal(candidateLoadWarning({
+    complete: true,
+    totalNumber: 4,
+    visibleNumber: 3,
+    warnings: ['接口显示总转发约 4 条，本次只拿到 3 条可见可抓取记录。'],
+  }), '接口显示总数 4，当前可见 3');
 });
 
 test('candidate cutoff keeps an explicit draw-list boundary', () => {

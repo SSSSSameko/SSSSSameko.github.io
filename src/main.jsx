@@ -6,6 +6,7 @@ import './apple-v3/app.css';
 import './apple-v3/draw.css';
 import './apple-v3/live.css';
 import './apple-v3/motion.css';
+import './apple-v3/liquid-glass.css';
 
 createRoot(document.getElementById('root')).render(
   <React.StrictMode>

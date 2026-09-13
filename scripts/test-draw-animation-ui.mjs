@@ -171,7 +171,9 @@ try {
   assert.ok((await singleWinnerName.textContent())?.trim());
   assert.equal(saveResponded, false, '结果弹窗不应等待服务器保存完成');
   assert.equal(await dialog.getByText('正在同步开奖记录', { exact: true }).isVisible(), true);
-  const announcementFormat = dialog.getByRole('combobox', { name: '公示文案格式' });
+  const announcementFormat = dialog
+    .getByRole('group', { name: '公示文案格式' })
+    .getByRole('button', { name: '公示版' });
   await announcementFormat.focus();
   await dialog.getByText('手动名单 · 本机第 1 次开奖', { exact: true }).waitFor();
   assert.equal(saveResponded, true);

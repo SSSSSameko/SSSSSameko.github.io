@@ -777,6 +777,13 @@
   text-align: left;
 }
 
+.people-list > button,
+.history-list > button,
+.compact-records > button {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 68px;
+}
+
 .people-list > button > span:nth-child(2),
 .history-list button > span:nth-child(2) {
   display: flex;

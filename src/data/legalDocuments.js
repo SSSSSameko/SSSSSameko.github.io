@@ -29,7 +29,7 @@ const LEGAL_RELEASE_STATUS = LEGAL_DEPLOYMENT_FIELDS_CONFIGURED
   : `当前法律配置尚缺：${LEGAL_MISSING_DISCLOSURES.join('、')}。补齐前请勿公开部署。`;
 const LEGAL_INFRASTRUCTURE_DISCLOSURE = LEGAL_HOSTING_PROVIDER && LEGAL_SERVER_REGION
   ? `本站后端托管在“${LEGAL_HOSTING_PROVIDER}”，服务器位置为“${LEGAL_SERVER_REGION}”。`
-  : '前端静态页面由 GitHub Pages 托管，后端服务器与数据存储位于美国，本站不接入第三方统计、广告或用户画像服务。';
+  : `前端静态页面由 GitHub Pages 托管，后端服务器与数据存储位于${LEGAL_SERVER_REGION || '中国天津'}，本站不接入第三方统计、广告或用户画像服务。`;
 const LEGAL_RECIPIENT_TEXT = LEGAL_DATA_RECIPIENT_DISCLOSURE
   || '本站不向任何第三方出售、出租或提供你的数据，也不委托第三方处理。载入候选时，只有本站服务器会向微博相关接口发起请求。';
 const LEGAL_RECORD_RETENTION_TEXT = LEGAL_RECORD_RETENTION_DISCLOSURE
@@ -37,12 +37,24 @@ const LEGAL_RECORD_RETENTION_TEXT = LEGAL_RECORD_RETENTION_DISCLOSURE
 const LEGAL_CREDENTIAL_RETENTION_TEXT = LEGAL_CREDENTIAL_RETENTION_DISCLOSURE
   || '服务器保存用于载入候选的微博登录态（Cookie 池、扫码登录状态与浏览器登录 Profile），不设自动过期，由运营者手动维护，授权失败时临时隔离。不再需要时可删除；凭据疑似泄漏时，应重新登录使旧 Cookie 失效。';
 const LEGAL_JURISDICTION_TEXT = LEGAL_JURISDICTION_DISCLOSURE
-  || '本站运营者与后端服务器均位于美国，适用美国怀俄明州法律及可适用的美国联邦法律。因本站产生的争议，应先通过下列联系渠道协商解决；协商不成的，提交怀俄明州有管辖权的法院处理。';
+  || '本站后端服务器位于中国天津。因本站产生的争议，应先通过下列联系渠道协商解决；协商不成的，依法向有管辖权的争议解决机构或法院提出。';
 const UPDATE_LOGS = [
+  {
+    version: '3.5.0',
+    date: '2026 年 9 月 13 日',
+    label: '当前版本',
+    title: '上线前最终审查',
+    items: [
+      '开奖结果页统一为克制的 Apple 风格，保存结果图、分享与复制操作保持同一视觉层级',
+      '结果图调整为更适合手机查看的宽度，并精简装饰，保留清楚的开奖信息',
+      '候选名单首屏改为少量加载，更多用户按需展开，开奖仍使用完整可抽名单',
+      '修正部署位置说明与后台自定义入口，提升公开部署的可靠性',
+    ],
+  },
   {
     version: '3.4.1',
     date: '2026 年 9 月 12 日',
-    label: '当前版本',
+    label: '历史版本',
     title: '上线前整体审查',
     items: [
       '修复公开部署下整站请求失败的问题',
@@ -210,7 +222,7 @@ export function buildLegalDocuments({ appVersion, publicAsset }) {
     sections: [
       ['用途', '整理微博转发候选、设置筛选规则与奖项、随机抽取并保存开奖记录。'],
       ['数据范围', '候选以载入时当前登录态下平台接口可见的转发数据为准；手动名单由活动主办方自行核对。'],
-      ['部署形态', '前端为纯静态页面，托管于 GitHub Pages；页面本身不接收或存储候选名单、开奖结果与登录态，全部数据处理请求由浏览器直接发往运营者自建的后端服务器（位于美国）。静态托管服务仅按其自身规则记录常规访问日志。'],
+      ['部署形态', '前端为纯静态页面，托管于 GitHub Pages；页面本身不接收或存储候选名单、开奖结果与登录态，全部数据处理请求由浏览器直接发往运营者自行维护的后端服务器（位于中国天津）。静态托管服务仅按其自身规则记录常规访问日志。'],
       ['服务关系', '本站为独立技术项目，与微博官方不存在隶属、赞助或背书关系。'],
       ['使用范围', LEGAL_RELEASE_STATUS],
     ],
@@ -259,13 +271,13 @@ export function buildLegalDocuments({ appVersion, publicAsset }) {
       ['头像代理', '头像由本站服务器向允许的图片域名代理请求并在内存中缓存，默认最长 24 小时，同时受条目数与容量限制；浏览器不会直接请求头像源站。'],
       ['外部服务', `载入候选时，服务器按所选方式向微博相关接口发送微博标识及必要的 Cookie 或访问令牌。${LEGAL_INFRASTRUCTURE_DISCLOSURE}`],
       ['数据共享', `${LEGAL_RECIPIENT_TEXT} 本站不出售、不出租数据，亦不将其用于广告或用户画像。`],
-      ['数据存放位置', '前端为托管于 GitHub Pages 的静态页面，后端服务器与数据存储位于美国。载入候选时，浏览器会将微博链接与当前登录态直接发送至该服务器，再由服务器请求平台接口。如不接受该安排，请勿提交任何信息。'],
+      ['数据存放位置', '前端为托管于 GitHub Pages 的静态页面，后端服务器与数据存储位于中国天津。载入候选时，浏览器会将微博链接与当前登录态直接发送至该服务器，再由服务器请求平台接口。如不接受该安排，请勿提交任何信息。'],
       ['意见反馈', '提交反馈时保存分类、正文、提交时间与经密钥处理的来源标识，最多 500 条，超过 90 天清理。选择“隐私与数据”会生成请求编号；站内不提供主动回复。'],
       ['公开与分享', '结果图片与公示文案可能包含获奖者昵称、UID 或头像。公开发布前应确认已取得必要授权，并仅公开必要字段，其余信息应予隐藏或移除。'],
       ['未成年人', '本站不进行年龄识别。涉及未成年人信息时，应仅处理完成抽奖所必需的部分，并避免公开。'],
       ['权利行使', `你可要求查阅、更正或删除与本人有关的信息。请通过${LEGAL_PRIVACY_CONTACT ? `“${LEGAL_PRIVACY_CONTACT}”` : '运营者公布的联系渠道'}提出；如需定位记录，提供过程哈希或反馈编号。`],
       ['本机数据清除', '“数据设置”仅清除当前浏览器中的数据，不影响服务器开奖记录、反馈、安全日志与服务器登录资料；服务器侧数据请通过上述渠道申请处理。'],
-      ['更新日期', `本政策更新于 2026 年 9 月 10 日。${LEGAL_DEPLOYMENT_FIELDS_CONFIGURED ? '处理方式、保存范围或联系方式发生变化时，将同步更新本页。' : '部署信息尚未配置完整，本页仍为发布前模板。'}`],
+      ['更新日期', `本政策更新于 2026 年 9 月 13 日。${LEGAL_DEPLOYMENT_FIELDS_CONFIGURED ? '处理方式、保存范围或联系方式发生变化时，将同步更新本页。' : '部署信息尚未配置完整，本页仍为发布前模板。'}`],
     ],
   },
   terms: {

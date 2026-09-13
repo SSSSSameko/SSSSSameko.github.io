@@ -80,6 +80,8 @@ async function withServer(scenario, options, run) {
       WEIBO_PROVIDER_MOCK_LOG: requestLog,
       FETCH_TIMEOUT_MS: '2000',
       PAGE_DELAY_JITTER_MS: '0',
+      PROVIDER_SWITCH_DELAY_MS: '0',
+      OFFICIAL_PAGE_DELAY_MS: '0',
       DESKTOP_PAGE_DELAY_MS: '0',
       MOBILE_PAGE_DELAY_MS: '0',
       LEGACY_PAGE_DELAY_MS: '0',
@@ -201,6 +203,49 @@ test('Weibo Cookie provider fallback service regressions', async (t) => {
       assert.ok(calls.some((item) => item.statusId === '910001' && item.pathname === '/api/statuses/repostTimeline'));
     });
 
+    await t.test('accepts a declared desktop end page when the advertised total is off by one', async () => {
+      const result = await runJob('910002');
+      assert.deepEqual(result.meta.providers, ['desktop-cookie']);
+      assert.equal(result.candidates.length, 3);
+      assert.equal(result.meta.complete, true);
+      const calls = await requests();
+      assert.ok(!calls.some((item) => item.statusId === '910002' && item.pathname === '/api/statuses/repostTimeline'));
+    });
+
+    await t.test('continues to the next provider when a short page is not the declared end', async () => {
+      const result = await runJob('910003');
+      assert.ok(result.meta.providers.includes('desktop-cookie'));
+      assert.ok(result.meta.providers.includes('mobile'));
+      assert.equal(result.meta.complete, false);
+      assert.equal(result.meta.visibleNumber, 2);
+      assert.equal(result.meta.totalNumber, 100);
+    });
+
+    await t.test('does not mark the aggregate complete when one provider total is smaller', async () => {
+      const result = await runJob('910004');
+      assert.deepEqual(result.meta.providers, ['desktop-cookie', 'mobile']);
+      assert.equal(result.meta.complete, false);
+      assert.equal(result.meta.visibleNumber, 2);
+      assert.equal(result.meta.totalNumber, 100);
+    });
+
+    await t.test('trusts a completed primary crawl when the advertised total is larger', async () => {
+      const result = await runJob('910006');
+      assert.deepEqual(result.meta.providers, ['desktop-cookie']);
+      assert.equal(result.meta.complete, true);
+      assert.equal(result.meta.visibleNumber, 3);
+      assert.equal(result.meta.totalNumber, 100);
+      const calls = await requests();
+      assert.ok(!calls.some((item) => item.statusId === '910006' && item.pathname === '/api/statuses/repostTimeline'));
+    });
+
+    await t.test('does not report legacy success when bid or uid is unavailable', async () => {
+      const result = await runJob('910005');
+      assert.ok(result.meta.providers.includes('weibo-cn'));
+      assert.equal(result.meta.complete, false);
+      assert.ok(result.meta.warnings.some((warning) => warning.includes('缺少 bid')));
+    });
+
     await t.test('stops known-maxPage pagination after consecutive empty pages', async () => {
       const result = await runJob('930001');
       assert.equal(result.candidates[0]?.repostId, 'empty-pages-mobile');
@@ -228,6 +273,13 @@ test('Weibo Cookie provider fallback service regressions', async (t) => {
       const result = await runJob('950001');
       assert.equal(result.candidates.length, 1);
       assert.equal(result.candidates[0].repostId, '987654321');
+      assert.equal(result.candidates[0].source, 'weibo-cn');
+    });
+
+    await t.test('keeps the real repost id from the legacy attitude link', async () => {
+      const result = await runJob('950002');
+      assert.equal(result.candidates.length, 1);
+      assert.equal(result.candidates[0].repostId, '987654322');
       assert.equal(result.candidates[0].source, 'weibo-cn');
     });
 

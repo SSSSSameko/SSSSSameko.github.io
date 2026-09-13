@@ -325,11 +325,12 @@ const avatarFetchConcurrency = envInteger('AVATAR_FETCH_CONCURRENCY', 8, 1);
 const avatarFetchQueueMax = envInteger('AVATAR_FETCH_QUEUE_MAX', 128, 0);
 const cookieAuthQuarantineMs = envNumber('COOKIE_AUTH_QUARANTINE_MS', 45 * 60_000, 60_000);
 const disableCookieStore = /^(1|true|yes)$/i.test(String(process.env.DISABLE_COOKIE_STORE || '').trim());
-const pageDelayJitterMs = envNumber('PAGE_DELAY_JITTER_MS', 450, 0);
-const officialPageDelayMs = envNumber('OFFICIAL_PAGE_DELAY_MS', 900, 0);
-const desktopPageDelayMs = envNumber('DESKTOP_PAGE_DELAY_MS', 1200, 0);
-const legacyPageDelayMs = envNumber('LEGACY_PAGE_DELAY_MS', 1200, 0);
-const mobilePageDelayMs = envNumber('MOBILE_PAGE_DELAY_MS', 1600, 0);
+const pageDelayJitterMs = envNumber('PAGE_DELAY_JITTER_MS', 1000, 0);
+const providerSwitchDelayMs = envNumber('PROVIDER_SWITCH_DELAY_MS', 6000, 0);
+const officialPageDelayMs = envNumber('OFFICIAL_PAGE_DELAY_MS', 6000, 0);
+const desktopPageDelayMs = envNumber('DESKTOP_PAGE_DELAY_MS', 6000, 0);
+const legacyPageDelayMs = envNumber('LEGACY_PAGE_DELAY_MS', 6000, 0);
+const mobilePageDelayMs = envNumber('MOBILE_PAGE_DELAY_MS', 6000, 0);
 const pageCooldownEvery = envInteger('PAGE_COOLDOWN_EVERY', 8, 2);
 const pageCooldownMs = envNumber('PAGE_COOLDOWN_MS', 5000, 0);
 const weiboThrottleRetryMax = envInteger('WEIBO_THROTTLE_RETRY_MAX', 2, 0);
@@ -418,7 +419,9 @@ const DESKTOP_FIRST_PAGE_SIZE = 10;
 const DESKTOP_PAGE_SIZE = 20;
 const DESKTOP_MAX_PAGES = envInteger('DESKTOP_MAX_PAGES', 1000, 1, 1000);
 const LEGACY_MAX_PAGES = 500;
+const LEGACY_PAGE_SIZE = 10;
 const MOBILE_MAX_PAGES = 120;
+const MOBILE_PAGE_SIZE = 10;
 const COOKIE_CHECK_URL = 'https://m.weibo.cn/api/config';
 const DESKTOP_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
@@ -2401,6 +2404,13 @@ function candidateCollectionMeta(collection) {
   };
 }
 
+function repostCountLooksComplete(candidateCount, totalNumber, { allowAnyMissing = false } = {}) {
+  const count = Math.max(0, Number(candidateCount) || 0);
+  if (totalNumber === null || totalNumber === undefined) return count > 0;
+  const missingCount = Math.max(0, Number(totalNumber) || 0) - count;
+  return missingCount <= 0 || (allowAnyMissing && count > 0);
+}
+
 function candidateLimitWarnings(collection) {
   if (collection.limitReason === 'count') {
     return [`为控制服务器资源，本次最多载入 ${maxCandidates} 位候选。`];
@@ -4054,6 +4064,26 @@ async function waitBetweenPages(label, delayMs, reportProgress, page, signal) {
   await sleep(plan.delayMs, signal);
 }
 
+async function waitBeforeProviderSwitch(fromLabel, toLabel, reportProgress, signal) {
+  const plan = pageWaitPlan({
+    baseMs: providerSwitchDelayMs,
+    jitterMs: pageDelayJitterMs,
+  });
+  if (!plan.delayMs) return;
+  reportProgress?.({
+    phase: 'wait',
+    message: `${fromLabel}本次未完成，等待 ${Math.ceil(plan.delayMs / 1000)} 秒后尝试${toLabel}`,
+  });
+  await sleep(plan.delayMs, signal);
+}
+
+function providerLabel(provider) {
+  if (provider === 'desktop') return '桌面端';
+  if (provider === 'mobile') return 'H5';
+  if (provider === 'legacy') return '旧版页面';
+  return String(provider || '备用入口');
+}
+
 function cookieRequired(mobileCookie) {
   const cookie = cleanCookieHeader(mobileCookie);
   if (!cookie) {
@@ -4193,6 +4223,7 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
   let hitPageCap = false;
   let hitCandidateCap = false;
   let repeatedPages = false;
+  let reachedEnd = false;
   const repeatedPageGuard = createRepeatedPageGuard();
 
   for (let page = 1; page <= OFFICIAL_MAX_PAGES; page += 1) {
@@ -4212,6 +4243,10 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
     const previousCount = candidates.length;
     hitCandidateCap = appendCandidates(candidateCollection, list, 'official');
     repeatedPages = repeatedPageGuard.observe(list.length, candidates.length - previousCount);
+    reachedEnd = list.length > 0 && (
+      list.length < OFFICIAL_PAGE_SIZE
+      || (totalNumber !== null && candidates.length >= totalNumber)
+    );
     if (hitCandidateCap) break;
     if (repeatedPages) break;
     if (totalNumber !== null && candidates.length >= totalNumber) break;
@@ -4258,7 +4293,13 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
       headReconciled: headResult.reconciled,
       headAddedCount: headResult.addedCount,
       ...candidateCollectionMeta(candidateCollection),
-      complete: !hitPageCap && !hitCandidateCap && !repeatedPages && !headResult.warning && (totalNumber === null || unique.length >= totalNumber || pages.at(-1)?.count < OFFICIAL_PAGE_SIZE),
+      complete: !hitPageCap
+        && !hitCandidateCap
+        && !repeatedPages
+        && !headResult.warning
+        && repostCountLooksComplete(unique.length, totalNumber, {
+          allowAnyMissing: reachedEnd,
+        }),
       warnings: [
         '已自动分页抓取全部可见转发；官方开放接口的配额和可见范围以账号权限为准。',
         ...(headResult.addedCount ? [`结束前补入 ${headResult.addedCount} 条刚新增的可见转发。`] : []),
@@ -4308,6 +4349,7 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
   let hitCandidateCap = false;
   let repeatedPages = false;
   let stoppedOnEmptyPages = false;
+  let reachedDeclaredEnd = false;
   const repeatedPageGuard = createRepeatedPageGuard();
   const emptyPageGuard = createEmptyPageGuard();
   let statusInfo = null;
@@ -4330,11 +4372,12 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
 
   const timelineId = statusInfo.id || statusId;
   for (let page = 1; page <= DESKTOP_MAX_PAGES; page += 1) {
+    const requestedPageSize = page === 1 ? DESKTOP_FIRST_PAGE_SIZE : DESKTOP_PAGE_SIZE;
     const apiUrl = new URL('https://weibo.com/ajax/statuses/repostTimeline');
     apiUrl.searchParams.set('id', timelineId);
     apiUrl.searchParams.set('page', String(page));
     apiUrl.searchParams.set('moduleID', 'feed');
-    apiUrl.searchParams.set('count', String(page === 1 ? DESKTOP_FIRST_PAGE_SIZE : DESKTOP_PAGE_SIZE));
+    apiUrl.searchParams.set('count', String(requestedPageSize));
 
     const json = await fetchJson(apiUrl, {
       signal,
@@ -4344,6 +4387,10 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
     const list = desktopTimelineList(json);
     const advertisedMax = finiteNumber(json?.max_page);
     if (advertisedMax) maxPage = Math.max(maxPage || 0, advertisedMax);
+    reachedDeclaredEnd = list.length > 0 && (
+      (maxPage !== null && page >= maxPage)
+      || (maxPage === null && list.length < requestedPageSize)
+    );
     totalNumber = finiteNumber(json?.total_number, totalNumber);
     pages.push({
       source: 'desktop',
@@ -4423,7 +4470,9 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
         && !repeatedPages
         && !stoppedOnEmptyPages
         && !headResult.warning
-        && (totalNumber !== null || candidates.length > 0),
+        && repostCountLooksComplete(candidates.length, totalNumber, {
+          allowAnyMissing: reachedDeclaredEnd,
+        }),
       warnings: [
         '已按桌面端微博页面脚本的方式请求 ajax/statuses/repostTimeline，并扫描接口声明的页数范围。',
         ...(headResult.addedCount ? [`结束前补入 ${headResult.addedCount} 条刚新增的可见转发。`] : []),
@@ -4472,7 +4521,10 @@ function legacyTimelineList(html, page) {
       const uid = userAnchor?.href.match(/(?:\/u\/|weibo\.cn\/|^\/)(\d+)/)?.[1] || '';
       const divRepostId = item.html.match(/\bid=(["'])M_([^"']+)\1/i)?.[2] || '';
       const statusAnchor = anchors.find((anchor) => /\/(?:comment|detail)\/[A-Za-z0-9]+/i.test(anchor.href));
-      const linkedRepostId = statusAnchor?.href.match(/\/(?:comment|detail)\/([A-Za-z0-9]+)/i)?.[1] || '';
+      const attitudeAnchor = anchors.find((anchor) => /\/attitude\/[A-Za-z0-9]+/i.test(anchor.href));
+      const linkedRepostId = statusAnchor?.href.match(/\/(?:comment|detail)\/([A-Za-z0-9]+)/i)?.[1]
+        || attitudeAnchor?.href.match(/\/attitude\/([A-Za-z0-9]+)/i)?.[1]
+        || '';
       const screenName = userAnchor?.text || item.text.split(':')[0] || '未命名用户';
       const createdAt = item.text.match(/\d{2}月\d{2}日\s+\d{2}:\d{2}|[\d:]+分钟前|昨天\s+\d{2}:\d{2}/)?.[0] || '';
       const cleanedText = item.text.replace(/^\[热门\]\s*/, '').trimStart();
@@ -4501,7 +4553,7 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
         provider: 'weibo-cn',
         pages: [],
         totalNumber: info.repostsCount,
-      complete: info.repostsCount !== null,
+        complete: false,
         warnings: ['旧版 weibo.cn 页面缺少 bid 或 uid，已跳过。'],
       },
     };
@@ -4516,6 +4568,7 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
   let hitCandidateCap = false;
   let repeatedPages = false;
   let stoppedOnEmptyPages = false;
+  let reachedDeclaredEnd = false;
   const repeatedPageGuard = createRepeatedPageGuard();
   const emptyPageGuard = createEmptyPageGuard();
 
@@ -4532,6 +4585,10 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
     const list = legacyTimelineList(html, page);
     const advertisedMax = legacyMaxPage(html);
     if (advertisedMax) maxPage = Math.max(maxPage || 0, advertisedMax);
+    reachedDeclaredEnd = list.length > 0 && (
+      (maxPage !== null && page >= maxPage)
+      || (maxPage === null && list.length < LEGACY_PAGE_SIZE)
+    );
     pages.push({
       source: 'weibo-cn',
       page,
@@ -4572,7 +4629,13 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
       totalNumber,
       maxPage,
       ...candidateCollectionMeta(candidateCollection),
-      complete: !hitPageCap && !hitCandidateCap && !repeatedPages && !stoppedOnEmptyPages,
+      complete: !hitPageCap
+        && !hitCandidateCap
+        && !repeatedPages
+        && !stoppedOnEmptyPages
+        && repostCountLooksComplete(candidates.length, totalNumber, {
+          allowAnyMissing: reachedDeclaredEnd,
+        }),
       warnings: [
         '已补扫旧版 weibo.cn 转发页面；该页面必须使用 bid/mblogid，纯数字 mid 会返回目标不存在。',
         ...(repeatedPages ? ['旧版页面连续返回重复内容，已停止无效分页请求。'] : []),
@@ -4596,6 +4659,7 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
   let maxPage = null;
   let repeatedPages = false;
   let stoppedOnEmptyPages = false;
+  let reachedDeclaredEnd = false;
   const repeatedPageGuard = createRepeatedPageGuard();
   const emptyPageGuard = createEmptyPageGuard();
 
@@ -4612,6 +4676,10 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
     const list = mobileTimelineList(json);
     const advertisedMax = finiteNumber(json?.data?.max || json?.max);
     if (advertisedMax) maxPage = Math.max(maxPage || 0, advertisedMax);
+    reachedDeclaredEnd = list.length > 0 && (
+      (maxPage !== null && page >= maxPage)
+      || (maxPage === null && list.length < MOBILE_PAGE_SIZE)
+    );
     totalNumber = finiteNumber(json?.data?.total_number ?? json?.total_number, totalNumber);
     pages.push({
       source: 'mobile',
@@ -4691,7 +4759,9 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
         && !repeatedPages
         && !stoppedOnEmptyPages
         && !headResult.warning
-        && (totalNumber !== null || candidates.length > 0),
+        && repostCountLooksComplete(candidates.length, totalNumber, {
+          allowAnyMissing: reachedDeclaredEnd,
+        }),
       cookieMode: Boolean(cookie),
       warnings: [
         '已按 H5 接口返回的页数范围扫描可见转发。',
@@ -4728,27 +4798,30 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
     ['legacy', () => fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress, signal })],
   ];
 
-  for (const [label, fetcher] of providerPlan) {
+  for (let index = 0; index < providerPlan.length; index += 1) {
+    const [label, fetcher] = providerPlan[index];
+    const nextLabel = index + 1 < providerPlan.length
+      ? providerLabel(providerPlan[index + 1][0])
+      : '';
     throwIfTaskCancelled(signal);
     try {
       const result = await fetcher();
-      const totalNumber = finiteNumber(result.meta?.totalNumber);
       results.push(result);
-      const completeByCount = totalNumber === null
-        ? result.candidates.length > 0
-        : result.candidates.length >= totalNumber;
-      const providerComplete = result.meta?.complete !== false && completeByCount;
+      const providerComplete = result.meta?.complete === true;
       const reachedCandidateLimit = Boolean(result.meta?.candidateLimitReason);
       if (providerComplete || reachedCandidateLimit) break;
-      const labelText = label === 'desktop' ? '桌面端' : label === 'mobile' ? 'H5' : '旧版页面';
-      warnings.push(`${labelText}返回的候选不完整，已自动尝试备用入口补齐。`);
+      warnings.push(`${providerLabel(label)}返回的候选不完整，已自动尝试备用入口补齐。`);
+      if (nextLabel) {
+        await waitBeforeProviderSwitch(providerLabel(label), nextLabel, reportProgress, signal);
+      }
     } catch (error) {
       throwIfTaskCancelled(signal);
       if (isWeiboThrottleStatus(error?.status)) throw error;
-      const labelText = label === 'desktop' ? '桌面端' : label === 'legacy' ? '旧版页面' : 'H5';
       if (isCookieAuthError(error)) authErrors.push(error);
-      warnings.push(`${labelText}抓取失败：${error.message}`);
-      continue;
+      warnings.push(`${providerLabel(label)}抓取失败：${error.message}`);
+      if (nextLabel) {
+        await waitBeforeProviderSwitch(providerLabel(label), nextLabel, reportProgress, signal);
+      }
     }
   }
 
@@ -4771,12 +4844,13 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
     const value = finiteNumber(result.meta?.totalNumber);
     return value === null ? max : Math.max(max || 0, value);
   }, null);
-  const completeByCount = totalNumber === null
-    ? candidates.length > 0
-    : candidates.length >= totalNumber;
-  const completeByProvider = totalNumber !== null
-    ? completeByCount
-    : candidates.length > 0 && results.some((result) => result.meta?.complete !== false);
+  const completeByProvider = results.some((result) => result.meta?.complete === true);
+  const completeProviderCoversTotal = completeByProvider
+    && (totalNumber === null || results.some((result) => {
+      if (result.meta?.complete !== true) return false;
+      const providerTotal = finiteNumber(result.meta?.totalNumber);
+      return providerTotal !== null && providerTotal >= totalNumber;
+    }));
   const sourceWarnings = results.flatMap((result) => result.meta?.warnings || []);
   const visibilityWarning = totalNumber !== null && candidates.length < totalNumber
     ? `微博接口显示总转发约 ${totalNumber} 条，本次只拿到 ${candidates.length} 条可见可抽记录；差额通常来自隐藏、删除、不可见用户或接口风控。`
@@ -4798,7 +4872,11 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
         finiteNumber(result.meta?.headAddedCount, 0),
       ), 0),
       ...candidateCollectionMeta(aggregate),
-      complete: !aggregate.limitReason && completeByProvider,
+      complete: !aggregate.limitReason
+        && completeByProvider
+        && repostCountLooksComplete(candidates.length, totalNumber, {
+          allowAnyMissing: completeProviderCoversTotal,
+        }),
       cookieMode: true,
       warnings: [
         '已优先使用桌面端可见转发入口，并在需要时尝试备用入口。',
@@ -7627,6 +7705,17 @@ async function serveAdminAsset(req, res, pathname) {
   if (!assetPath) return false;
   if (req.method !== 'GET') {
     sendText(res, 405, 'Method Not Allowed');
+    return true;
+  }
+  if (pathname === adminBasePath) {
+    const query = String(req.url || '').includes('?')
+      ? String(req.url).slice(String(req.url).indexOf('?'))
+      : '';
+    res.writeHead(308, {
+      ...securityHeaders(),
+      location: `${adminBasePath}/${query}`,
+    });
+    res.end();
     return true;
   }
   const filePath = path.join(rootDir, assetPath);
