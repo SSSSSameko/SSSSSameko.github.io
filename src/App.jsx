@@ -779,6 +779,9 @@ function SheetFrame({
           && preferredFocus.getClientRects().length
           && !preferredFocus.closest?.('[inert]')) {
           preferredFocus.focus({ preventScroll: true });
+          if (scrollContainer?.isConnected && Number.isFinite(previousScrollTop)) {
+            scrollContainer.scrollTop = previousScrollTop;
+          }
           return;
         }
         const wasInteractive = previousFocus?.matches?.(
@@ -789,6 +792,9 @@ function SheetFrame({
           && previousFocus.getClientRects().length
           && !previousFocus.closest?.('[inert]')) {
           previousFocus.focus({ preventScroll: true });
+          if (scrollContainer?.isConnected && Number.isFinite(previousScrollTop)) {
+            scrollContainer.scrollTop = previousScrollTop;
+          }
           return;
         }
       });
