@@ -332,9 +332,12 @@ const disableCookieStore = /^(1|true|yes)$/i.test(String(process.env.DISABLE_COO
 const pageDelayJitterMs = envNumber('PAGE_DELAY_JITTER_MS', 1000, 0);
 const providerSwitchDelayMs = envNumber('PROVIDER_SWITCH_DELAY_MS', 6000, 0);
 const officialPageDelayMs = envNumber('OFFICIAL_PAGE_DELAY_MS', 6000, 0);
-const desktopPageDelayMs = envNumber('DESKTOP_PAGE_DELAY_MS', 6000, 0);
+const desktopPageDelayMs = envNumber('DESKTOP_PAGE_DELAY_MS', 255, 0);
+const desktopPageDelayJitterMs = envNumber('DESKTOP_PAGE_DELAY_JITTER_MS', 145, 0);
 const legacyPageDelayMs = envNumber('LEGACY_PAGE_DELAY_MS', 6000, 0);
-const mobilePageDelayMs = envNumber('MOBILE_PAGE_DELAY_MS', 6000, 0);
+const legacyPageDelayJitterMs = envNumber('LEGACY_PAGE_DELAY_JITTER_MS', 0, 0);
+const mobilePageDelayMs = envNumber('MOBILE_PAGE_DELAY_MS', 600, 0);
+const mobilePageDelayJitterMs = envNumber('MOBILE_PAGE_DELAY_JITTER_MS', 700, 0);
 const pageCooldownEvery = envInteger('PAGE_COOLDOWN_EVERY', 8, 2);
 const pageCooldownMs = envNumber('PAGE_COOLDOWN_MS', 5000, 0);
 const weiboThrottleRetryMax = envInteger('WEIBO_THROTTLE_RETRY_MAX', 2, 0);
@@ -541,12 +544,16 @@ const requestStats = {
   total: 0,
   clientErrors: 0,
   serverErrors: 0,
+  probeRequests: 0,
+  probeErrors: 0,
   lastRequestAt: '',
   slowestMs: 0,
 };
 const httpStatusCounts = new Map();
 const httpRouteErrors = new Map();
+const httpProbeRoutes = new Map();
 const recentHttpErrors = [];
+const recentHttpProbes = [];
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 eventLoopDelay.enable();
 const metricsWriteQueue = createLatestWriteQueue((samples) => writeJsonArray(systemMetricsFile, samples));
@@ -674,7 +681,10 @@ function securityHeaders() {
     'x-content-type-options': 'nosniff',
     'x-frame-options': 'DENY',
     'referrer-policy': 'no-referrer',
-    'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+    'permissions-policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), magnetometer=(), gyroscope=(), accelerometer=()',
+    'cross-origin-opener-policy': 'same-origin',
+    'x-permitted-cross-domain-policies': 'none',
+    'x-dns-prefetch-control': 'off',
   };
 }
 
@@ -2571,7 +2581,7 @@ function candidateCollectionMeta(collection) {
 
 function repostCompletenessTolerance(totalNumber) {
   const total = Math.max(0, Number(totalNumber) || 0);
-  return Math.max(2, Math.ceil(total * 0.05));
+  return Math.max(2, Math.ceil(total * 0.10));
 }
 
 function repostCountLooksComplete(candidateCount, totalNumber) {
@@ -2632,6 +2642,36 @@ function normalizedRequestPath(pathname) {
   return value.startsWith('/') ? value : `/${value}`;
 }
 
+function isKnownProbePath(pathname) {
+  const value = String(pathname || '').toLowerCase();
+  return value === '/.env'
+    || value.startsWith('/.env.')
+    || value === '/.git'
+    || value.startsWith('/.git/')
+    || value === '/.well-known/security.txt'
+    || value === '/sitemap.xml'
+    || value === '/config.json'
+    || value === '/home/login.html'
+    || value === '/api/mcp'
+    || value.startsWith('/api/mcp/')
+    || value === '/api/actuator'
+    || value.startsWith('/api/actuator/');
+}
+
+function recordRecentHttpItem(target, item) {
+  target.push(item);
+  if (target.length > maxHttpErrorRecords) {
+    target.splice(0, target.length - maxHttpErrorRecords);
+  }
+}
+
+function incrementBoundedCounter(map, key, limit = 200) {
+  if (!map.has(key) && map.size >= limit) {
+    map.delete(map.keys().next().value);
+  }
+  map.set(key, (map.get(key) || 0) + 1);
+}
+
 function recordHttpResult(req, res, url, startedAt, requestId) {
   const elapsed = Math.round((performance.now() - startedAt) * 10) / 10;
   const status = Math.max(100, Number(res.statusCode) || 0);
@@ -2643,15 +2683,26 @@ function recordHttpResult(req, res, url, startedAt, requestId) {
   httpStatusCounts.set(status, (httpStatusCounts.get(status) || 0) + 1);
   if (status >= 500) requestStats.serverErrors += 1;
   else if (status >= 400) requestStats.clientErrors += 1;
+  if (isKnownProbePath(pathname)) {
+    requestStats.probeRequests += 1;
+    if (status >= 400) requestStats.probeErrors += 1;
+    incrementBoundedCounter(httpProbeRoutes, `${status} ${method} ${pathname}`);
+    recordRecentHttpItem(recentHttpProbes, {
+      at: requestStats.lastRequestAt,
+      requestId: safeText(requestId, 80),
+      method,
+      path: pathname,
+      status,
+      elapsedMs: elapsed,
+    });
+    return;
+  }
   if (status < 400) return;
 
   requestStats.lastErrorAt = requestStats.lastRequestAt;
   const routeKey = `${status} ${method} ${pathname}`;
-  if (!httpRouteErrors.has(routeKey) && httpRouteErrors.size >= 200) {
-    httpRouteErrors.delete(httpRouteErrors.keys().next().value);
-  }
-  httpRouteErrors.set(routeKey, (httpRouteErrors.get(routeKey) || 0) + 1);
-  recentHttpErrors.push({
+  incrementBoundedCounter(httpRouteErrors, routeKey);
+  recordRecentHttpItem(recentHttpErrors, {
     at: requestStats.lastRequestAt,
     requestId: safeText(requestId, 80),
     method,
@@ -2660,9 +2711,6 @@ function recordHttpResult(req, res, url, startedAt, requestId) {
     elapsedMs: elapsed,
     ...(res.httpErrorContext ? boundedRuntimeValue(res.httpErrorContext) : {}),
   });
-  if (recentHttpErrors.length > maxHttpErrorRecords) {
-    recentHttpErrors.splice(0, recentHttpErrors.length - maxHttpErrorRecords);
-  }
 }
 
 function httpDiagnostics() {
@@ -2674,6 +2722,11 @@ function httpDiagnostics() {
       return { status: Number(status), method, path: pathParts.join(' '), count };
     }).sort((left, right) => right.count - left.count || left.path.localeCompare(right.path)).slice(0, 20),
     recentErrors: recentHttpErrors.slice().reverse(),
+    probeRoutes: Array.from(httpProbeRoutes, ([key, count]) => {
+      const [status, method, ...pathParts] = key.split(' ');
+      return { status: Number(status), method, path: pathParts.join(' '), count };
+    }).sort((left, right) => right.count - left.count || left.path.localeCompare(right.path)).slice(0, 20),
+    recentProbes: recentHttpProbes.slice().reverse(),
   };
 }
 
@@ -4314,20 +4367,36 @@ function throttleProgress(reportProgress, label) {
   });
 }
 
-async function waitBetweenPages(label, delayMs, reportProgress, page, signal) {
+function waitDurationText(delayMs) {
+  const value = Math.max(0, Math.round(Number(delayMs) || 0));
+  return value < 1000 ? `${value} 毫秒` : `${Math.ceil(value / 1000)} 秒`;
+}
+
+async function waitBetweenPages(
+  label,
+  delayMs,
+  reportProgress,
+  page,
+  signal,
+  {
+    jitterMs = pageDelayJitterMs,
+    cooldownEvery = pageCooldownEvery,
+    cooldownMs = pageCooldownMs,
+  } = {},
+) {
   const plan = pageWaitPlan({
     page,
     baseMs: delayMs,
-    jitterMs: pageDelayJitterMs,
-    cooldownEvery: pageCooldownEvery,
-    cooldownMs: pageCooldownMs,
+    jitterMs,
+    cooldownEvery,
+    cooldownMs,
   });
   if (!plan.delayMs) return;
   reportProgress?.({
     phase: 'wait',
     message: plan.cooldownMs
       ? `${label}：已读取 ${page} 页，冷却 ${Math.ceil(plan.delayMs / 1000)} 秒后继续`
-      : `${label}：等待 ${Math.ceil(plan.delayMs / 1000)} 秒后读取下一页`,
+      : `${label}：等待 ${waitDurationText(plan.delayMs)}后读取下一页`,
   });
   await sleep(plan.delayMs, signal);
 }
@@ -4695,7 +4764,11 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
     if (!maxPage && list.length === 0) break;
     if (maxPage && page >= maxPage) break;
     if (page === DESKTOP_MAX_PAGES) hitPageCap = true;
-    await waitBetweenPages('桌面端接口', desktopPageDelayMs, reportProgress, page, signal);
+    await waitBetweenPages('桌面端接口', desktopPageDelayMs, reportProgress, page, signal, {
+      jitterMs: desktopPageDelayJitterMs,
+      cooldownEvery: 0,
+      cooldownMs: 0,
+    });
   }
 
   const unique = candidates;
@@ -4880,7 +4953,11 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
     if (!maxPage && list.length === 0) break;
     if (maxPage && page >= maxPage) break;
     if (page === LEGACY_MAX_PAGES) hitPageCap = true;
-    await waitBetweenPages('旧版页面', legacyPageDelayMs, reportProgress, page, signal);
+    await waitBetweenPages('旧版页面', legacyPageDelayMs, reportProgress, page, signal, {
+      jitterMs: legacyPageDelayJitterMs,
+      cooldownEvery: 0,
+      cooldownMs: 0,
+    });
   }
 
   return {
@@ -4963,7 +5040,11 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
     if (!maxPage && list.length === 0) break;
     if (maxPage && page >= maxPage) break;
     if (page === MOBILE_MAX_PAGES) hitPageCap = true;
-    await waitBetweenPages('H5 接口', mobilePageDelayMs, reportProgress, page, signal);
+    await waitBetweenPages('H5 接口', mobilePageDelayMs, reportProgress, page, signal, {
+      jitterMs: mobilePageDelayJitterMs,
+      cooldownEvery: 0,
+      cooldownMs: 0,
+    });
   }
 
   const unique = candidates;
@@ -8092,6 +8173,7 @@ async function serveStatic(req, res) {
   const requestUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   let pathname = decodeRequestPath(requestUrl.pathname);
   if (pathname === '/') pathname = '/index.html';
+  if (pathname === '/favicon.ico') pathname = '/favicon-32.png';
 
   const requested = path.resolve(staticDir, `.${pathname}`);
   const relativePath = path.relative(staticDir, requested);
@@ -8175,7 +8257,6 @@ const EXACT_API_ROUTES = new Map([
   ['GET /api/health', (_req, res) => sendJson(res, 200, {
     ok: true,
     service: 'sameko-weibo-lottery',
-    version: releaseInfo.version,
     authRequired: Boolean(apiKey),
   })],
   ['POST /api/feedback', handleFeedback],
@@ -8345,6 +8426,8 @@ server.requestTimeout = 120_000;
 server.headersTimeout = 65_000;
 server.keepAliveTimeout = 5_000;
 server.maxHeadersCount = 100;
+server.maxConnections = envInteger('MAX_CONNECTIONS', 512, 64);
+server.maxRequestsPerSocket = envInteger('MAX_REQUESTS_PER_SOCKET', 200, 10);
 server.on('clientError', (_error, socket) => {
   if (!socket.writable) return socket.destroy();
   socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');

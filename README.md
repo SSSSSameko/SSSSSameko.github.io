@@ -1,6 +1,6 @@
 # 微博转发抽奖助手
 
-当前版本：`3.5.0`（2026 年 9 月 13 日）
+当前版本：`3.5.3`（2026 年 9 月 14 日）
 
 用于微博转发抽奖的网页工具，支持候选抓取、名单导入、滚动开奖、开奖记录图和后台管理。
 
@@ -96,15 +96,18 @@ window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
 - `MAX_RETAINED_JOB_RESPONSE_BYTES=33554432`（限制已完成响应的合计暂存体积）
 - `MAX_JOB_SUBSCRIBERS=32`（限制同一抓取任务的并发页面订阅数）
 - `DESKTOP_MAX_PAGES=1000`
-- `PAGE_DELAY_JITTER_MS=1000`（分页等待在基准值上增加 0-1 秒随机抖动）
+- `PAGE_DELAY_JITTER_MS=1000`（官方接口分页和入口切换等待的随机抖动）
 - `PROVIDER_SWITCH_DELAY_MS=6000`（桌面端、H5、旧版页面之间切换入口的基准等待，连同抖动后为 6-7 秒）
 - `OFFICIAL_PAGE_DELAY_MS=6000`
-- `DESKTOP_PAGE_DELAY_MS=6000`
+- `DESKTOP_PAGE_DELAY_MS=255`、`DESKTOP_PAGE_DELAY_JITTER_MS=145`（桌面端每页实际等待 255-400ms）
 - `LEGACY_PAGE_DELAY_MS=6000`
-- `MOBILE_PAGE_DELAY_MS=6000`
+- `LEGACY_PAGE_DELAY_JITTER_MS=0`（旧版页面保底抓取每页约 6 秒）
+- `MOBILE_PAGE_DELAY_MS=600`、`MOBILE_PAGE_DELAY_JITTER_MS=700`（H5 每页实际等待 600-1300ms）
 - `PAGE_COOLDOWN_EVERY=8`
 - `PAGE_COOLDOWN_MS=5000`
 - `WEIBO_THROTTLE_RETRY_MAX=2`
+- `MAX_CONNECTIONS=512`（单进程最大并发连接数）
+- `MAX_REQUESTS_PER_SOCKET=200`（单个长连接最多复用的请求数）
 - `REPOST_SNAPSHOT_TTL_MS=15000`（仅复用刚完成的短时结果）
 - `MAX_REPOST_SNAPSHOTS=2`
 - `RUNTIME_CACHE_MAX_BYTES=67108864`（只回收可再生成的浏览器缓存，不清理登录 Profile）
@@ -119,7 +122,7 @@ window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
 
 生产环境必须使用至少 32 字节的 `ADMIN_SESSION_SECRET`。`COOKIE_WRITE_KEY` 未配置时，公开抓取请求无法写入或校验服务器 Cookie 池；配置时使用 64 位十六进制字符。`SOURCE_FINGERPRINT_SECRET` 未配置时复用 `ADMIN_SESSION_SECRET`，配置时使用 64 位十六进制字符。服务器登录态不可用时才会尝试用户填写的备用 Cookie，该内容仅用于当前任务。
 
-分页抓取会在每页之间以及切换桌面端、H5、旧版入口之间随机等待 6-7 秒，并按固定页数进行额外冷却。微博统计总数已知时，可见候选缺少不超过 `max(2, 总数 5%)` 即视为完整；只有超出该容差或主入口真实失败时，才继续通过备用入口补齐并按转发记录去重。总数未知时以实际返回的非空候选为准，不再把缺失字段误判为 0。较长的任务结束前会补查最新一页，合并抓取期间刚出现的转发；同一微博的并发请求会共享任务。遇到微博 `418`、`429` 或临时 `503` 时，服务会尊重 `Retry-After` 并退避重试。候选数硬上限为 20,000，极端长文本名单还会受总数据体积限制；实际候选数量仍取决于微博接口可见范围、账号权限和接口返回的最大页数。
+抓取默认从桌面端开始，每页等待 255-400ms；桌面端超过容差后切到 H5，每页等待 600-1300ms；仍不完整时才切换到旧版页面，每页约等待 6 秒。三个入口之间切换时会保留 6-7 秒的隔离等待，避免连续请求。微博统计总数已知时，可见候选缺少不超过 `max(2, 总数 10%)` 即视为完整；只有超出该容差或主入口真实失败时，才继续通过备用入口补齐并按转发记录去重。总数未知时以实际返回的非空候选为准，不再把缺失字段误判为 0。较长的任务结束前会补查最新一页，合并抓取期间刚出现的转发；同一微博的并发请求会共享任务。遇到微博 `418`、`429` 或临时 `503` 时，服务会尊重 `Retry-After` 并退避重试。候选数硬上限为 20,000，极端长文本名单还会受总数据体积限制；实际候选数量仍取决于微博接口可见范围、账号权限和接口返回的最大页数。
 
 运行数据保存在 `output/`，浏览器登录资料保存在 `output/auth/weibo-login-profile/`。Chromium 的网络和媒体缓存写入 `output/runtime-cache/` 并定期回收；旧 Profile 中的 `Cache`、`Code Cache` 和着色器缓存也会清理，但不会删除 Cookies、Local Storage、IndexedDB 等登录资料。这些目录不提交到 Git。
 
@@ -176,6 +179,8 @@ sudo bash deploy/install.sh
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
+
+生产环境应只开放 `22`、`80`、`443`，不要直接暴露应用端口。Caddy 模板会在应用前拦截常见环境文件、管理端点和扫描路径；更稳妥的部署方式是在 Caddy 前接入 Cloudflare 代理和免费 WAF，并把源站防火墙限制为只接受 Cloudflare 回源。后台使用随机 `ADMIN_BASE_PATH`、强密码和仅密钥 SSH，不要为了消除扫描器的 404 而创建 `.env`、`actuator`、`mcp` 等路径。
 
 依赖版本或发布平台变更后运行 `npm run licenses`，按当前环境实际安装的 npm 包同步更新 `THIRD_PARTY_NOTICES.md` 和前端可查看的许可文本；已安装的平台 optional 包会纳入，未安装的平台包会跳过。部署脚本会在 Linux 发布 stage 内安装 Chromium 后重新生成清单，并检查浏览器目录至少带有许可或复制声明；该工程检查不等于对 Chromium/Playwright 全部再分发义务的法律结论。普通构建不会改写已审核的许可清单。
 

@@ -1,3 +1,14 @@
+{
+	servers {
+		max_header_size 16KB
+		timeouts {
+			read_header 10s
+			read_body 30s
+			idle 2m
+		}
+	}
+}
+
 http://draw.example.com {
 	handle /.well-known/acme-challenge/* {
 		root * /var/www/certbot
@@ -12,6 +23,13 @@ https://draw.example.com {
 	encode zstd gzip
 	request_body {
 		max_size 3MB
+	}
+	# 已知漏洞扫描和环境文件探测在进入应用前直接拒绝，减少无效请求。
+	@blocked_probe {
+		path /.env* /.git* /wp-admin* /wp-login.php /xmlrpc.php /phpmyadmin* /pma* /vendor/* /server-status /server-info /actuator* /api/actuator* /mcp* /api/mcp* /config.json /home/login.html /sitemap.xml
+	}
+	handle @blocked_probe {
+		respond 404
 	}
 	header {
 		-Server

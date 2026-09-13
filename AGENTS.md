@@ -7,7 +7,7 @@ idol-polaroid、ClownPush 或其他目录。
 
 ## 代码基线
 
-- 版本：`3.5.0`
+- 版本：`3.5.3`
 - 分支：`main`
 - 交接提交：`fab456434473b3655f250386a8018ffd052dcfae`
 - 远端：`https://github.com/SSSSSameko/SSSSSameko.github.io.git`

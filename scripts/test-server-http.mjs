@@ -602,13 +602,18 @@ try {
   const health = await fetch(`${baseUrl}/api/health`);
   assert.equal(health.status, 200);
   const healthText = await health.text();
-  assert.equal(JSON.parse(healthText).authRequired, true);
+  const healthBody = JSON.parse(healthText);
+  assert.equal(healthBody.authRequired, true);
+  assert.equal(healthBody.version, undefined);
   assert.equal(Number(health.headers.get('content-length')), Buffer.byteLength(healthText, 'utf8'));
   assert.match(health.headers.get('content-security-policy') || '', /script-src 'self'/);
   assert.match(health.headers.get('content-security-policy') || '', /frame-ancestors 'none'/);
   assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(health.headers.get('x-frame-options'), 'DENY');
   assert.equal(health.headers.get('referrer-policy'), 'no-referrer');
+  assert.match(health.headers.get('permissions-policy') || '', /camera=\(\)/);
+  assert.equal(health.headers.get('cross-origin-opener-policy'), 'same-origin');
+  assert.equal(health.headers.get('x-permitted-cross-domain-policies'), 'none');
 
   const app = await fetch(`${baseUrl}/`);
   assert.equal(app.status, 200);
@@ -1070,6 +1075,21 @@ try {
   assert.ok((await stat(drawStatisticsFile)).size > 0);
   assert.ok(summaryBody.system.events.some((item) => /损坏的开奖记录已隔离/.test(item.message || '')));
   assert.ok((await readdir(drawsDir)).some((name) => name.startsWith(`${path.basename(damagedDrawFile)}.corrupt-`)));
+
+  const favicon = await fetch(`${baseUrl}/favicon.ico`);
+  assert.equal(favicon.status, 200);
+  assert.match(favicon.headers.get('content-type') || '', /^image\/png\b/);
+  const scannerProbe = await fetch(`${baseUrl}/.env.production`);
+  assert.equal(scannerProbe.status, 404);
+  const summaryAfterScannerProbe = await fetch(`${baseUrl}/api/admin/summary`, {
+    headers: { cookie: sessionCookie },
+  });
+  const diagnosticsAfterScannerProbe = (await summaryAfterScannerProbe.json()).system.runtime;
+  assert.ok(diagnosticsAfterScannerProbe.requests.probeRequests >= 1);
+  assert.ok(diagnosticsAfterScannerProbe.http.probeRoutes.some((item) => item.path === '/.env.production'));
+  assert.ok(!diagnosticsAfterScannerProbe.http.routeErrors.some((item) => item.path === '/.env.production'));
+  assert.ok(!diagnosticsAfterScannerProbe.http.recentErrors.some((item) => item.path === '/.env.production'));
+
   const drawsDiagnostic = summaryBody.system.storage.find((item) => item.label === '开奖记录目录');
   assert.ok(drawsDiagnostic.size > 0);
   assert.ok(drawsDiagnostic.itemCount >= 2);

@@ -612,12 +612,17 @@ import { readJsonResponse } from './api-response.js';
     const disk = system.disk || {};
     const clientErrors = numericValue(requests.clientErrors);
     const serverErrors = numericValue(requests.serverErrors);
-    const requestErrors = clientErrors === null || serverErrors === null ? null : clientErrors + serverErrors;
+    const probeRequests = numericValue(requests.probeRequests) || 0;
+    const probeErrors = numericValue(requests.probeErrors) || 0;
+    const applicationClientErrors = clientErrors === null ? null : Math.max(0, clientErrors - probeErrors);
+    const requestErrors = applicationClientErrors === null || serverErrors === null
+      ? null
+      : applicationClientErrors + serverErrors;
     const requestErrorPercent = requestErrors === null ? null : percentOf(requestErrors, requests.total);
     const queuePercent = percentOf(queue.active, queue.maxActive);
     els.requestPanel.innerHTML = [
       quickRow('事件循环 P99', numericValue(runtime.eventLoopP99Ms) === null ? '-' : `${runtime.eventLoopP99Ms} ms`, numericValue(runtime.eventLoopP99Ms) !== null && numericValue(runtime.eventLoopP99Ms) < 100 ? '响应正常' : '等待有效采样'),
-      quickRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)}`),
+      quickRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 业务 4xx ${formatNumber(applicationClientErrors)} · 5xx ${formatNumber(requests.serverErrors)} · 扫描 ${formatNumber(probeRequests)}`),
       quickRow('自动重启', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 回收进程`),
       quickRow('磁盘', formatPercent(numericValue(disk.usedPercent)), `可用 ${formatMemoryMb(disk.availableMb)}`),
       quickRow('并发占用', formatPercent(queuePercent), `${formatNumber(queue.active)} 运行 · ${formatNumber(queue.queued)} 排队 · ${formatNumber(queue.retained)} 暂存`),
@@ -659,6 +664,7 @@ import { readJsonResponse } from './api-response.js';
       : [];
     const routeErrors = Array.isArray(http.routeErrors) ? http.routeErrors : [];
     const recentErrors = Array.isArray(http.recentErrors) ? http.recentErrors : [];
+    const probeRoutes = Array.isArray(http.probeRoutes) ? http.probeRoutes : [];
     const statusText = statusCounts.length
       ? statusCounts.map((item) => `${item.status} × ${formatNumber(item.count)}`).join(' · ')
       : '暂无';
@@ -691,10 +697,21 @@ import { readJsonResponse } from './api-response.js';
           `;
         }).join('')
       : '<div class="empty-list compact">暂无最近异常请求。</div>';
+    const probeHtml = probeRoutes.length
+      ? probeRoutes.slice(0, 8).map((item) => `
+          <div class="http-error-row">
+            <span class="http-status">${escapeHtml(formatNumber(item.status))}</span>
+            <div>
+              <strong>${escapeHtml(plain(item.method, 'GET'))} ${escapeHtml(plain(item.path, '/'))}</strong>
+              <small>${escapeHtml(formatNumber(item.count))} 次</small>
+            </div>
+          </div>
+        `).join('')
+      : '<div class="empty-list compact">暂无扫描探测记录。</div>';
     els.requestErrorPanel.innerHTML = `
       <div class="diagnostic-list">
-        ${diagnosticRow('HTTP 错误统计', statusText, `累计请求 ${formatNumber(runtime.requests?.total)} 次`)}
-        ${diagnosticRow('最近错误', runtime.requests?.lastErrorAt ? formatDate(runtime.requests.lastErrorAt) : '暂无', '仅记录非敏感请求信息')}
+        ${diagnosticRow('HTTP 状态统计', statusText, `含扫描探测 · 累计请求 ${formatNumber(runtime.requests?.total)} 次`)}
+        ${diagnosticRow('最近业务错误', runtime.requests?.lastErrorAt ? formatDate(runtime.requests.lastErrorAt) : '暂无', '仅记录非敏感请求信息')}
       </div>
       <div class="http-error-group">
         <strong>高频错误路径</strong>
@@ -703,6 +720,10 @@ import { readJsonResponse } from './api-response.js';
       <div class="http-error-group">
         <strong>最近异常明细</strong>
         ${recentHtml}
+      </div>
+      <div class="http-error-group">
+        <strong>扫描与探测（不计入业务异常）</strong>
+        ${probeHtml}
       </div>
     `;
   }

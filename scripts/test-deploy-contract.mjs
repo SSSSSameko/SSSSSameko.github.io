@@ -152,6 +152,11 @@ const servicePort = service.match(/^Environment=PORT=(\d+)$/m)?.[1];
 const proxyPort = caddy.match(/reverse_proxy\s+127\.0\.0\.1:(\d+)/)?.[1];
 assert.ok(servicePort);
 assert.equal(proxyPort, servicePort);
+assert.match(caddy, /@blocked_probe/);
+assert.match(caddy, /\/\.env\*/);
+assert.match(caddy, /\/api\/actuator\*/);
+assert.match(caddy, /\/api\/mcp\*/);
+assert.match(caddy, /max_header_size\s+16KB/);
 
 const swapCommand = 'mv -Tf -- "${next_link}" "${CURRENT_LINK}"';
 const swappedFlag = 'current_swapped=1';

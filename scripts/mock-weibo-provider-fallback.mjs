@@ -189,7 +189,7 @@ function trustedTailDesktop(url) {
   if (url.pathname === '/ajax/statuses/repostTimeline') {
     const page = Number(url.searchParams.get('page') || 1);
     return page === 1
-      ? desktopTimeline(largeCandidates('tolerance-within', 95), 100, 1)
+      ? desktopTimeline(largeCandidates('tolerance-within', 90), 100, 1)
       : desktopTimeline([], 100, 1);
   }
   if (url.pathname === '/api/statuses/repostTimeline') {
@@ -204,7 +204,7 @@ function toleranceExceededDesktop(url) {
   if (url.pathname === '/ajax/statuses/repostTimeline') {
     const page = Number(url.searchParams.get('page') || 1);
     return page === 1
-      ? desktopTimeline(largeCandidates('tolerance-exceeded', 94), 100, 1)
+      ? desktopTimeline(largeCandidates('tolerance-exceeded', 89), 100, 1)
       : desktopTimeline([], 100, 1);
   }
   if (url.pathname === '/api/statuses/repostTimeline') {

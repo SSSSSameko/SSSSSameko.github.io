@@ -83,8 +83,11 @@ async function withServer(scenario, options, run) {
       PROVIDER_SWITCH_DELAY_MS: '0',
       OFFICIAL_PAGE_DELAY_MS: '0',
       DESKTOP_PAGE_DELAY_MS: '0',
+      DESKTOP_PAGE_DELAY_JITTER_MS: '0',
       MOBILE_PAGE_DELAY_MS: '0',
+      MOBILE_PAGE_DELAY_JITTER_MS: '0',
       LEGACY_PAGE_DELAY_MS: '0',
+      LEGACY_PAGE_DELAY_JITTER_MS: '0',
       PAGE_COOLDOWN_MS: '0',
       WEIBO_THROTTLE_RETRY_MAX: '0',
       SAME_STATUS_REQUEST_GAP_MS: '0',
@@ -229,21 +232,21 @@ test('Weibo Cookie provider fallback service regressions', async (t) => {
       assert.equal(result.meta.totalNumber, 100);
     });
 
-    await t.test('accepts a five-percent difference without loading a backup provider', async () => {
+    await t.test('accepts a ten-percent difference without loading a backup provider', async () => {
       const result = await runJob('910006');
       assert.deepEqual(result.meta.providers, ['desktop-cookie']);
       assert.equal(result.meta.complete, true);
-      assert.equal(result.meta.visibleNumber, 95);
+      assert.equal(result.meta.visibleNumber, 90);
       assert.equal(result.meta.totalNumber, 100);
       const calls = await requests();
       assert.ok(!calls.some((item) => item.statusId === '910006' && item.pathname === '/api/statuses/repostTimeline'));
     });
 
-    await t.test('loads a backup provider when the difference exceeds five percent', async () => {
+    await t.test('loads a backup provider when the difference exceeds ten percent', async () => {
       const result = await runJob('910009');
       assert.deepEqual(result.meta.providers, ['desktop-cookie', 'mobile']);
       assert.equal(result.meta.complete, true);
-      assert.equal(result.meta.visibleNumber, 95);
+      assert.equal(result.meta.visibleNumber, 90);
       assert.equal(result.meta.totalNumber, 100);
       const calls = await requests();
       assert.ok(calls.some((item) => item.statusId === '910009' && item.pathname === '/api/statuses/repostTimeline'));
