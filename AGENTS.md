@@ -42,6 +42,7 @@ npm start
 - 只读 Cookie 接口契约在 `docs/COOKIE-API-CLIENT.md`。不要把调用密钥写入
   仓库、前端、公开文档、截图或日志。
 - 版本历史见 `docs/CHANGELOG.md`，部署和运行边界见 `README.md`。
+- 每次更新前后端都必须提升 `package.json` 版本，并在 `docs/CHANGELOG.md` 末尾追加同版本记录；该文件是唯一更新日志源，前端与后台会自动读取，不再维护重复日志。
 - 当前环境可能使用 Mihomo，`sinaimg.cn` 会被解析到 `198.18.0.49`。
   不要为了通过测试而放宽生产 SSRF 校验。
 

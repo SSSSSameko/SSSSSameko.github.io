@@ -3,9 +3,11 @@ import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { gotoUiPage, launchUiBrowser } from './playwright-browser.mjs';
+import { readReleaseInfo } from './release-info.mjs';
 
 const baseUrl = process.env.ADMIN_UI_URL || 'http://127.0.0.1:4173/admin';
 const outputDir = new URL('../output/ui-checks/', import.meta.url);
+const releaseInfo = readReleaseInfo(fileURLToPath(new URL('../', import.meta.url)));
 
 const draws = Array.from({ length: 18 }, (_, index) => {
   const number = index + 1;
@@ -37,8 +39,15 @@ const samples = Array.from({ length: 24 }, (_, index) => ({
 const summary = {
   ok: true,
   adminEnabled: true,
+  version: releaseInfo.version,
+  releaseDate: releaseInfo.date,
+  releaseTitle: releaseInfo.title,
   savedDrawCount: 18,
+  cumulativeDrawCount: 1288,
   winnerCount: 18,
+  cumulativeWinnerCount: 3512,
+  cumulativeStatsSource: 'sequence-ledger-and-retained-files',
+  cumulativeStatsUpdatedAt: '2026-09-13T04:00:00.000Z',
   recentAttempts: [],
   cookie: {
     accountCount: 2,
@@ -110,9 +119,29 @@ const summary = {
       rateLimitBuckets: 3,
       adminLoginBuckets: 1,
       revokedAdminSessions: 2,
-      requests: { total: 240, clientErrors: 2, serverErrors: 1, slowestMs: 86 },
+      requests: {
+        total: 240,
+        clientErrors: 2,
+        serverErrors: 1,
+        slowestMs: 86,
+        lastErrorAt: new Date().toISOString(),
+      },
+      http: {
+        statusCounts: [{ status: 404, count: 2 }, { status: 503, count: 1 }],
+        routeErrors: [{ status: 404, method: 'GET', path: '/api/missing', count: 2 }],
+        recentErrors: [{
+          at: new Date().toISOString(),
+          requestId: 'request-12345678',
+          method: 'GET',
+          path: '/api/weibo/reposts/jobs/test',
+          status: 503,
+          elapsedMs: 86,
+          upstream: { host: 'weibo.com', path: '/ajax/statuses/repostTimeline', status: 429 },
+        }],
+      },
     },
     service: {
+      version: releaseInfo.version,
       memoryHighMb: 700,
       memoryMaxMb: 850,
       nextRecycleAt: new Date(Date.now() + 43_200_000).toISOString(),
@@ -123,7 +152,17 @@ const summary = {
       browserDiskCacheBytes: 64 * 1024 * 1024,
       browserMediaCacheBytes: 16 * 1024 * 1024,
     },
-    events: [],
+    events: [{
+      category: 'reposts',
+      action: 'provider-error',
+      status: 'error',
+      message: '桌面端抓取失败',
+      at: new Date().toISOString(),
+      details: {
+        statusId: '1234567890',
+        upstream: { host: 'weibo.com', path: '/ajax/statuses/repostTimeline', status: 429 },
+      },
+    }],
     storage: [],
   },
 };
@@ -460,9 +499,18 @@ try {
   await page.screenshot({ path: fileURLToPath(new URL('admin-feedback-desktop.png', outputDir)) });
 
   await page.getByRole('tab', { name: '系统', exact: true }).click();
+  assert.equal(
+    await page.locator('#appVersion').getByText(`Sameko Control · v${releaseInfo.version}`, { exact: true }).isVisible(),
+    true,
+  );
   assert.equal(await page.locator('#systemPanel').getByText('35.3%', { exact: true }).isVisible(), true);
   assert.equal(await page.locator('#systemPanel').getByText('3 / 24 个', { exact: true }).isVisible(), true);
   const systemText = await page.locator('#systemPanel').innerText();
+  assert.match(systemText, /累计开奖\n1,288 次/);
+  assert.match(systemText, /当前保留 18 条 · 累计中奖 3,512 人次 · 历史序号与保留记录 · 更新于/);
+  assert.equal(await page.locator('#requestErrorPanel').getByText('GET /api/missing', { exact: true }).isVisible(), true);
+  assert.equal(await page.locator('#requestErrorPanel').getByText(/weibo\.com\/ajax\/statuses\/repostTimeline · 429/).isVisible(), true);
+  assert.equal(await page.locator('#systemEventPanel details').getByText('技术详情', { exact: true }).isVisible(), true);
   assert.match(systemText, /API 3 · 后台登录 1 · 已退出会话 2/);
   assert.match(systemText, /订阅页面 5 个 · 单任务上限 12 个/);
   assert.match(systemText, /最近清理 4 个旧缓存目录 · 新缓存上限 64 MB \+ 16 MB/);

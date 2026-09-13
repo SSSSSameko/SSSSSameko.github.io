@@ -45,11 +45,6 @@ function compactHash(value) {
 function sourceScope(receipt) {
   if (receipt.source === 'manual') return '手动名单';
   if (receipt.sourceMeta?.complete === false) return '当前可见转发';
-  const visible = Number(receipt.sourceMeta?.visibleNumber);
-  const total = Number(receipt.sourceMeta?.totalNumber);
-  if (Number.isFinite(visible) && Number.isFinite(total) && visible < total) {
-    return `可见 ${visible} / 约 ${total} 条`;
-  }
   return friendlyProviderText(
     receipt.sourceMeta?.providers || receipt.sourceMeta?.provider || receipt.source,
   ) || '微博转发';

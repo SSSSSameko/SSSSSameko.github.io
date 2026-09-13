@@ -132,7 +132,7 @@ const throwIfAborted = (signal) => {
   throw new DOMException('操作已取消', 'AbortError');
 };
 const publicAsset = (name) => `${import.meta.env.BASE_URL}${name}`;
-const APP_VERSION = '3.5.0';
+const APP_VERSION = __APP_VERSION__;
 const REPOST_JOB_TIMEOUT_MS = 90 * 60 * 1000;
 const REPOST_JOB_POLL_MS = 2000;
 const REPOST_JOB_RECONNECT_ATTEMPTS = 4;
@@ -3980,9 +3980,6 @@ function App() {
       setCandidateLoadError('');
       setHistoryUids(freshHistory);
       if (effectiveSource === 'mobile' && mountedRef.current) loadCookieStatus(false).catch(() => {});
-      const pageCount = Array.isArray(json.meta?.pages) ? json.meta.pages.length : 0;
-      const totalNumber = Number(json.meta?.totalNumber);
-      const totalText = Number.isFinite(totalNumber) ? `接口显示总转发约 ${totalNumber} 条。` : '';
       const deliveryText = json.meta?.delivery === 'recent-snapshot'
         ? '已复用刚刚完成的候选快照。'
         : json.meta?.delivery === 'shared-running'
@@ -3993,7 +3990,7 @@ function App() {
         : json.meta?.headReconciled
           ? '完成前已复核最新转发。'
           : '';
-      showStatus(`已载入 ${json.candidates?.length || 0} 条可见转发，扫描 ${pageCount} 页。${totalText ? `${totalText} ` : ''}${deliveryText}${headText}请确认奖项后开奖。`, 'success');
+      showStatus(`已载入 ${json.candidates?.length || 0} 条可见转发。${deliveryText}${headText}请确认奖项后开奖。`, 'success');
       if (jumpAfterLoad) jumpToPrizeSettings();
       if (mountedRef.current && effectiveSource === 'mobile') setMobileCookie('');
       if (mountedRef.current && effectiveSource === 'official') setAccessToken('');

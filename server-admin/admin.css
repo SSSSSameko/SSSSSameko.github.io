@@ -993,6 +993,92 @@ button:disabled {
   line-height: 1.55;
 }
 
+.event-details {
+  margin-top: 7px;
+}
+
+.event-details summary {
+  width: fit-content;
+  color: var(--violet-deep);
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.event-details pre {
+  max-height: 240px;
+  margin: 7px 0 0;
+  padding: 9px 10px;
+  overflow: auto;
+  border: 1px solid rgba(84, 90, 121, .09);
+  border-radius: 9px;
+  background: rgba(247, 248, 251, .9);
+  color: #51576a;
+  font: 10.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.http-error-group {
+  display: grid;
+  gap: 7px;
+  margin-top: 14px;
+}
+
+.http-error-group > strong {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.http-error-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  padding: 9px 10px;
+  border: 1px solid rgba(84, 90, 121, .08);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .58);
+}
+
+.http-error-row .http-status {
+  display: inline-flex;
+  min-height: 24px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: rgba(214, 149, 66, .12);
+  color: #a4671d;
+  font-size: 10.5px;
+  font-weight: 700;
+}
+
+.http-error-row .http-status.error {
+  background: rgba(233, 120, 121, .12);
+  color: #b34f52;
+}
+
+.http-error-row strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 11.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.http-error-row small,
+.http-error-row p {
+  display: block;
+  margin: 3px 0 0;
+  color: var(--faint);
+  font-size: 10.5px;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
 .event-list.expanded {
   max-height: 690px;
   overflow: auto;

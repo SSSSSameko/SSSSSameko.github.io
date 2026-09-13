@@ -3,9 +3,11 @@ import { mkdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { gotoUiPage, launchUiBrowser } from './playwright-browser.mjs';
+import { readReleaseInfo } from './release-info.mjs';
 
 const baseUrl = process.env.FEEDBACK_UI_URL || 'http://127.0.0.1:5195/';
 const outputDir = new URL('../output/ui-checks/', import.meta.url);
+const releaseInfo = readReleaseInfo(fileURLToPath(new URL('../', import.meta.url)));
 
 await mkdir(outputDir, { recursive: true });
 const browser = await launchUiBrowser();
@@ -20,17 +22,23 @@ try {
 
   await gotoUiPage(page, baseUrl);
   await page.getByRole('tab', { name: '更多', exact: true }).click();
-  assert.equal(await page.getByText('版本 3.5.0 · by.sameko', { exact: true }).first().isVisible(), true);
+  assert.equal(
+    await page.getByText(`版本 ${releaseInfo.version} · by.sameko`, { exact: true }).first().isVisible(),
+    true,
+  );
   await page.locator('.app-summary').click();
   await page.getByRole('dialog', { name: '关于此应用' }).getByRole('button', { name: /更新日志/ }).click();
   const updates = page.getByRole('dialog', { name: '更新日志' });
   await updates.waitFor({ state: 'visible' });
-    assert.equal(await updates.getByText('更新日期：2026 年 9 月 13 日', { exact: true }).isVisible(), true);
-    assert.equal(await updates.getByText('版本 3.5.0', { exact: true }).isVisible(), true);
-    assert.equal(await updates.getByText('版本 0.0.1', { exact: true }).count(), 0);
-    await updates.getByRole('button', { name: /查看历史版本/ }).click();
-    assert.equal(await updates.getByText('版本 0.0.1', { exact: true }).isVisible(), true);
-    assert.equal(await updates.getByText('增加开奖前确认', { exact: true }).isVisible(), true);
+  assert.equal(
+    await updates.getByText(`更新日期：${releaseInfo.date}`, { exact: true }).isVisible(),
+    true,
+  );
+  assert.equal(await updates.getByText(`版本 ${releaseInfo.version}`, { exact: true }).isVisible(), true);
+  assert.equal(await updates.getByText('版本 0.0.1', { exact: true }).count(), 0);
+  await updates.getByRole('button', { name: /查看历史版本/ }).click();
+  assert.equal(await updates.getByText('版本 0.0.1', { exact: true }).isVisible(), true);
+  assert.equal(await updates.getByText('增加开奖前确认', { exact: true }).isVisible(), true);
   await updates.getByRole('button', { name: '关闭更新日志' }).click();
   await page.getByRole('button', { name: /意见反馈/ }).click();
   const dialog = page.getByRole('dialog', { name: '意见反馈' });

@@ -204,9 +204,11 @@ import {
   shouldReconcileRepostHead,
   throttleRetryDelayMs,
 } from './src/lib/weiboPacing.js';
+import { readReleaseInfo } from './scripts/release-info.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname);
+const releaseInfo = readReleaseInfo(rootDir);
 const distDir = path.join(rootDir, 'dist');
 const publicDir = path.join(rootDir, 'public');
 const outputDir = path.resolve(rootDir, process.env.OUTPUT_DIR || 'output');
@@ -219,6 +221,7 @@ const weiboLoginProfileDir = path.join(authDir, 'weibo-login-profile');
 const weiboLoginStateFile = path.join(authDir, 'weibo-login-state.json');
 const drawAttemptsFile = path.resolve(rootDir, process.env.DRAW_ATTEMPTS_FILE || path.join(outputDir, 'draw-attempts.jsonl'));
 const drawSequenceFile = path.join(outputDir, 'draw-sequences.json');
+const drawStatisticsFile = path.join(outputDir, 'draw-statistics.json');
 const drawRetentionPolicyFile = path.join(outputDir, 'draw-retention-policy.json');
 const systemMetricsFile = path.join(outputDir, 'system-metrics.json');
 const adminEventsFile = path.join(outputDir, 'admin-events.json');
@@ -294,8 +297,9 @@ const maxCorruptJsonBackupAgeMs = maxCorruptJsonBackupAgeDays * 24 * 60 * 60_000
 const maxCookieStoreFileBytes = envNumber('MAX_COOKIE_STORE_FILE_BYTES', 1024 * 1024, 64 * 1024);
 const maxWeiboLoginStateFileBytes = envNumber('MAX_WEIBO_LOGIN_STATE_FILE_BYTES', 256 * 1024, 16 * 1024);
 const maxDrawSequenceFileBytes = envNumber('MAX_DRAW_SEQUENCE_FILE_BYTES', 2 * 1024 * 1024, 64 * 1024);
+const maxDrawStatisticsFileBytes = envNumber('MAX_DRAW_STATISTICS_FILE_BYTES', 64 * 1024, 1024);
 const maxSystemMetricsFileBytes = envNumber('MAX_SYSTEM_METRICS_FILE_BYTES', 2 * 1024 * 1024, 64 * 1024);
-const maxAdminEventsFileBytes = envNumber('MAX_ADMIN_EVENTS_FILE_BYTES', 1024 * 1024, 64 * 1024);
+const maxAdminEventsFileBytes = envNumber('MAX_ADMIN_EVENTS_FILE_BYTES', 2 * 1024 * 1024, 64 * 1024);
 const maxFeedbackFileBytes = envNumber('MAX_FEEDBACK_FILE_BYTES', 2 * 1024 * 1024, 64 * 1024);
 const maxGenericStoredJsonBytes = envNumber('MAX_GENERIC_STORED_JSON_BYTES', 2 * 1024 * 1024, 64 * 1024);
 const feedbackDuplicateWindowMs = envNumber('FEEDBACK_DUPLICATE_WINDOW_MS', 10 * 60_000, 60_000);
@@ -408,6 +412,8 @@ const runtimeCacheMaxAgeDays = envNumber('RUNTIME_CACHE_MAX_AGE_DAYS', 30, 1);
 const runtimeCacheMaxAgeMs = runtimeCacheMaxAgeDays * 24 * 60 * 60_000;
 const runtimeCacheScanMaxEntries = envInteger('RUNTIME_CACHE_SCAN_MAX_ENTRIES', 20_000, 1000);
 const maxAdminEventQueue = Math.min(512, Math.floor(envNumber('MAX_ADMIN_EVENT_QUEUE', 128, 8)));
+const maxAdminEvents = envInteger('MAX_ADMIN_EVENTS', 300, 50, 2000);
+const maxHttpErrorRecords = envInteger('MAX_HTTP_ERROR_RECORDS', 80, 20, 500);
 const maxErrorMessageChars = envInteger('MAX_ERROR_MESSAGE_CHARS', 4096, 512, 16_384);
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
@@ -538,6 +544,9 @@ const requestStats = {
   lastRequestAt: '',
   slowestMs: 0,
 };
+const httpStatusCounts = new Map();
+const httpRouteErrors = new Map();
+const recentHttpErrors = [];
 const eventLoopDelay = monitorEventLoopDelay({ resolution: 20 });
 eventLoopDelay.enable();
 const metricsWriteQueue = createLatestWriteQueue((samples) => writeJsonArray(systemMetricsFile, samples));
@@ -548,6 +557,8 @@ let cookieStoreOperation = Promise.resolve();
 let weiboLoginStateOperation = Promise.resolve();
 let drawAttemptWrite = Promise.resolve();
 let drawSequenceOperation = Promise.resolve();
+let drawStatisticsOperation = Promise.resolve();
+let drawStatisticsCache = null;
 let completedDrawIndex = null;
 let completedDrawIndexLoad = null;
 let completedDrawIndexRevision = 0;
@@ -2095,6 +2106,160 @@ function maxPersistedDrawNumber(records, statusId) {
   }, 0);
 }
 
+function emptyDrawStatistics() {
+  return {
+    version: 1,
+    completedDraws: 0,
+    winnerSlots: 0,
+    initializedAt: '',
+    updatedAt: '',
+    source: '',
+    lastAuditHash: '',
+  };
+}
+
+function validDrawStatistics(value) {
+  return isPlainObject(value)
+    && value.version === 1
+    && Number.isSafeInteger(value.completedDraws)
+    && value.completedDraws >= 0
+    && Number.isSafeInteger(value.winnerSlots)
+    && value.winnerSlots >= 0;
+}
+
+function normalizeDrawStatistics(value) {
+  return {
+    version: 1,
+    completedDraws: storedPositiveInteger(value?.completedDraws, 0) ?? 0,
+    winnerSlots: storedPositiveInteger(value?.winnerSlots, 0) ?? 0,
+    initializedAt: safeText(value?.initializedAt, 80),
+    updatedAt: safeText(value?.updatedAt, 80),
+    source: safeText(value?.source, 80),
+    lastAuditHash: safeText(value?.lastAuditHash, 128),
+  };
+}
+
+function retainedDrawStatistics(records) {
+  return (Array.isArray(records) ? records : []).reduce((stats, record) => {
+    stats.completedDraws += 1;
+    stats.winnerSlots += storedPositiveInteger(record?.winnerCount, 0) ?? 0;
+    if (drawStatusIdFromPayload(record)) stats.linkedDraws += 1;
+    else stats.unlinkedDraws += 1;
+    return stats;
+  }, {
+    completedDraws: 0,
+    winnerSlots: 0,
+    linkedDraws: 0,
+    unlinkedDraws: 0,
+  });
+}
+
+async function seedDrawStatistics(records) {
+  const retained = retainedDrawStatistics(records);
+  let linkedDraws = 0;
+  try {
+    const sequenceStore = await readDrawSequenceStore();
+    linkedDraws = Object.values(sequenceStore.sequences).reduce(
+      (total, number) => total + (storedPositiveInteger(number, 0) ?? 0),
+      0,
+    );
+  } catch (error) {
+    recordRuntimeEvent({
+      category: 'records',
+      action: 'statistics-seed',
+      status: 'warning',
+      message: '累计开奖统计初始化时无法读取序号账本，已使用当前保留记录作为基线',
+      details: errorDiagnostic(error),
+    });
+  }
+  const now = new Date().toISOString();
+  return {
+    version: 1,
+    completedDraws: Math.max(
+      retained.completedDraws,
+      linkedDraws + retained.unlinkedDraws,
+    ),
+    winnerSlots: retained.winnerSlots,
+    initializedAt: now,
+    updatedAt: now,
+    source: linkedDraws ? 'sequence-ledger-and-retained-files' : 'retained-files',
+    lastAuditHash: '',
+  };
+}
+
+async function writeDrawStatistics(statistics) {
+  await writeJsonFileAtomic(drawStatisticsFile, normalizeDrawStatistics(statistics), {
+    directoryMode: 0o700,
+    fileMode: 0o600,
+    durable: true,
+  });
+}
+
+async function readDrawStatisticsLocked(records = null) {
+  if (drawStatisticsCache) return { ...drawStatisticsCache };
+  let statistics;
+  try {
+    statistics = normalizeDrawStatistics(await readStoredJson(
+      drawStatisticsFile,
+      emptyDrawStatistics,
+      validDrawStatistics,
+      {
+        maxBytes: maxDrawStatisticsFileBytes,
+        rejectCorrupt: true,
+        rejectOversize: true,
+      },
+    ));
+  } catch (error) {
+    recordRuntimeEvent({
+      category: 'records',
+      action: 'statistics-read',
+      status: 'error',
+      message: '累计开奖统计文件损坏，已根据现有记录重建',
+      details: errorDiagnostic(error),
+    });
+    statistics = emptyDrawStatistics();
+  }
+  if (!statistics.initializedAt) {
+    const sourceRecords = records || await listCompletedDrawRecords();
+    statistics = await seedDrawStatistics(sourceRecords);
+    await writeDrawStatistics(statistics);
+  }
+  drawStatisticsCache = statistics;
+  return { ...statistics };
+}
+
+function withDrawStatisticsLock(task) {
+  const previous = drawStatisticsOperation;
+  let release;
+  const current = new Promise((resolve) => { release = resolve; });
+  drawStatisticsOperation = previous.catch(() => {}).then(() => current);
+  return previous
+    .catch(() => {})
+    .then(task)
+    .finally(() => release());
+}
+
+async function getDrawStatistics(records = null) {
+  if (drawStatisticsCache) return { ...drawStatisticsCache };
+  return await withDrawStatisticsLock(() => readDrawStatisticsLocked(records));
+}
+
+async function incrementDrawStatistics({ winnerSlots, auditHash }) {
+  return await withDrawStatisticsLock(async () => {
+    const current = await readDrawStatisticsLocked();
+    const next = normalizeDrawStatistics({
+      ...current,
+      completedDraws: current.completedDraws + 1,
+      winnerSlots: current.winnerSlots + (storedPositiveInteger(winnerSlots, 0) ?? 0),
+      updatedAt: new Date().toISOString(),
+      lastAuditHash: auditHash,
+    });
+    await writeDrawStatistics(next);
+    drawStatisticsCache = next;
+    return { ...next };
+  });
+}
+
 async function persistDrawRecord({ statusId, auditHash, file, payload }) {
   const persist = async () => {
     const records = await listCompletedDrawRecords();
@@ -2404,11 +2569,16 @@ function candidateCollectionMeta(collection) {
   };
 }
 
-function repostCountLooksComplete(candidateCount, totalNumber, { allowAnyMissing = false } = {}) {
+function repostCompletenessTolerance(totalNumber) {
+  const total = Math.max(0, Number(totalNumber) || 0);
+  return Math.max(2, Math.ceil(total * 0.05));
+}
+
+function repostCountLooksComplete(candidateCount, totalNumber) {
   const count = Math.max(0, Number(candidateCount) || 0);
   if (totalNumber === null || totalNumber === undefined) return count > 0;
   const missingCount = Math.max(0, Number(totalNumber) || 0) - count;
-  return missingCount <= 0 || (allowAnyMissing && count > 0);
+  return missingCount <= 0 || (count > 0 && missingCount <= repostCompletenessTolerance(totalNumber));
 }
 
 function candidateLimitWarnings(collection) {
@@ -2427,6 +2597,83 @@ function safeError(error) {
   return {
     message: safeErrorMessage(error),
     status,
+  };
+}
+
+function upstreamDiagnostic(url, response = null, extra = {}) {
+  let parsed;
+  try {
+    parsed = url instanceof URL ? url : new URL(url);
+  } catch {
+    parsed = null;
+  }
+  return {
+    host: safeText(parsed?.hostname, 160),
+    path: safeText(parsed?.pathname, 300),
+    status: Number.isInteger(Number(response?.status))
+      ? Number(response.status)
+      : Number.isInteger(Number(extra.status)) ? Number(extra.status) : 0,
+    provider: safeText(extra.provider, 80),
+  };
+}
+
+function errorDiagnostic(error) {
+  const normalized = safeError(error);
+  return {
+    ...normalized,
+    name: safeText(error?.name, 80),
+    code: safeText(error?.code, 120),
+    ...(error?.upstream ? { upstream: boundedRuntimeValue(error.upstream) } : {}),
+  };
+}
+
+function normalizedRequestPath(pathname) {
+  const value = safeText(pathname, 300, '/');
+  return value.startsWith('/') ? value : `/${value}`;
+}
+
+function recordHttpResult(req, res, url, startedAt, requestId) {
+  const elapsed = Math.round((performance.now() - startedAt) * 10) / 10;
+  const status = Math.max(100, Number(res.statusCode) || 0);
+  const method = safeText(req.method, 12, 'GET').toUpperCase();
+  const pathname = normalizedRequestPath(url?.pathname);
+  requestStats.total += 1;
+  requestStats.lastRequestAt = new Date().toISOString();
+  requestStats.slowestMs = Math.max(requestStats.slowestMs, elapsed);
+  httpStatusCounts.set(status, (httpStatusCounts.get(status) || 0) + 1);
+  if (status >= 500) requestStats.serverErrors += 1;
+  else if (status >= 400) requestStats.clientErrors += 1;
+  if (status < 400) return;
+
+  requestStats.lastErrorAt = requestStats.lastRequestAt;
+  const routeKey = `${status} ${method} ${pathname}`;
+  if (!httpRouteErrors.has(routeKey) && httpRouteErrors.size >= 200) {
+    httpRouteErrors.delete(httpRouteErrors.keys().next().value);
+  }
+  httpRouteErrors.set(routeKey, (httpRouteErrors.get(routeKey) || 0) + 1);
+  recentHttpErrors.push({
+    at: requestStats.lastRequestAt,
+    requestId: safeText(requestId, 80),
+    method,
+    path: pathname,
+    status,
+    elapsedMs: elapsed,
+    ...(res.httpErrorContext ? boundedRuntimeValue(res.httpErrorContext) : {}),
+  });
+  if (recentHttpErrors.length > maxHttpErrorRecords) {
+    recentHttpErrors.splice(0, recentHttpErrors.length - maxHttpErrorRecords);
+  }
+}
+
+function httpDiagnostics() {
+  return {
+    statusCounts: Array.from(httpStatusCounts, ([status, count]) => ({ status, count }))
+      .sort((left, right) => left.status - right.status),
+    routeErrors: Array.from(httpRouteErrors, ([key, count]) => {
+      const [status, method, ...pathParts] = key.split(' ');
+      return { status: Number(status), method, path: pathParts.join(' '), count };
+    }).sort((left, right) => right.count - left.count || left.path.localeCompare(right.path)).slice(0, 20),
+    recentErrors: recentHttpErrors.slice().reverse(),
   };
 }
 
@@ -3812,7 +4059,9 @@ async function fetchCookieRepostsWithPool({ statusId, body, reportProgress, allo
 // Repost collection
 
 function finiteNumber(value, fallback = null) {
-  const number = Number(value);
+  if (typeof value === 'number') return Number.isFinite(value) ? value : fallback;
+  if (typeof value !== 'string' || !value.trim()) return fallback;
+  const number = Number(value.trim());
   return Number.isFinite(number) ? number : fallback;
 }
 
@@ -3901,6 +4150,7 @@ async function fetchJson(url, options = {}) {
     if (signal?.aborted) throw taskCancelledError();
     const wrapped = new Error(`请求微博接口失败或超时：${safeErrorMessage(error, 800)}`);
     wrapped.status = error.name === 'TimeoutError' || error.name === 'AbortError' ? 504 : 502;
+    wrapped.upstream = upstreamDiagnostic(url, null, { status: 0 });
     throw wrapped;
   }
   const declaredLength = Number(response.headers.get('content-length') || 0);
@@ -3908,6 +4158,7 @@ async function fetchJson(url, options = {}) {
     await cancelResponseBody(response);
     const error = new Error('微博接口返回内容过大');
     error.status = 502;
+    error.upstream = upstreamDiagnostic(url, response);
     throw error;
   }
   const text = (await readResponseBuffer(response, maxWeiboResponseBytes, '微博接口返回内容过大')).toString('utf8');
@@ -3922,6 +4173,7 @@ async function fetchJson(url, options = {}) {
         : `返回内容不是 JSON：${text.slice(0, 120)}`,
     );
     error.status = response.status || 502;
+    error.upstream = upstreamDiagnostic(url, response);
     throw error;
   }
 
@@ -3938,6 +4190,7 @@ async function fetchJson(url, options = {}) {
       errorCode: safeText(json.error_code, 120),
       request: safeText(json.request, 500),
     };
+    error.upstream = upstreamDiagnostic(url, response);
     throw error;
   }
   return json;
@@ -3960,6 +4213,7 @@ async function fetchText(url, options = {}) {
     if (signal?.aborted) throw taskCancelledError();
     const wrapped = new Error(`请求微博页面失败或超时：${safeErrorMessage(error, 800)}`);
     wrapped.status = error.name === 'TimeoutError' || error.name === 'AbortError' ? 504 : 502;
+    wrapped.upstream = upstreamDiagnostic(url, null, { status: 0 });
     throw wrapped;
   }
   const declaredLength = Number(response.headers.get('content-length') || 0);
@@ -3967,12 +4221,14 @@ async function fetchText(url, options = {}) {
     await cancelResponseBody(response);
     const error = new Error('微博页面返回内容过大');
     error.status = 502;
+    error.upstream = upstreamDiagnostic(url, response);
     throw error;
   }
   const text = (await readResponseBuffer(response, maxWeiboResponseBytes, '微博页面返回内容过大')).toString('utf8');
   if (!response.ok) {
     const error = new Error(`微博页面返回 ${response.status}`);
     error.status = response.status || 502;
+    error.upstream = upstreamDiagnostic(url, response);
     throw error;
   }
   return text;
@@ -4020,6 +4276,18 @@ async function fetchWeiboResponse(url, options = {}) {
       attempt,
       baseMs: weiboThrottleBackoffMs,
       maxMs: weiboThrottleMaxWaitMs,
+    });
+    recordRuntimeEvent({
+      category: 'reposts',
+      action: 'throttle-retry',
+      status: 'warning',
+      message: `微博接口返回 ${response.status}，等待后重试`,
+      details: {
+        attempt: attempt + 1,
+        maxAttempts: weiboThrottleRetryMax,
+        delayMs,
+        upstream: upstreamDiagnostic(url, response),
+      },
     });
     await cancelResponseBody(response);
     onThrottle?.({
@@ -4082,6 +4350,26 @@ function providerLabel(provider) {
   if (provider === 'mobile') return 'H5';
   if (provider === 'legacy') return '旧版页面';
   return String(provider || '备用入口');
+}
+
+function repostProviderDiagnostic(statusId, label, result) {
+  const totalNumber = finiteNumber(result?.meta?.totalNumber);
+  const visibleNumber = Math.max(0, Number(result?.candidates?.length) || 0);
+  const missingCount = totalNumber === null ? null : Math.max(0, totalNumber - visibleNumber);
+  return {
+    statusId,
+    provider: label,
+    source: safeText(result?.meta?.provider, 80),
+    pages: Array.isArray(result?.meta?.pages) ? result.meta.pages.length : 0,
+    totalNumber,
+    visibleNumber,
+    missingCount,
+    tolerance: totalNumber === null ? null : repostCompletenessTolerance(totalNumber),
+    candidateLimitReason: safeText(result?.meta?.candidateLimitReason, 120),
+    warnings: Array.isArray(result?.meta?.warnings)
+      ? result.meta.warnings.map((warning) => safeText(warning, 400)).slice(0, 8)
+      : [],
+  };
 }
 
 function cookieRequired(mobileCookie) {
@@ -4223,7 +4511,6 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
   let hitPageCap = false;
   let hitCandidateCap = false;
   let repeatedPages = false;
-  let reachedEnd = false;
   const repeatedPageGuard = createRepeatedPageGuard();
 
   for (let page = 1; page <= OFFICIAL_MAX_PAGES; page += 1) {
@@ -4243,10 +4530,6 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
     const previousCount = candidates.length;
     hitCandidateCap = appendCandidates(candidateCollection, list, 'official');
     repeatedPages = repeatedPageGuard.observe(list.length, candidates.length - previousCount);
-    reachedEnd = list.length > 0 && (
-      list.length < OFFICIAL_PAGE_SIZE
-      || (totalNumber !== null && candidates.length >= totalNumber)
-    );
     if (hitCandidateCap) break;
     if (repeatedPages) break;
     if (totalNumber !== null && candidates.length >= totalNumber) break;
@@ -4293,12 +4576,8 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
       headReconciled: headResult.reconciled,
       headAddedCount: headResult.addedCount,
       ...candidateCollectionMeta(candidateCollection),
-      complete: !hitPageCap
-        && !hitCandidateCap
-        && !repeatedPages
-        && repostCountLooksComplete(unique.length, totalNumber, {
-          allowAnyMissing: reachedEnd,
-        }),
+      complete: !hitCandidateCap
+        && repostCountLooksComplete(unique.length, totalNumber),
       warnings: [
         '已自动分页抓取全部可见转发；官方开放接口的配额和可见范围以账号权限为准。',
         ...(headResult.addedCount ? [`结束前补入 ${headResult.addedCount} 条刚新增的可见转发。`] : []),
@@ -4348,7 +4627,6 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
   let hitCandidateCap = false;
   let repeatedPages = false;
   let stoppedOnEmptyPages = false;
-  let reachedDeclaredEnd = false;
   const repeatedPageGuard = createRepeatedPageGuard();
   const emptyPageGuard = createEmptyPageGuard();
   let statusInfo = null;
@@ -4386,10 +4664,6 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
     const list = desktopTimelineList(json);
     const advertisedMax = finiteNumber(json?.max_page);
     if (advertisedMax) maxPage = Math.max(maxPage || 0, advertisedMax);
-    reachedDeclaredEnd = list.length > 0 && (
-      (maxPage !== null && page >= maxPage)
-      || (maxPage === null && list.length < requestedPageSize)
-    );
     totalNumber = finiteNumber(json?.total_number, totalNumber);
     pages.push({
       source: 'desktop',
@@ -4464,13 +4738,8 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
       headReconciled: headResult.reconciled,
       headAddedCount: headResult.addedCount,
       ...candidateCollectionMeta(candidateCollection),
-      complete: !hitPageCap
-        && !hitCandidateCap
-        && !repeatedPages
-        && !stoppedOnEmptyPages
-        && repostCountLooksComplete(candidates.length, totalNumber, {
-          allowAnyMissing: reachedDeclaredEnd,
-        }),
+      complete: !hitCandidateCap
+        && repostCountLooksComplete(candidates.length, totalNumber),
       warnings: [
         '已按桌面端微博页面脚本的方式请求 ajax/statuses/repostTimeline，并扫描接口声明的页数范围。',
         ...(headResult.addedCount ? [`结束前补入 ${headResult.addedCount} 条刚新增的可见转发。`] : []),
@@ -4566,7 +4835,6 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
   let hitCandidateCap = false;
   let repeatedPages = false;
   let stoppedOnEmptyPages = false;
-  let reachedDeclaredEnd = false;
   const repeatedPageGuard = createRepeatedPageGuard();
   const emptyPageGuard = createEmptyPageGuard();
 
@@ -4583,10 +4851,6 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
     const list = legacyTimelineList(html, page);
     const advertisedMax = legacyMaxPage(html);
     if (advertisedMax) maxPage = Math.max(maxPage || 0, advertisedMax);
-    reachedDeclaredEnd = list.length > 0 && (
-      (maxPage !== null && page >= maxPage)
-      || (maxPage === null && list.length < LEGACY_PAGE_SIZE)
-    );
     pages.push({
       source: 'weibo-cn',
       page,
@@ -4627,13 +4891,8 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
       totalNumber,
       maxPage,
       ...candidateCollectionMeta(candidateCollection),
-      complete: !hitPageCap
-        && !hitCandidateCap
-        && !repeatedPages
-        && !stoppedOnEmptyPages
-        && repostCountLooksComplete(candidates.length, totalNumber, {
-          allowAnyMissing: reachedDeclaredEnd,
-        }),
+      complete: !hitCandidateCap
+        && repostCountLooksComplete(candidates.length, totalNumber),
       warnings: [
         '已补扫旧版 weibo.cn 转发页面；该页面必须使用 bid/mblogid，纯数字 mid 会返回目标不存在。',
         ...(repeatedPages ? ['旧版页面连续返回重复内容，已停止无效分页请求。'] : []),
@@ -4657,7 +4916,6 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
   let maxPage = null;
   let repeatedPages = false;
   let stoppedOnEmptyPages = false;
-  let reachedDeclaredEnd = false;
   const repeatedPageGuard = createRepeatedPageGuard();
   const emptyPageGuard = createEmptyPageGuard();
 
@@ -4674,10 +4932,6 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
     const list = mobileTimelineList(json);
     const advertisedMax = finiteNumber(json?.data?.max || json?.max);
     if (advertisedMax) maxPage = Math.max(maxPage || 0, advertisedMax);
-    reachedDeclaredEnd = list.length > 0 && (
-      (maxPage !== null && page >= maxPage)
-      || (maxPage === null && list.length < MOBILE_PAGE_SIZE)
-    );
     totalNumber = finiteNumber(json?.data?.total_number ?? json?.total_number, totalNumber);
     pages.push({
       source: 'mobile',
@@ -4752,13 +5006,8 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
       headReconciled: headResult.reconciled,
       headAddedCount: headResult.addedCount,
       ...candidateCollectionMeta(candidateCollection),
-      complete: !hitPageCap
-        && !hitCandidateCap
-        && !repeatedPages
-        && !stoppedOnEmptyPages
-        && repostCountLooksComplete(candidates.length, totalNumber, {
-          allowAnyMissing: reachedDeclaredEnd,
-        }),
+      complete: !hitCandidateCap
+        && repostCountLooksComplete(candidates.length, totalNumber),
       cookieMode: Boolean(cookie),
       warnings: [
         '已按 H5 接口返回的页数范围扫描可见转发。',
@@ -4778,6 +5027,8 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
   const warnings = [];
   const results = [];
   const authErrors = [];
+  const aggregate = createCandidateCollection([]);
+  let rawVisibleNumber = 0;
   let statusInfo = null;
 
   try {
@@ -4804,10 +5055,31 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
     try {
       const result = await fetcher();
       results.push(result);
-      const providerComplete = result.meta?.complete === true;
-      const reachedCandidateLimit = Boolean(result.meta?.candidateLimitReason);
-      if (providerComplete || reachedCandidateLimit) break;
+      rawVisibleNumber += result.candidates.length;
+      appendCandidates(aggregate, result.candidates);
+      const totalNumber = results.reduce((max, item) => {
+        const value = finiteNumber(item.meta?.totalNumber);
+        return value === null ? max : Math.max(max || 0, value);
+      }, null);
+      const reachedTolerance = repostCountLooksComplete(aggregate.candidates.length, totalNumber);
+      const reachedCandidateLimit = Boolean(result.meta?.candidateLimitReason) || Boolean(aggregate.limitReason);
+      if (result.meta?.complete === true || reachedTolerance || reachedCandidateLimit) break;
       warnings.push(`${providerLabel(label)}返回的候选不完整，已自动尝试备用入口补齐。`);
+      const diagnostic = repostProviderDiagnostic(statusId, providerLabel(label), result);
+      recordRuntimeEvent({
+        category: 'reposts',
+        action: 'provider-incomplete',
+        status: 'warning',
+        message: `${providerLabel(label)}候选完整度不足${nextLabel ? `，准备切换${nextLabel}` : ''}`,
+        details: diagnostic,
+      });
+      await appendAdminEvent({
+        category: 'reposts',
+        action: 'provider-incomplete',
+        status: 'warning',
+        message: `${providerLabel(label)}候选完整度不足${nextLabel ? `，准备切换${nextLabel}` : ''}`,
+        details: diagnostic,
+      }).catch(() => {});
       if (nextLabel) {
         await waitBeforeProviderSwitch(providerLabel(label), nextLabel, reportProgress, signal);
       }
@@ -4816,6 +5088,29 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
       if (isWeiboThrottleStatus(error?.status)) throw error;
       if (isCookieAuthError(error)) authErrors.push(error);
       warnings.push(`${providerLabel(label)}抓取失败：${error.message}`);
+      const diagnostic = errorDiagnostic(error);
+      recordRuntimeEvent({
+        category: 'reposts',
+        action: 'provider-error',
+        status: 'error',
+        message: `${providerLabel(label)}抓取失败${nextLabel ? `，准备切换${nextLabel}` : ''}`,
+        details: {
+          statusId,
+          provider: providerLabel(label),
+          ...diagnostic,
+        },
+      });
+      await appendAdminEvent({
+        category: 'reposts',
+        action: 'provider-error',
+        status: 'error',
+        message: `${providerLabel(label)}抓取失败${nextLabel ? `，准备切换${nextLabel}` : ''}`,
+        details: {
+          statusId,
+          provider: providerLabel(label),
+          ...diagnostic,
+        },
+      }).catch(() => {});
       if (nextLabel) {
         await waitBeforeProviderSwitch(providerLabel(label), nextLabel, reportProgress, signal);
       }
@@ -4829,29 +5124,13 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
     throw error;
   }
 
-  const aggregate = createCandidateCollection([]);
-  let rawVisibleNumber = 0;
-  for (const result of results) {
-    rawVisibleNumber += result.candidates.length;
-    if (appendCandidates(aggregate, result.candidates)) break;
-  }
   const candidates = aggregate.candidates;
   const pages = results.flatMap((result) => result.meta?.pages || []);
   const totalNumber = results.reduce((max, result) => {
     const value = finiteNumber(result.meta?.totalNumber);
     return value === null ? max : Math.max(max || 0, value);
   }, null);
-  const completeByProvider = results.some((result) => result.meta?.complete === true);
-  const completeProviderCoversTotal = completeByProvider
-    && (totalNumber === null || results.some((result) => {
-      if (result.meta?.complete !== true) return false;
-      const providerTotal = finiteNumber(result.meta?.totalNumber);
-      return providerTotal !== null && providerTotal >= totalNumber;
-    }));
   const sourceWarnings = results.flatMap((result) => result.meta?.warnings || []);
-  const visibilityWarning = totalNumber !== null && candidates.length < totalNumber
-    ? `微博接口显示总转发约 ${totalNumber} 条，本次只拿到 ${candidates.length} 条可见可抽记录；差额通常来自隐藏、删除、不可见用户或接口风控。`
-    : '';
 
   return {
     candidates,
@@ -4870,15 +5149,12 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
       ), 0),
       ...candidateCollectionMeta(aggregate),
       complete: !aggregate.limitReason
-        && completeByProvider
-        && repostCountLooksComplete(candidates.length, totalNumber, {
-          allowAnyMissing: completeProviderCoversTotal,
-        }),
+        && !results.some((result) => result.meta?.candidateLimitReason)
+        && repostCountLooksComplete(candidates.length, totalNumber),
       cookieMode: true,
       warnings: [
         '已优先使用桌面端可见转发入口，并在需要时尝试备用入口。',
         ...warnings,
-        visibilityWarning,
         ...sourceWarnings,
         ...candidateLimitWarnings(aggregate),
       ].filter(Boolean),
@@ -5304,6 +5580,7 @@ function runRepostsJob(job) {
       job.finishedAt = new Date().toISOString();
       job.updatedAt = job.finishedAt;
       if (!cancelled) {
+        const diagnostic = errorDiagnostic(error);
         recordRuntimeEvent({
           category: 'reposts',
           action: 'load',
@@ -5313,8 +5590,21 @@ function runRepostsJob(job) {
             statusId,
             phase: failedPhase,
             durationMs: Math.max(0, Date.parse(job.finishedAt) - Date.parse(job.startedAt || job.createdAt)),
+            ...diagnostic,
           },
         });
+        void appendAdminEvent({
+          category: 'reposts',
+          action: 'load',
+          status: 'error',
+          message: `候选载入失败：${job.error}`,
+          details: {
+            statusId,
+            phase: failedPhase,
+            durationMs: Math.max(0, Date.parse(job.finishedAt) - Date.parse(job.startedAt || job.createdAt)),
+            ...diagnostic,
+          },
+        }).catch(() => {});
       }
     })
     .finally(() => {
@@ -5785,6 +6075,23 @@ async function saveDrawRecord(body, res) {
     candidateCount: payload.totalCount,
     prizeCount: normalizedResults.length,
   }).catch(() => {});
+  try {
+    await incrementDrawStatistics({
+      winnerSlots: winners.length,
+      auditHash,
+    });
+  } catch (error) {
+    recordRuntimeEvent({
+      category: 'records',
+      action: 'statistics-write',
+      status: 'error',
+      message: '开奖记录已保存，但累计统计写入失败',
+      details: {
+        auditHash,
+        error: safeError(error).message,
+      },
+    });
+  }
 
   return sendJson(res, 200, {
     ok: true,
@@ -6598,7 +6905,7 @@ function recordRuntimeEvent(event) {
     status: safeText(normalized?.status, 32, 'info'),
     message: safeText(normalized?.message, maxErrorMessageChars),
   });
-  if (runtimeEvents.length > 50) runtimeEvents.splice(0, runtimeEvents.length - 50);
+  if (runtimeEvents.length > 100) runtimeEvents.splice(0, runtimeEvents.length - 100);
 }
 
 async function appendAdminEvent(event) {
@@ -6626,7 +6933,7 @@ async function appendAdminEvent(event) {
         status: safeText(normalized?.status, 32, 'info'),
         message: safeText(normalized?.message, maxErrorMessageChars),
       });
-      await writeJsonArray(adminEventsFile, stored.slice(-100));
+      await writeJsonArray(adminEventsFile, stored.slice(-maxAdminEvents));
     });
   adminEventWrite = queuedWrite.finally(() => {
     adminEventPending = Math.max(0, adminEventPending - 1);
@@ -6987,6 +7294,7 @@ async function adminSystemSummary() {
       fileDiagnostic('扫码浏览器 Profile', weiboLoginProfileDir),
       fileDiagnostic('登录状态文件', weiboLoginStateFile),
       fileDiagnostic('开奖记录目录', drawsDir),
+      fileDiagnostic('累计开奖统计', drawStatisticsFile),
       fileDiagnostic('系统采样', systemMetricsFile),
       fileDiagnostic('后台事件', adminEventsFile),
       fileDiagnostic('用户反馈', feedbackFile),
@@ -7087,8 +7395,12 @@ async function adminSystemSummary() {
       runtimeCacheCleanup: { ...runtimeCacheCleanupState },
       drawRetention: { ...drawRetentionState },
       requests: { ...requestStats },
+      http: httpDiagnostics(),
     },
     service: {
+      version: releaseInfo.version,
+      releaseDate: releaseInfo.date,
+      releaseTitle: releaseInfo.title,
       recycleIntervalMs: serviceRecycleIntervalMs,
       recycleIntervalText: formatDurationMs(serviceRecycleIntervalMs),
       nextRecycleAt,
@@ -7143,6 +7455,7 @@ async function adminSystemSummary() {
       maxCookieStoreFileBytes,
       maxWeiboLoginStateFileBytes,
       maxDrawSequenceFileBytes,
+      maxDrawStatisticsFileBytes,
       maxSystemMetricsFileBytes,
       maxAdminEventsFileBytes,
       maxFeedbackFileBytes,
@@ -7179,11 +7492,13 @@ async function adminSystemSummary() {
       runtimeCacheMaxBytes,
       runtimeCacheMaxAgeDays,
       maxAdminEventQueue,
+      maxAdminEvents,
+      maxHttpErrorRecords,
     },
     storage,
-    events: [...adminEvents.slice(-50), ...runtimeEvents]
+    events: [...adminEvents.slice(-maxAdminEvents), ...runtimeEvents]
       .sort((a, b) => Date.parse(b.at || 0) - Date.parse(a.at || 0))
-      .slice(0, 50),
+      .slice(0, 120),
   };
 }
 
@@ -7303,6 +7618,23 @@ async function handleAdminLogout(req, res) {
 async function handleAdminSummary(req, res) {
   // 先建开奖索引，确保隔离损坏记录产生的事件进入本次系统事件快照。
   const draws = await listCompletedDrawRecords();
+  let drawStatistics;
+  try {
+    drawStatistics = await getDrawStatistics(draws);
+  } catch (error) {
+    const retained = retainedDrawStatistics(draws);
+    drawStatistics = {
+      completedDraws: retained.completedDraws,
+      winnerSlots: retained.winnerSlots,
+    };
+    recordRuntimeEvent({
+      category: 'records',
+      action: 'statistics-summary',
+      status: 'error',
+      message: '累计开奖统计读取失败，本次暂时使用保留记录汇总',
+      details: errorDiagnostic(error),
+    });
+  }
   const [attempts, cookieStore, weiboLogin, system] = await Promise.all([
     listDrawAttempts(),
     readCookieStore(),
@@ -7317,9 +7649,16 @@ async function handleAdminSummary(req, res) {
     ok: true,
     adminEnabled: configuredAdminAccount() || Boolean(adminKey),
     adminAccount: req.adminAuth?.username || '',
+    version: releaseInfo.version,
+    releaseDate: releaseInfo.date,
+    releaseTitle: releaseInfo.title,
     savedDrawCount: draws.length,
+    cumulativeDrawCount: drawStatistics.completedDraws,
     attemptCount: attempts.length,
     winnerCount,
+    cumulativeWinnerCount: drawStatistics.winnerSlots,
+    cumulativeStatsSource: drawStatistics.source || '',
+    cumulativeStatsUpdatedAt: drawStatistics.updatedAt || '',
     statusCount: statusIds.size,
     queue: {
       active: activeJobCount(),
@@ -7836,6 +8175,7 @@ const EXACT_API_ROUTES = new Map([
   ['GET /api/health', (_req, res) => sendJson(res, 200, {
     ok: true,
     service: 'sameko-weibo-lottery',
+    version: releaseInfo.version,
     authRequired: Boolean(apiKey),
   })],
   ['POST /api/feedback', handleFeedback],
@@ -7903,16 +8243,15 @@ async function handleApplicationRoute(req, res, url) {
 
 const server = http.createServer(async (req, res) => {
   const requestStarted = performance.now();
+  const requestId = crypto.randomUUID();
+  let requestUrl = null;
   res.once('finish', () => {
-    const elapsed = Math.round((performance.now() - requestStarted) * 10) / 10;
-    requestStats.total += 1;
-    requestStats.lastRequestAt = new Date().toISOString();
-    requestStats.slowestMs = Math.max(requestStats.slowestMs, elapsed);
-    if (res.statusCode >= 500) requestStats.serverErrors += 1;
-    else if (res.statusCode >= 400) requestStats.clientErrors += 1;
+    recordHttpResult(req, res, requestUrl, requestStarted, requestId);
   });
   try {
     const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    requestUrl = url;
+    res.setHeader('x-request-id', requestId);
     if (url.pathname === COOKIE_CURRENT_PATH) {
       res.setHeader('x-robots-tag', 'noindex, nofollow');
     }
@@ -7952,20 +8291,43 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     const closeConnection = error?.closeConnection === true;
     const normalized = safeError(error);
+    const diagnostic = errorDiagnostic(error);
+    const elapsedMs = Math.round((performance.now() - requestStarted) * 10) / 10;
+    const pathname = requestUrl?.pathname || (() => {
+      try {
+        return new URL(req.url, 'http://localhost').pathname;
+      } catch {
+        return '';
+      }
+    })();
+    res.httpErrorContext = {
+      code: diagnostic.code,
+      name: diagnostic.name,
+      ...(diagnostic.upstream ? { upstream: diagnostic.upstream } : {}),
+    };
     if (normalized.status >= 500) {
-      const pathname = (() => {
-        try {
-          return new URL(req.url, 'http://localhost').pathname;
-        } catch {
-          return '';
-        }
-      })();
+      const details = {
+        requestId,
+        method: safeText(req.method, 12, 'GET').toUpperCase(),
+        path: normalizedRequestPath(pathname),
+        status: normalized.status,
+        elapsedMs,
+        ...diagnostic,
+      };
       recordRuntimeEvent({
         category: 'server',
         action: req.method || '',
         status: 'error',
         message: `${pathname || '未知接口'}：${normalized.message}`,
+        details,
       });
+      void appendAdminEvent({
+        category: 'server',
+        action: req.method || '',
+        status: 'error',
+        message: `${pathname || '未知接口'}：${normalized.message}`,
+        details,
+      }).catch(() => {});
       console.error(`${req.method || 'REQUEST'} ${pathname || '/'} failed: ${normalized.message}`);
     }
     if (res.destroyed || res.writableEnded) return;
@@ -8138,6 +8500,11 @@ async function startServer() {
 
   await collectSystemSample('startup').catch((error) => {
     console.warn(`Initial system sample failed: ${safeError(error).message}`);
+  });
+  if (shutdownStarted) return;
+
+  await getDrawStatistics().catch((error) => {
+    console.warn(`Draw statistics initialization failed: ${safeError(error).message}`);
   });
   if (shutdownStarted) return;
 

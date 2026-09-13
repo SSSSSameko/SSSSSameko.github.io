@@ -189,16 +189,26 @@ function trustedTailDesktop(url) {
   if (url.pathname === '/ajax/statuses/repostTimeline') {
     const page = Number(url.searchParams.get('page') || 1);
     return page === 1
-      ? desktopTimeline([
-        candidate('trusted-tail-1', 'trusted-tail-user-1', '尾页候选一'),
-        candidate('trusted-tail-2', 'trusted-tail-user-2', '尾页候选二'),
-      ], 100, 2)
-      : desktopTimeline([
-        candidate('trusted-tail-3', 'trusted-tail-user-3', '尾页候选三'),
-      ], 100, 2);
+      ? desktopTimeline(largeCandidates('tolerance-within', 95), 100, 1)
+      : desktopTimeline([], 100, 1);
   }
   if (url.pathname === '/api/statuses/repostTimeline') {
     return mobileTimeline([candidate('should-not-load-tail', 'tail-backup-user', '不应加载')], 100);
+  }
+  return null;
+}
+
+function toleranceExceededDesktop(url) {
+  const statusId = statusIdFromUrl(url);
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 100);
+  if (url.pathname === '/ajax/statuses/repostTimeline') {
+    const page = Number(url.searchParams.get('page') || 1);
+    return page === 1
+      ? desktopTimeline(largeCandidates('tolerance-exceeded', 94), 100, 1)
+      : desktopTimeline([], 100, 1);
+  }
+  if (url.pathname === '/api/statuses/repostTimeline') {
+    return mobileTimeline([candidate('tolerance-fallback', 'tolerance-fallback-user', '容差外备用候选')], 100);
   }
   return null;
 }
@@ -369,6 +379,7 @@ function allScenarios(url, headers) {
     910005: legacyMissingIdentity,
     910006: trustedTailDesktop,
     910007: declaredEndWithHeadFailure,
+    910009: toleranceExceededDesktop,
     920001: cookieRotation,
     930001: emptyPages,
     940001: candidateCap,

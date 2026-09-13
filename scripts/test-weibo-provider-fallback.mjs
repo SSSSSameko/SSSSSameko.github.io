@@ -190,17 +190,17 @@ test('Weibo Cookie provider fallback service regressions', async (t) => {
       assert.ok(calls.some((item) => item.cookie === 'good' && item.pathname === '/ajax/statuses/repostTimeline'));
     });
 
-    await t.test('merges incomplete desktop results with mobile by repostId', async () => {
+    await t.test('accepts a one-record shortfall without loading the mobile provider', async () => {
       const result = await runJob('910001');
       assert.deepEqual(
         result.candidates.map((item) => item.repostId).sort(),
-        ['partial-desktop', 'partial-mobile', 'partial-shared'],
+        ['partial-desktop', 'partial-shared'],
       );
-      assert.deepEqual(result.meta.providers, ['desktop-cookie', 'mobile']);
-      assert.equal(result.meta.visibleNumber, 3);
-      assert.equal(result.meta.rawVisibleNumber, 4);
+      assert.deepEqual(result.meta.providers, ['desktop-cookie']);
+      assert.equal(result.meta.visibleNumber, 2);
+      assert.equal(result.meta.rawVisibleNumber, 2);
       const calls = await requests();
-      assert.ok(calls.some((item) => item.statusId === '910001' && item.pathname === '/api/statuses/repostTimeline'));
+      assert.ok(!calls.some((item) => item.statusId === '910001' && item.pathname === '/api/statuses/repostTimeline'));
     });
 
     await t.test('accepts a declared desktop end page when the advertised total is off by one', async () => {
@@ -229,14 +229,25 @@ test('Weibo Cookie provider fallback service regressions', async (t) => {
       assert.equal(result.meta.totalNumber, 100);
     });
 
-    await t.test('trusts a completed primary crawl when the advertised total is larger', async () => {
+    await t.test('accepts a five-percent difference without loading a backup provider', async () => {
       const result = await runJob('910006');
       assert.deepEqual(result.meta.providers, ['desktop-cookie']);
       assert.equal(result.meta.complete, true);
-      assert.equal(result.meta.visibleNumber, 3);
+      assert.equal(result.meta.visibleNumber, 95);
       assert.equal(result.meta.totalNumber, 100);
       const calls = await requests();
       assert.ok(!calls.some((item) => item.statusId === '910006' && item.pathname === '/api/statuses/repostTimeline'));
+    });
+
+    await t.test('loads a backup provider when the difference exceeds five percent', async () => {
+      const result = await runJob('910009');
+      assert.deepEqual(result.meta.providers, ['desktop-cookie', 'mobile']);
+      assert.equal(result.meta.complete, true);
+      assert.equal(result.meta.visibleNumber, 95);
+      assert.equal(result.meta.totalNumber, 100);
+      const calls = await requests();
+      assert.ok(calls.some((item) => item.statusId === '910009' && item.pathname === '/api/statuses/repostTimeline'));
+      assert.ok(!calls.some((item) => item.statusId === '910009' && item.host === 'weibo.cn'));
     });
 
     await t.test('finishes a declared desktop crawl when the optional head refresh fails', async () => {
@@ -303,7 +314,7 @@ test('Weibo Cookie provider fallback service regressions', async (t) => {
 
     await t.test('continues to H5 when desktop status metadata and candidates are unavailable', async () => {
       const result = await runJob('970001');
-      assert.equal(result.candidates.length, 1);
+      assert.equal(result.candidates.length, 1, JSON.stringify(result.meta));
       assert.equal(result.candidates[0].repostId, 'unknown-desktop-mobile');
       assert.ok(result.meta.providers.includes('mobile'));
       const calls = await requests();

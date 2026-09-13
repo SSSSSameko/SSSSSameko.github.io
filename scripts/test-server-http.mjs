@@ -45,6 +45,7 @@ const authDir = path.join(testOutputDir, 'auth');
 const cookieStoreFile = path.join(authDir, 'weibo-cookie.json');
 const loginStateFile = path.join(authDir, 'weibo-login-state.json');
 const drawSequenceFile = path.join(testOutputDir, 'draw-sequences.json');
+const drawStatisticsFile = path.join(testOutputDir, 'draw-statistics.json');
 const sequenceLinkTargetFile = path.join(testOutputDir, 'sequence-link-target.json');
 const systemMetricsFile = path.join(testOutputDir, 'system-metrics.json');
 const jsonRecoveryGuardFile = path.join(testOutputDir, 'json-recovery-guard.mjs');
@@ -71,6 +72,10 @@ const avatarHttpCancelFile = path.join(testOutputDir, 'avatar-http-cancelled.mar
 const avatarMimeCancelFile = path.join(testOutputDir, 'avatar-mime-cancelled.marker');
 const avatarHttpErrorUrl = 'https://sinaimg.cn/http-error.jpg';
 const avatarMimeErrorUrl = 'https://sinaimg.cn/mime-error.jpg';
+const packageVersion = JSON.parse(await readFile(
+  fileURLToPath(new URL('../package.json', import.meta.url)),
+  'utf8',
+)).version;
 await rm(testOutputDir, { force: true, recursive: true });
 await Promise.all([
   mkdir(drawsDir, { recursive: true }),
@@ -1054,9 +1059,15 @@ try {
   assert.equal(summaryBody.system.config.maxDrawSequences, 100);
   assert.equal(summaryBody.system.config.maxDrawAttemptBytes, 1024 * 1024);
   assert.equal(summaryBody.system.config.maxAccessTokenBytes, 1024);
+  assert.equal(summaryBody.version, packageVersion);
+  assert.equal(summaryBody.system.service.version, packageVersion);
   assert.equal(summaryBody.savedDrawCount, 2);
+  assert.equal(summaryBody.cumulativeDrawCount, 2);
   assert.equal(summaryBody.attemptCount, 1);
   assert.equal(summaryBody.winnerCount, 2);
+  assert.equal(summaryBody.cumulativeWinnerCount, 2);
+  assert.ok(summaryBody.system.runtime.http);
+  assert.ok((await stat(drawStatisticsFile)).size > 0);
   assert.ok(summaryBody.system.events.some((item) => /损坏的开奖记录已隔离/.test(item.message || '')));
   assert.ok((await readdir(drawsDir)).some((name) => name.startsWith(`${path.basename(damagedDrawFile)}.corrupt-`)));
   const drawsDiagnostic = summaryBody.system.storage.find((item) => item.label === '开奖记录目录');
@@ -1330,6 +1341,21 @@ try {
       .filter((name) => name.endsWith(`-${committedAfterDirectorySyncFailureBody.auditHash}.json`))
       .length,
     1,
+  );
+  const summaryAfterFirstSave = await fetch(`${baseUrl}/api/admin/summary`, {
+    headers: { cookie: sessionCookie },
+  });
+  assert.equal(summaryAfterFirstSave.status, 200);
+  const summaryAfterFirstSaveBody = await summaryAfterFirstSave.json();
+  assert.equal(summaryAfterFirstSaveBody.cumulativeDrawCount, summaryBody.cumulativeDrawCount + 1);
+  assert.equal(summaryAfterFirstSaveBody.cumulativeWinnerCount, summaryBody.cumulativeWinnerCount + 1);
+  const summaryAfterDuplicateSave = await fetch(`${baseUrl}/api/admin/summary`, {
+    headers: { cookie: sessionCookie },
+  });
+  assert.equal(summaryAfterDuplicateSave.status, 200);
+  assert.equal(
+    (await summaryAfterDuplicateSave.json()).cumulativeDrawCount,
+    summaryAfterFirstSaveBody.cumulativeDrawCount,
   );
   await rm(directorySyncFailureArmFile, { force: true });
 

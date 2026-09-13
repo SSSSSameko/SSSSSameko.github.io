@@ -72,6 +72,7 @@ import { readJsonResponse } from './api-response.js';
     topbarActions: $('topbarActions'),
     topStatusLight: $('topStatusLight'),
     accountLabel: $('accountLabel'),
+    appVersion: $('appVersion'),
     lastUpdated: $('lastUpdated'),
     heroSubtitle: $('heroSubtitle'),
     healthPill: $('healthPill'),
@@ -80,6 +81,7 @@ import { readJsonResponse } from './api-response.js';
     memoryInsight: $('memoryInsight'),
     requestPanel: $('requestPanel'),
     eventPanel: $('eventPanel'),
+    requestErrorPanel: $('requestErrorPanel'),
     systemEventPanel: $('systemEventPanel'),
     searchInput: $('searchInput'),
     exportAllBtn: $('exportAllBtn'),
@@ -147,6 +149,18 @@ import { readJsonResponse } from './api-response.js';
       hour: '2-digit',
       minute: '2-digit',
     });
+  }
+
+  function cumulativeStatsNote(summary) {
+    const source = summary.cumulativeStatsSource === 'sequence-ledger-and-retained-files'
+      ? '历史序号与保留记录'
+      : summary.cumulativeStatsSource === 'retained-files'
+        ? '现有历史记录'
+        : '';
+    const updatedAt = summary.cumulativeStatsUpdatedAt
+      ? `更新于 ${formatDate(summary.cumulativeStatsUpdatedAt)}`
+      : '';
+    return [source, updatedAt].filter(Boolean).join(' · ');
   }
 
   function formatFileSize(value) {
@@ -500,7 +514,10 @@ import { readJsonResponse } from './api-response.js';
       metricCard(formatPercent(queuePercent), '并发占用', `${formatNumber(queue.active)} 运行 · ${formatNumber(queue.queued)} 排队`, queuePercent),
     ].join('');
 
-    els.heroSubtitle.textContent = `已运行 ${plain(system.uptimeText)}，记录 ${formatNumber(summary.savedDrawCount)} 次开奖、${formatNumber(summary.winnerCount)} 人次中奖。`;
+    const cumulativeDraws = summary.cumulativeDrawCount ?? summary.savedDrawCount;
+    const cumulativeWinners = summary.cumulativeWinnerCount ?? summary.winnerCount;
+    els.heroSubtitle.textContent = `累计 ${formatNumber(cumulativeDraws)} 次开奖、${formatNumber(cumulativeWinners)} 人次中奖；当前保留 ${formatNumber(summary.savedDrawCount)} 条记录。`;
+    els.appVersion.textContent = summary.version ? `Sameko Control · v${summary.version}` : 'Sameko Control';
     els.healthPill.innerHTML = `<span></span>${summary.adminEnabled ? '后台已连接' : '后台未启用'}`;
     els.lastUpdated.textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`;
     els.topStatusLight.classList.toggle('error', !summary.adminEnabled);
@@ -511,6 +528,7 @@ import { readJsonResponse } from './api-response.js';
     renderKeepaliveDiagnostics(summary.weiboLogin || {}, summary.cookie || {});
     renderMemoryChart(memory, service);
     renderRequestSummary(system, queue);
+    renderHttpDiagnostics(system.runtime || {});
     renderEvents(system.events || []);
     renderSystem(system, queue);
   }
@@ -609,12 +627,19 @@ import { readJsonResponse } from './api-response.js';
   }
 
   function eventHtml(item) {
+    const details = item?.details && typeof item.details === 'object'
+      ? item.details
+      : null;
+    const detailHtml = details && Object.keys(details).length
+      ? `<details class="event-details"><summary>技术详情</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>`
+      : '';
     return `
       <div class="event-row ${escapeHtml(item.status || '')}">
         <span class="status-dot"></span>
         <div>
           <strong>${escapeHtml(plain(item.message, plain(item.action, '系统事件')))}</strong>
-          <small>${escapeHtml(formatDate(item.at))} · ${escapeHtml(plain(item.category, 'system'))}${item.source ? ` · 来源 ${escapeHtml(item.source)}` : ''}</small>
+          <small>${escapeHtml(formatDate(item.at))} · ${escapeHtml(plain(item.category, 'system'))}${item.source ? ` · 来源 ${escapeHtml(item.source)}` : ''}${item.requestId ? ` · 请求 ${escapeHtml(String(item.requestId).slice(0, 8))}` : ''}</small>
+          ${detailHtml}
         </div>
       </div>
     `;
@@ -625,6 +650,61 @@ import { readJsonResponse } from './api-response.js';
     const empty = '<div class="empty-list compact">暂无运行事件。</div>';
     els.eventPanel.innerHTML = items.length ? items.slice(0, 5).map(eventHtml).join('') : empty;
     els.systemEventPanel.innerHTML = items.length ? items.map(eventHtml).join('') : empty;
+  }
+
+  function renderHttpDiagnostics(runtime) {
+    const http = runtime.http || {};
+    const statusCounts = Array.isArray(http.statusCounts)
+      ? http.statusCounts.filter((item) => Number(item.status) >= 400)
+      : [];
+    const routeErrors = Array.isArray(http.routeErrors) ? http.routeErrors : [];
+    const recentErrors = Array.isArray(http.recentErrors) ? http.recentErrors : [];
+    const statusText = statusCounts.length
+      ? statusCounts.map((item) => `${item.status} × ${formatNumber(item.count)}`).join(' · ')
+      : '暂无';
+    const routeHtml = routeErrors.length
+      ? routeErrors.slice(0, 8).map((item) => `
+          <div class="http-error-row">
+            <span class="http-status">${escapeHtml(formatNumber(item.status))}</span>
+            <div>
+              <strong>${escapeHtml(plain(item.method, 'GET'))} ${escapeHtml(plain(item.path, '/'))}</strong>
+              <small>${escapeHtml(formatNumber(item.count))} 次</small>
+            </div>
+          </div>
+        `).join('')
+      : '<div class="empty-list compact">暂无 HTTP 错误。</div>';
+    const recentHtml = recentErrors.length
+      ? recentErrors.slice(0, 12).map((item) => {
+          const upstream = item.upstream || {};
+          const upstreamText = upstream.host
+            ? `${upstream.host}${upstream.path || ''}${upstream.status ? ` · ${upstream.status}` : ''}`
+            : '';
+          return `
+            <div class="http-error-row">
+              <span class="http-status ${Number(item.status) >= 500 ? 'error' : ''}">${escapeHtml(formatNumber(item.status))}</span>
+              <div>
+                <strong>${escapeHtml(plain(item.method, 'GET'))} ${escapeHtml(plain(item.path, '/'))}</strong>
+                <small>${escapeHtml(formatDate(item.at))} · ${escapeHtml(formatDurationMs(item.elapsedMs))}${item.requestId ? ` · ${escapeHtml(String(item.requestId).slice(0, 8))}` : ''}</small>
+                ${upstreamText ? `<p>${escapeHtml(upstreamText)}</p>` : ''}
+              </div>
+            </div>
+          `;
+        }).join('')
+      : '<div class="empty-list compact">暂无最近异常请求。</div>';
+    els.requestErrorPanel.innerHTML = `
+      <div class="diagnostic-list">
+        ${diagnosticRow('HTTP 错误统计', statusText, `累计请求 ${formatNumber(runtime.requests?.total)} 次`)}
+        ${diagnosticRow('最近错误', runtime.requests?.lastErrorAt ? formatDate(runtime.requests.lastErrorAt) : '暂无', '仅记录非敏感请求信息')}
+      </div>
+      <div class="http-error-group">
+        <strong>高频错误路径</strong>
+        ${routeHtml}
+      </div>
+      <div class="http-error-group">
+        <strong>最近异常明细</strong>
+        ${recentHtml}
+      </div>
+    `;
   }
 
   function renderAttempts(attempts) {
@@ -752,6 +832,7 @@ import { readJsonResponse } from './api-response.js';
   }
 
   function renderSystem(system, queue) {
+    const summary = state.summary || {};
     const config = system.config || {};
     const memory = system.memory || {};
     const browser = system.browser || {};
@@ -829,6 +910,16 @@ import { readJsonResponse } from './api-response.js';
 
     els.systemPanel.innerHTML = `
       <div class="diagnostic-list">
+        ${diagnosticRow('应用版本', summary.version ? `v${summary.version}` : plain(service.version, '-'), summary.releaseTitle ? `${summary.releaseTitle} · ${summary.releaseDate}` : '')}
+        ${diagnosticRow(
+          '累计开奖',
+          `${formatNumber(summary.cumulativeDrawCount ?? summary.savedDrawCount)} 次`,
+          [
+            `当前保留 ${formatNumber(summary.savedDrawCount)} 条`,
+            `累计中奖 ${formatNumber(summary.cumulativeWinnerCount ?? summary.winnerCount)} 人次`,
+            cumulativeStatsNote(summary),
+          ].filter(Boolean).join(' · '),
+        )}
         ${diagnosticRow('服务时间', formatDate(system.now), system.uptimeText ? `已运行 ${system.uptimeText}` : '')}
         ${diagnosticRow('启动时间', formatDate(system.startedAt))}
         ${diagnosticRow('Node 版本', plain(system.nodeVersion), plain(system.platform))}
