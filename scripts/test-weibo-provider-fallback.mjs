@@ -239,6 +239,16 @@ test('Weibo Cookie provider fallback service regressions', async (t) => {
       assert.ok(!calls.some((item) => item.statusId === '910006' && item.pathname === '/api/statuses/repostTimeline'));
     });
 
+    await t.test('finishes a declared desktop crawl when the optional head refresh fails', async () => {
+      const result = await runJob('910007');
+      assert.deepEqual(result.meta.providers, ['desktop-cookie']);
+      assert.equal(result.meta.complete, true);
+      assert.equal(result.meta.headReconciled, false);
+      assert.ok(result.meta.warnings.some((warning) => warning.includes('最新转发复核失败')));
+      const calls = await requests();
+      assert.ok(!calls.some((item) => item.statusId === '910007' && item.pathname === '/api/statuses/repostTimeline'));
+    });
+
     await t.test('does not report legacy success when bid or uid is unavailable', async () => {
       const result = await runJob('910005');
       assert.ok(result.meta.providers.includes('weibo-cn'));

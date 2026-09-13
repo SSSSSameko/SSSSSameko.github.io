@@ -203,6 +203,32 @@ function trustedTailDesktop(url) {
   return null;
 }
 
+function declaredEndWithHeadFailure(url) {
+  const statusId = statusIdFromUrl(url);
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 4);
+  if (url.pathname === '/ajax/statuses/repostTimeline') {
+    const page = Number(url.searchParams.get('page') || 1);
+    const count = Number(url.searchParams.get('count') || 0);
+    if (page === 1 && count === 20) return json({ ok: 0, msg: '最新转发复核暂不可用' }, 503);
+    if (page === 1) {
+      return desktopTimeline([
+        candidate('declared-end-head-1', 'declared-end-head-user-1', '末页候选一'),
+        candidate('declared-end-head-2', 'declared-end-head-user-2', '末页候选二'),
+      ], 4, 2);
+    }
+    if (page === 2) {
+      clockOffsetMs = 6_000;
+      return desktopTimeline([
+        candidate('declared-end-head-3', 'declared-end-head-user-3', '末页候选三'),
+      ], 4, 2);
+    }
+  }
+  if (url.pathname === '/api/statuses/repostTimeline') {
+    return mobileTimeline([candidate('should-not-load-head-fallback', 'head-fallback-user', '不应加载')], 4);
+  }
+  return null;
+}
+
 function legacyMissingIdentity(url) {
   const statusId = statusIdFromUrl(url);
   if (url.pathname === '/ajax/statuses/show') {
@@ -333,6 +359,8 @@ function unknownDesktop(url) {
 }
 
 function allScenarios(url, headers) {
+  const statusId = statusIdFromUrl(url);
+  if (statusId !== '910007' && statusId !== '960001') clockOffsetMs = 0;
   const handlersByStatus = {
     910001: partialMobile,
     910002: nearTotalDesktop,
@@ -340,6 +368,7 @@ function allScenarios(url, headers) {
     910004: aggregateTotalMismatch,
     910005: legacyMissingIdentity,
     910006: trustedTailDesktop,
+    910007: declaredEndWithHeadFailure,
     920001: cookieRotation,
     930001: emptyPages,
     940001: candidateCap,
@@ -350,7 +379,7 @@ function allScenarios(url, headers) {
     970001: unknownDesktop,
     970002: unknownDesktop,
   };
-  return handlersByStatus[statusIdFromUrl(url)]?.(url, headers) || null;
+  return handlersByStatus[statusId]?.(url, headers) || null;
 }
 
 const handlers = {

@@ -33,7 +33,7 @@ http://127.0.0.1:4173/
 
 前端可托管到 GitHub Pages，后端部署到服务器。公开前端通过 `static/config.js` 指向后端 API。
 
-公开部署前只需要在 `static/config.js` 填写两项：运营者署名和一条长期有效的联系邮箱。地址、托管服务商、机房区域和保存规则都是选填，留空时按程序的实际运行参数自动生成。当前部署按「GitHub Pages 静态前端 + 中国天津自建后端」填写接收方与地域说明；更换服务器或托管方式时必须同步覆盖。示例：
+公开部署前只需要在 `static/config.js` 填写两项：运营者署名和一条长期有效的联系邮箱。地址、托管服务商、机房区域和保存规则都是选填，留空时按程序的实际运行参数自动生成。当前部署按「GitHub Pages 静态前端 + 美国怀俄明州自建后端」填写接收方与地域说明；更换服务器或托管方式时必须同步覆盖。示例：
 
 ```js
 window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
@@ -42,7 +42,7 @@ window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
   // 以下均选填，留空时由程序生成；与实际部署不符时再覆盖
   operatorAddress: '',
   hostingProvider: '',                      // 如“自建机房”“Vultr”
-  serverRegion: '中国天津',
+  serverRegion: '美国怀俄明州',
   dataRecipientDisclosure: '',
   jurisdictionDisclosure: '',
   recordRetentionDisclosure: '',

@@ -4296,7 +4296,6 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
       complete: !hitPageCap
         && !hitCandidateCap
         && !repeatedPages
-        && !headResult.warning
         && repostCountLooksComplete(unique.length, totalNumber, {
           allowAnyMissing: reachedEnd,
         }),
@@ -4469,7 +4468,6 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
         && !hitCandidateCap
         && !repeatedPages
         && !stoppedOnEmptyPages
-        && !headResult.warning
         && repostCountLooksComplete(candidates.length, totalNumber, {
           allowAnyMissing: reachedDeclaredEnd,
         }),
@@ -4758,7 +4756,6 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
         && !hitCandidateCap
         && !repeatedPages
         && !stoppedOnEmptyPages
-        && !headResult.warning
         && repostCountLooksComplete(candidates.length, totalNumber, {
           allowAnyMissing: reachedDeclaredEnd,
         }),

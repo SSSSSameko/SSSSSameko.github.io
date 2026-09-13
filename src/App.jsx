@@ -134,7 +134,7 @@ const throwIfAborted = (signal) => {
 const publicAsset = (name) => `${import.meta.env.BASE_URL}${name}`;
 const APP_VERSION = '3.5.0';
 const REPOST_JOB_TIMEOUT_MS = 90 * 60 * 1000;
-const REPOST_JOB_POLL_MS = 1200;
+const REPOST_JOB_POLL_MS = 2000;
 const REPOST_JOB_RECONNECT_ATTEMPTS = 4;
 const REPOST_JOB_RECONNECT_BASE_MS = 900;
 const API_FETCH_TIMEOUT_MS = 45_000;
