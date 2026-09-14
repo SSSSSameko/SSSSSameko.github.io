@@ -1,6 +1,13 @@
 import { listDisplayState } from './admin-list-state.js';
 import { formatDurationMs } from './admin-status.js';
 import { readJsonResponse } from './api-response.js';
+import {
+  diagnosticCategoryLabel,
+  diagnosticLevelLabel,
+  diagnosticLevelRank,
+  normalizeDiagnosticCategory,
+  normalizeDiagnosticLevel,
+} from './diagnostics.js';
 
 (() => {
   const ATTEMPT_VISIBLE_LIMIT = 5;
@@ -83,6 +90,8 @@ import { readJsonResponse } from './api-response.js';
     eventPanel: $('eventPanel'),
     requestErrorPanel: $('requestErrorPanel'),
     systemEventPanel: $('systemEventPanel'),
+    errorTaxonomyPanel: $('errorTaxonomyPanel'),
+    securityPanel: $('securityPanel'),
     searchInput: $('searchInput'),
     exportAllBtn: $('exportAllBtn'),
     recordCount: $('recordCount'),
@@ -614,10 +623,13 @@ import { readJsonResponse } from './api-response.js';
     const serverErrors = numericValue(requests.serverErrors);
     const probeRequests = numericValue(requests.probeRequests) || 0;
     const probeErrors = numericValue(requests.probeErrors) || 0;
+    const applicationErrors = numericValue(requests.applicationErrors);
     const applicationClientErrors = clientErrors === null ? null : Math.max(0, clientErrors - probeErrors);
-    const requestErrors = applicationClientErrors === null || serverErrors === null
-      ? null
-      : applicationClientErrors + serverErrors;
+    const requestErrors = applicationErrors !== null
+      ? applicationErrors
+      : applicationClientErrors === null || serverErrors === null
+        ? null
+        : applicationClientErrors + serverErrors;
     const requestErrorPercent = requestErrors === null ? null : percentOf(requestErrors, requests.total);
     const queuePercent = percentOf(queue.active, queue.maxActive);
     els.requestPanel.innerHTML = [
@@ -638,12 +650,17 @@ import { readJsonResponse } from './api-response.js';
     const detailHtml = details && Object.keys(details).length
       ? `<details class="event-details"><summary>技术详情</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>`
       : '';
+    const category = normalizeDiagnosticCategory(item?.category);
+    const level = normalizeDiagnosticLevel(item?.level ?? item?.status);
+    const levelChip = diagnosticLevelRank(level) >= 1
+      ? `<span class="level-chip ${escapeHtml(level)}">${escapeHtml(diagnosticLevelLabel(level))}</span>`
+      : '';
     return `
-      <div class="event-row ${escapeHtml(item.status || '')}">
+      <div class="event-row ${escapeHtml(level)}">
         <span class="status-dot"></span>
         <div>
           <strong>${escapeHtml(plain(item.message, plain(item.action, '系统事件')))}</strong>
-          <small>${escapeHtml(formatDate(item.at))} · ${escapeHtml(plain(item.category, 'system'))}${item.source ? ` · 来源 ${escapeHtml(item.source)}` : ''}${item.requestId ? ` · 请求 ${escapeHtml(String(item.requestId).slice(0, 8))}` : ''}</small>
+          <small>${levelChip}${escapeHtml(formatDate(item.at))} · ${escapeHtml(diagnosticCategoryLabel(category))}${item.source ? ` · 来源 ${escapeHtml(item.source)}` : ''}${item.requestId ? ` · 请求 ${escapeHtml(String(item.requestId).slice(0, 8))}` : ''}</small>
           ${detailHtml}
         </div>
       </div>
@@ -724,6 +741,124 @@ import { readJsonResponse } from './api-response.js';
       <div class="http-error-group">
         <strong>扫描与探测（不计入业务异常）</strong>
         ${probeHtml}
+      </div>
+    `;
+  }
+
+  function rowHtml(status, title, note, level = '') {
+    return `
+      <div class="http-error-row">
+        <span class="http-status ${escapeHtml(level)}">${escapeHtml(status)}</span>
+        <div>
+          <strong>${escapeHtml(title)}</strong>
+          <small>${escapeHtml(note)}</small>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderErrorTaxonomy(system) {
+    const runtime = system.runtime || {};
+    const diagnostics = runtime.diagnostics || {};
+    const requests = runtime.requests || {};
+    const byLevel = Array.isArray(diagnostics.byLevel) ? diagnostics.byLevel : [];
+    const byCategory = Array.isArray(diagnostics.byCategory) ? diagnostics.byCategory : [];
+    const buckets = Array.isArray(diagnostics.buckets) ? diagnostics.buckets : [];
+    const levelText = byLevel.length
+      ? byLevel.map((item) => `${plain(item.label, plain(item.level, '信息'))} ${formatNumber(item.count)}`).join(' · ')
+      : '暂无异常事件';
+    const categoryHtml = byCategory.length
+      ? byCategory.slice(0, 10).map((item) => rowHtml(
+          formatNumber(item.count),
+          plain(item.label, item.category),
+          [
+            item.lastAt ? `最近 ${formatDate(item.lastAt)}` : '',
+            item.message || '',
+          ].filter(Boolean).join(' · '),
+          diagnosticLevelRank(item.level) >= 2 ? 'error' : '',
+        )).join('')
+      : '<div class="empty-list compact">暂无可分类的异常。</div>';
+    const bucketHtml = buckets.length
+      ? buckets.slice(0, 12).map((item) => rowHtml(
+          `${formatNumber(item.count)}×`,
+          `${plain(diagnosticCategoryLabel(item.category))} · ${plain(diagnosticLevelLabel(item.level))}`,
+          [
+            item.code ? `错误码 ${item.code}` : '',
+            item.action ? `操作 ${item.action}` : '',
+            item.lastAt ? formatDate(item.lastAt) : '',
+          ].filter(Boolean).join(' · '),
+          diagnosticLevelRank(item.level) >= 2 ? 'error' : '',
+        )).join('')
+      : '<div class="empty-list compact">暂无错误码统计。</div>';
+    els.errorTaxonomyPanel.innerHTML = `
+      <div class="diagnostic-list">
+        ${diagnosticRow('运行事件', `${formatNumber(diagnostics.total)} 条`, `${levelText}${diagnostics.dropped ? ` · 超出上限已丢弃 ${formatNumber(diagnostics.dropped)} 条` : ''}`)}
+        ${diagnosticRow('业务错误', `${formatNumber(requests.applicationErrors ?? requests.clientErrors)} 次`, `非扫描的 4xx 与 5xx · 扫描另计 ${formatNumber(requests.probeErrors || 0)} 次`)}
+        ${diagnosticRow('诊断快照', formatDate(system.now), '重复事件只累计次数，不重复列出')}
+      </div>
+      <div class="http-error-group">
+        <strong>按分类</strong>
+        ${categoryHtml}
+      </div>
+      <div class="http-error-group">
+        <strong>按错误码</strong>
+        ${bucketHtml}
+      </div>
+    `;
+  }
+
+  function renderSecurity(runtime) {
+    const diagnostics = runtime.diagnostics || {};
+    const requests = runtime.requests || {};
+    const signals = Array.isArray(diagnostics.signals) ? diagnostics.signals : [];
+    const edge = diagnostics.edge || {};
+    const edgeEnabled = Boolean(edge.enabled);
+    const edgeValue = edgeEnabled
+      ? edge.available ? `${formatNumber(edge.scannerCount)} 次扫描` : '读取失败'
+      : '未启用';
+    const edgeNote = edgeEnabled
+      ? edge.available
+        ? [
+            `${formatNumber(edge.errorCount)} 次 4xx/5xx`,
+            edge.path,
+            `读取于 ${formatDate(edge.readAt)}`,
+            edge.truncated ? '仅统计日志尾部' : '',
+          ].filter(Boolean).join(' · ')
+        : plain(edge.reason, '日志不可用')
+      : '设置 EDGE_ACCESS_LOG_PATH 后可统计 Caddy 直接拦截的扫描';
+    const signalHtml = signals.length
+      ? signals.map((item) => rowHtml(
+          `${formatNumber(item.count)}×`,
+          plain(item.title, '安全提醒'),
+          [
+            item.detail,
+            item.lastAt ? formatDate(item.lastAt) : '',
+          ].filter(Boolean).join(' · '),
+          diagnosticLevelRank(item.level) >= 2 ? 'error' : '',
+        )).join('')
+      : '<div class="empty-list compact">当前没有达到阈值的风险提醒。</div>';
+    const edgePathHtml = edge.available && Array.isArray(edge.scanners) && edge.scanners.length
+      ? edge.scanners.map((item) => rowHtml(
+          formatNumber(item.count),
+          `${plain(item.method, 'GET')} ${plain(item.path, '/')}`,
+          '边缘代理已直接拒绝',
+        )).join('')
+      : edge.available
+        ? '<div class="empty-list compact">边缘日志中暂无扫描探测。</div>'
+        : '<div class="empty-list compact">暂无边缘拦截明细。</div>';
+    els.securityPanel.innerHTML = `
+      <div class="diagnostic-list">
+        ${diagnosticRow('应用侧风险提醒', `${formatNumber(signals.length)} 条`, `统计窗口 ${plain(diagnostics.signalWindowText, '-')} · 触发阈值 ${formatNumber(diagnostics.signalThreshold)} 次`)}
+        ${diagnosticRow('边缘代理拦截', edgeValue, edgeNote)}
+        ${diagnosticRow('应用侧扫描探测', `${formatNumber(requests.probeRequests || 0)} 次`, `其中错误 ${formatNumber(requests.probeErrors || 0)} 次 · 不计入业务错误率`)}
+      </div>
+      <div class="http-error-group">
+        <strong>风险提醒</strong>
+        ${signalHtml}
+      </div>
+      <div class="http-error-group">
+        <strong>边缘高频探测路径</strong>
+        ${edgePathHtml}
       </div>
     `;
   }
@@ -875,7 +1010,13 @@ import { readJsonResponse } from './api-response.js';
     const queuePercent = percentOf(queue.active, queue.maxActive);
     const clientErrors = numericValue(requests.clientErrors);
     const serverErrors = numericValue(requests.serverErrors);
-    const requestErrors = clientErrors === null || serverErrors === null ? null : clientErrors + serverErrors;
+    const probeErrors = numericValue(requests.probeErrors) || 0;
+    const applicationErrors = numericValue(requests.applicationErrors);
+    const requestErrors = applicationErrors !== null
+      ? applicationErrors
+      : clientErrors === null || serverErrors === null
+        ? null
+        : Math.max(0, clientErrors - probeErrors) + serverErrors;
     const requestErrorPercent = requestErrors === null ? null : percentOf(requestErrors, requests.total);
     const trendDeltaMb = numericValue(memory.trend?.perHourMb);
     const trendPercent = trendDeltaMb === null ? null : percentOf(Math.abs(trendDeltaMb), memoryLimit);
@@ -957,7 +1098,7 @@ import { readJsonResponse } from './api-response.js';
         ${diagnosticRow('Cookie 临时隔离', `${formatNumber(runtime.quarantinedCookies)} 条`, runtime.quarantinedCookies ? `认证失败后暂停 ${plain(config.cookieAuthQuarantineText)}，避免重复请求` : '当前没有因认证失败而暂停的 Cookie')}
         ${diagnosticRow('后台事件写入', `${formatNumber(runtime.adminEventQueue)} 条排队`, `容量 ${formatNumber(config.maxAdminEventQueue)} · 已跳过 ${formatNumber(runtime.adminEventDropped)} 条`)}
         ${diagnosticRow('指标写入', metricsWriteState, `累计成功 ${formatNumber(runtime.metricsWriteCount)} 次 · 合并 ${formatNumber(runtime.metricsWriteCoalesced)} 次 · 失败 ${formatNumber(runtime.metricsWriteFailures)} 次${runtime.metricsWriteLastFailureAt ? ` · 最近失败 ${formatDate(runtime.metricsWriteLastFailureAt)}` : ''}`)}
-        ${diagnosticRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 4xx ${formatNumber(requests.clientErrors)} · 5xx ${formatNumber(requests.serverErrors)} · 最慢 ${plain(requests.slowestMs, 0)} ms`)}
+        ${diagnosticRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 业务 4xx ${formatNumber(Math.max(0, (clientErrors ?? 0) - probeErrors))} · 5xx ${formatNumber(requests.serverErrors)} · 扫描 ${formatNumber(requests.probeRequests || 0)} · 最慢 ${plain(requests.slowestMs, 0)} ms`)}
         ${diagnosticRow('Chromium', `${formatNumber(browser.processCount)} 个进程`, browser.operation?.label ? `正在执行 ${browser.operation.label}` : '当前无浏览器任务')}
         ${diagnosticRow('并发占用', formatPercent(queuePercent), `运行 ${formatNumber(queue.active)} / 上限 ${formatNumber(queue.maxActive)} · 排队 ${formatNumber(queue.queued)}`)}
         ${diagnosticRow('任务暂存', `${formatNumber(queue.retained)} / ${formatNumber(queue.maxRetained)} 个`, `订阅页面 ${formatNumber(queue.subscribers)} 个 · 单任务上限 ${formatNumber(queue.maxSubscribersPerTask)} 个`)}
@@ -979,6 +1120,8 @@ import { readJsonResponse } from './api-response.js';
       ${slabNotice}
       <div class="storage-list">${storageHtml}</div>
     `;
+    renderErrorTaxonomy(system);
+    renderSecurity(runtime);
   }
 
   function recordTitle(item) {

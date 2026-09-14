@@ -103,6 +103,8 @@ Environment=RUNTIME_CACHE_MAX_BYTES=67108864
 Environment=RUNTIME_CACHE_MAX_AGE_DAYS=30
 Environment=RUNTIME_CACHE_SCAN_MAX_ENTRIES=20000
 Environment=MAX_ERROR_MESSAGE_CHARS=4096
+# 只读 Caddy 访问日志，用于统计边缘拦截的扫描；未配置时后台会显示“未启用”。
+Environment=EDGE_ACCESS_LOG_PATH=/var/log/caddy/sameko-access.log
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/sameko-weibo-lottery/current/ms-playwright
 Environment=HOME=/opt/sameko-weibo-lottery/output/runtime-home
 Environment=XDG_CACHE_HOME=/opt/sameko-weibo-lottery/output/runtime-cache

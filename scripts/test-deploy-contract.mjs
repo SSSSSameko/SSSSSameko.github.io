@@ -157,6 +157,8 @@ assert.match(caddy, /\/\.env\*/);
 assert.match(caddy, /\/api\/actuator\*/);
 assert.match(caddy, /\/api\/mcp\*/);
 assert.match(caddy, /max_header_size\s+16KB/);
+assert.match(caddy, /output file \/var\/log\/caddy\/sameko-access\.log/);
+assert.match(service, /^Environment=EDGE_ACCESS_LOG_PATH=\/var\/log\/caddy\/sameko-access\.log$/m);
 
 const swapCommand = 'mv -Tf -- "${next_link}" "${CURRENT_LINK}"';
 const swappedFlag = 'current_swapped=1';
@@ -170,7 +172,9 @@ for (const asset of ['admin.html', 'admin.css', 'admin.js', 'admin-list-state.js
 }
 assert.match(installer, /src\/lib\/apiResponse\.js\b/);
 assert.match(installer, /src\/lib\/adminStatus\.js\b/);
+assert.match(installer, /src\/lib\/diagnostics\.js\b/);
 assert.match(installer, /request\(`\$\{adminBase\}\/admin-status\.js`\)/);
+assert.match(installer, /request\(`\$\{adminBase\}\/diagnostics\.js`\)/);
 assert.match(installer, /ADMIN_BASE_PATH/);
 assert.match(installer, /admin_base_path/);
 

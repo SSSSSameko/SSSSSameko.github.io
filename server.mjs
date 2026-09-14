@@ -183,6 +183,16 @@ import {
 } from './src/lib/storageRetention.js';
 import { createLatestWriteQueue } from './src/lib/latestWriteQueue.js';
 import {
+  classifyHttpFailure,
+  diagnosticLevelRank,
+  isScannerPath,
+  normalizeDiagnosticCategory,
+  normalizeDiagnosticLevel,
+  securitySignalLabel,
+  summarizeDiagnosticEvents,
+  summarizeEdgeAccessLog,
+} from './src/lib/diagnostics.js';
+import {
   analyzeMemoryTrend,
   parseCgroupMemoryStat,
   parseProcMeminfo,
@@ -417,6 +427,15 @@ const runtimeCacheScanMaxEntries = envInteger('RUNTIME_CACHE_SCAN_MAX_ENTRIES', 
 const maxAdminEventQueue = Math.min(512, Math.floor(envNumber('MAX_ADMIN_EVENT_QUEUE', 128, 8)));
 const maxAdminEvents = envInteger('MAX_ADMIN_EVENTS', 300, 50, 2000);
 const maxHttpErrorRecords = envInteger('MAX_HTTP_ERROR_RECORDS', 80, 20, 500);
+const maxDiagnosticEvents = envInteger('MAX_DIAGNOSTIC_EVENTS', 160, 20, 1000);
+const maxDiagnosticBuckets = envInteger('MAX_DIAGNOSTIC_BUCKETS', 160, 20, 1000);
+const maxSecuritySignals = envInteger('MAX_SECURITY_SIGNALS', 40, 8, 500);
+const diagnosticDedupeMs = envNumber('DIAGNOSTIC_DEDUPE_MS', 60_000, 5_000);
+const securitySignalWindowMs = envNumber('SECURITY_SIGNAL_WINDOW_MS', 10 * 60_000, 60_000);
+const securitySignalThreshold = envInteger('SECURITY_SIGNAL_THRESHOLD', 8, 3, 10_000);
+const edgeAccessLogPath = String(process.env.EDGE_ACCESS_LOG_PATH || '').trim();
+const edgeAccessLogTailBytes = envInteger('EDGE_ACCESS_LOG_TAIL_BYTES', 512 * 1024, 16 * 1024, 8 * 1024 * 1024);
+const edgeAccessLogCacheMs = envNumber('EDGE_ACCESS_LOG_CACHE_MS', 60_000, 5_000);
 const maxErrorMessageChars = envInteger('MAX_ERROR_MESSAGE_CHARS', 4096, 512, 16_384);
 const configuredCorsOrigins = String(process.env.CORS_ORIGINS || '')
   .split(',')
@@ -500,6 +519,12 @@ const jsonFileOperations = new Map();
 let adminSessionNonce = crypto.randomBytes(32).toString('hex');
 const memorySamples = [];
 const runtimeEvents = [];
+const recentDiagnosticEvents = [];
+const diagnosticBuckets = new Map();
+const securitySignals = new Map();
+const sourceRiskWindows = new Map();
+const securitySignalWindows = new Map();
+let diagnosticEventDropped = 0;
 const directoryDiagnosticCache = new Map();
 let runtimeCacheCleanupState = {
   lastRunAt: '',
@@ -544,9 +569,12 @@ const requestStats = {
   total: 0,
   clientErrors: 0,
   serverErrors: 0,
+  // 业务错误 = 非扫描的 4xx + 5xx，后台两处错误率都读这个字段。
+  applicationErrors: 0,
   probeRequests: 0,
   probeErrors: 0,
   lastRequestAt: '',
+  lastErrorAt: '',
   slowestMs: 0,
 };
 const httpStatusCounts = new Map();
@@ -560,6 +588,7 @@ const metricsWriteQueue = createLatestWriteQueue((samples) => writeJsonArray(sys
 let adminEventWrite = Promise.resolve();
 let adminEventPending = 0;
 let adminEventDropped = 0;
+const adminEventFailureAt = new Map();
 let cookieStoreOperation = Promise.resolve();
 let weiboLoginStateOperation = Promise.resolve();
 let drawAttemptWrite = Promise.resolve();
@@ -2642,20 +2671,136 @@ function normalizedRequestPath(pathname) {
   return value.startsWith('/') ? value : `/${value}`;
 }
 
-function isKnownProbePath(pathname) {
-  const value = String(pathname || '').toLowerCase();
-  return value === '/.env'
-    || value.startsWith('/.env.')
-    || value === '/.git'
-    || value.startsWith('/.git/')
-    || value === '/.well-known/security.txt'
-    || value === '/sitemap.xml'
-    || value === '/config.json'
-    || value === '/home/login.html'
-    || value === '/api/mcp'
-    || value.startsWith('/api/mcp/')
-    || value === '/api/actuator'
-    || value.startsWith('/api/actuator/');
+function trimDiagnosticMap(map, limit) {
+  while (map.size > limit) {
+    const oldest = map.keys().next().value;
+    if (oldest === undefined) return;
+    map.delete(oldest);
+  }
+}
+
+function diagnosticBucketKey(event) {
+  return `${event.category}\u0000${event.level}\u0000${event.code}\u0000${event.action}`;
+}
+
+function recordDiagnostic(input = {}) {
+  const category = normalizeDiagnosticCategory(input.category);
+  const level = normalizeDiagnosticLevel(input.level ?? input.status);
+  const code = safeText(input.code, 80, 'event');
+  const action = safeText(input.action, 80, '');
+  const at = new Date().toISOString();
+  const message = safeText(input.message, maxErrorMessageChars);
+  const source = safeText(input.source, 40, '');
+  const event = {
+    at,
+    category,
+    level,
+    code,
+    action,
+    message,
+    ...(source ? { source } : {}),
+    ...(input.requestId ? { requestId: safeText(input.requestId, 80, '') } : {}),
+    ...(input.details ? { details: boundedRuntimeValue(input.details) } : {}),
+  };
+
+  const key = diagnosticBucketKey(event);
+  const existing = diagnosticBuckets.get(key);
+  const sourceKey = `${key}\u0000${source}`;
+  const lastAt = sourceRiskWindows.get(sourceKey) || 0;
+  const nowMs = Date.parse(at);
+  const throttled = Boolean(source) && nowMs - lastAt < diagnosticDedupeMs;
+  sourceRiskWindows.set(sourceKey, nowMs);
+  trimDiagnosticMap(sourceRiskWindows, 400);
+
+  if (existing) {
+    existing.count += 1;
+    existing.lastAt = at;
+    existing.message = message || existing.message;
+    if (diagnosticLevelRank(level) > diagnosticLevelRank(existing.level)) {
+      existing.level = level;
+      existing.code = code;
+    }
+  } else {
+    diagnosticBuckets.set(key, {
+      category,
+      level,
+      code,
+      action,
+      message,
+      count: 1,
+      firstAt: at,
+      lastAt: at,
+    });
+    trimDiagnosticMap(diagnosticBuckets, maxDiagnosticBuckets);
+  }
+  if (throttled) return event;
+
+  recentDiagnosticEvents.push(event);
+  if (recentDiagnosticEvents.length > maxDiagnosticEvents) {
+    diagnosticEventDropped += recentDiagnosticEvents.length - maxDiagnosticEvents;
+    recentDiagnosticEvents.splice(0, recentDiagnosticEvents.length - maxDiagnosticEvents);
+  }
+  if (event.level === 'error' || event.level === 'critical') {
+    if (category === 'weibo') noteRepeatedFailure({ code: 'upstream-error', label: '微博抓取失败' }, action, '');
+    else if (category === 'cookie') noteRepeatedFailure({ code: 'upstream-auth', label: '微博登录态异常' }, action, '');
+  }
+  return event;
+}
+
+function noteSecuritySignal(key, level, detail) {
+  const signalKey = safeText(key, 80, 'security');
+  const existing = securitySignals.get(signalKey);
+  const at = new Date().toISOString();
+  if (existing) {
+    if (at === existing.lastAt) return existing;
+    existing.count += 1;
+    existing.lastAt = at;
+    if (diagnosticLevelRank(level) > diagnosticLevelRank(existing.level)) existing.level = level;
+    existing.detail = safeText(detail, 200, existing.detail);
+    securitySignals.delete(signalKey);
+  }
+  securitySignals.set(signalKey, {
+    key: signalKey,
+    title: securitySignalLabel(signalKey),
+    level: normalizeDiagnosticLevel(level),
+    count: existing ? existing.count : 1,
+    firstAt: existing?.firstAt || at,
+    lastAt: at,
+    detail: safeText(detail, 200, ''),
+  });
+  trimDiagnosticMap(securitySignals, maxSecuritySignals);
+  return securitySignals.get(signalKey);
+}
+
+const securitySignalRules = {
+  'scanner-probe': { key: 'scanner-scan', level: 'warning' },
+  'admin-auth-rejected': { key: 'admin-login-failure', level: 'warning' },
+  'rate-limited': { key: 'rate-limit-abuse', level: 'warning' },
+  'invalid-request': { key: 'malformed-request', level: 'warning' },
+  'upstream-error': { key: 'upstream-error', level: 'warning' },
+  'upstream-auth': { key: 'upstream-auth', level: 'warning' },
+};
+
+function noteRepeatedFailure(failure, requestPath, source) {
+  const rule = securitySignalRules[failure.code];
+  if (!rule) return;
+  const window = securitySignalWindows.get(rule.key) || { count: 0, from: Date.now() };
+  const now = Date.now();
+  if (now - window.from > securitySignalWindowMs) {
+    window.count = 0;
+    window.from = now;
+  }
+  window.count += 1;
+  securitySignalWindows.set(rule.key, window);
+  trimDiagnosticMap(securitySignalWindows, 64);
+  if (window.count < securitySignalThreshold) return;
+  const escalated = window.count >= securitySignalThreshold * 3 ? 'critical' : rule.level;
+  const sourceNote = source ? ` · 来源 ${source.slice(0, 12)}` : '';
+  noteSecuritySignal(
+    rule.key,
+    escalated,
+    `${Math.round(securitySignalWindowMs / 60_000)} 分钟内 ${window.count} 次${failure.label}（${requestPath.slice(0, 80)}${sourceNote}）`,
+  );
 }
 
 function recordRecentHttpItem(target, item) {
@@ -2683,34 +2828,61 @@ function recordHttpResult(req, res, url, startedAt, requestId) {
   httpStatusCounts.set(status, (httpStatusCounts.get(status) || 0) + 1);
   if (status >= 500) requestStats.serverErrors += 1;
   else if (status >= 400) requestStats.clientErrors += 1;
-  if (isKnownProbePath(pathname)) {
+  const probe = isScannerPath(pathname);
+  if (status >= 400 && !probe) requestStats.applicationErrors += 1;
+  if (probe) {
     requestStats.probeRequests += 1;
     if (status >= 400) requestStats.probeErrors += 1;
-    incrementBoundedCounter(httpProbeRoutes, `${status} ${method} ${pathname}`);
-    recordRecentHttpItem(recentHttpProbes, {
+    if (status >= 400) {
+      incrementBoundedCounter(httpProbeRoutes, `${status} ${method} ${pathname}`);
+      recordRecentHttpItem(recentHttpProbes, {
+        at: requestStats.lastRequestAt,
+        requestId: safeText(requestId, 80),
+        method,
+        path: pathname,
+        status,
+        elapsedMs: elapsed,
+      });
+    }
+  } else if (status >= 400) {
+    requestStats.lastErrorAt = requestStats.lastRequestAt;
+    const routeKey = `${status} ${method} ${pathname}`;
+    incrementBoundedCounter(httpRouteErrors, routeKey);
+    recordRecentHttpItem(recentHttpErrors, {
       at: requestStats.lastRequestAt,
       requestId: safeText(requestId, 80),
       method,
       path: pathname,
       status,
       elapsedMs: elapsed,
+      ...(res.httpErrorContext ? boundedRuntimeValue(res.httpErrorContext) : {}),
     });
-    return;
   }
   if (status < 400) return;
 
-  requestStats.lastErrorAt = requestStats.lastRequestAt;
-  const routeKey = `${status} ${method} ${pathname}`;
-  incrementBoundedCounter(httpRouteErrors, routeKey);
-  recordRecentHttpItem(recentHttpErrors, {
-    at: requestStats.lastRequestAt,
-    requestId: safeText(requestId, 80),
-    method,
-    path: pathname,
-    status,
-    elapsedMs: elapsed,
-    ...(res.httpErrorContext ? boundedRuntimeValue(res.httpErrorContext) : {}),
-  });
+  const failure = classifyHttpFailure({ status, method, path: pathname, probe });
+  const source = sourceFingerprint(req);
+  // 抛错路径已由顶层异常处理写入更详细的诊断事件，这里不再重复记一条。
+  const alreadyRecorded = status >= 500 && Boolean(res.httpErrorContext?.name);
+  if (!alreadyRecorded) {
+    recordDiagnostic({
+      category: failure.category,
+      level: failure.level,
+      code: failure.code,
+      action: `${method} ${pathname}`,
+      message: `${failure.label}：${method} ${pathname} → ${status}`,
+      source,
+      requestId,
+      details: {
+        status,
+        method,
+        path: pathname,
+        elapsedMs: elapsed,
+        ...(res.httpErrorContext ? boundedRuntimeValue(res.httpErrorContext) : {}),
+      },
+    });
+  }
+  noteRepeatedFailure(failure, pathname, source);
 }
 
 function httpDiagnostics() {
@@ -2728,6 +2900,85 @@ function httpDiagnostics() {
     }).sort((left, right) => right.count - left.count || left.path.localeCompare(right.path)).slice(0, 20),
     recentProbes: recentHttpProbes.slice().reverse(),
   };
+}
+
+function diagnosticSummary() {
+  const summarized = summarizeDiagnosticEvents(recentDiagnosticEvents, { limit: 30 });
+  const buckets = [...diagnosticBuckets.values()]
+    .sort((left, right) => diagnosticLevelRank(right.level) - diagnosticLevelRank(left.level)
+      || right.count - left.count
+      || left.code.localeCompare(right.code))
+    .slice(0, 16);
+  const signals = [...securitySignals.values()]
+    .sort((left, right) => diagnosticLevelRank(right.level) - diagnosticLevelRank(left.level)
+      || Date.parse(right.lastAt || 0) - Date.parse(left.lastAt || 0))
+    .slice(0, 12);
+  return {
+    total: summarized.total,
+    dropped: diagnosticEventDropped,
+    byLevel: summarized.byLevel,
+    byCategory: summarized.byCategory,
+    buckets,
+    signals,
+    recent: summarized.recent,
+    signalWindowMs: securitySignalWindowMs,
+    signalWindowText: formatDurationMs(securitySignalWindowMs),
+    signalThreshold: securitySignalThreshold,
+  };
+}
+
+let edgeAccessLogCache = { at: 0, value: null };
+
+// 边缘代理拦截的扫描不会进入应用，只能通过 Caddy 访问日志补足这部分可见性。
+async function edgeAccessLogDiagnostics() {
+  if (!edgeAccessLogPath) {
+    return { enabled: false, available: false, reason: '未配置边缘访问日志' };
+  }
+  const now = Date.now();
+  if (edgeAccessLogCache.value && now - edgeAccessLogCache.at < edgeAccessLogCacheMs) {
+    return edgeAccessLogCache.value;
+  }
+  let value;
+  try {
+    const stat = await fs.stat(edgeAccessLogPath);
+    const tailBytes = Math.min(stat.size, edgeAccessLogTailBytes);
+    const start = Math.max(0, stat.size - tailBytes);
+    const handle = await fs.open(edgeAccessLogPath, 'r');
+    let text = '';
+    try {
+      const buffer = Buffer.allocUnsafe(tailBytes);
+      const { bytesRead } = await handle.read(buffer, 0, tailBytes, start);
+      text = buffer.subarray(0, bytesRead).toString('utf8');
+    } finally {
+      await handle.close();
+    }
+    const summary = summarizeEdgeAccessLog(text, { maxLines: 4000, top: 8 });
+    const errorCount = summary.statusCounts
+      .filter((item) => item.status >= 400)
+      .reduce((total, item) => total + item.count, 0);
+    const scannerCount = summary.scanners.reduce((total, item) => total + item.count, 0);
+    value = {
+      enabled: true,
+      available: true,
+      path: path.basename(edgeAccessLogPath),
+      sizeBytes: stat.size,
+      tailBytes,
+      truncated: start > 0,
+      readAt: new Date().toISOString(),
+      errorCount,
+      scannerCount,
+      ...summary,
+    };
+  } catch (error) {
+    value = {
+      enabled: true,
+      available: false,
+      path: path.basename(edgeAccessLogPath),
+      reason: error?.code === 'ENOENT' ? '边缘日志尚未生成' : safeError(error).message,
+    };
+  }
+  edgeAccessLogCache = { at: now, value };
+  return value;
 }
 
 function safeErrorMessage(error, maxChars = maxErrorMessageChars) {
@@ -6155,7 +6406,16 @@ async function saveDrawRecord(body, res) {
     eligibleCount: payload.eligibleCount,
     candidateCount: payload.totalCount,
     prizeCount: normalizedResults.length,
-  }).catch(() => {});
+  }).catch((error) => {
+    recordRuntimeEvent({
+      category: 'records',
+      action: 'attempt-write',
+      code: 'draw-attempt-write-failed',
+      status: 'error',
+      message: '开奖记录已保存，但动作审计写入失败',
+      details: errorDiagnostic(error),
+    });
+  });
   try {
     await incrementDrawStatistics({
       winnerSlots: winners.length,
@@ -6980,13 +7240,25 @@ function boundedRuntimeValue(value, depth = 0) {
 function recordRuntimeEvent(event) {
   const value = boundedRuntimeValue(event);
   const normalized = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-  runtimeEvents.push({
+  const stored = {
     ...normalized,
     at: new Date().toISOString(),
     status: safeText(normalized?.status, 32, 'info'),
     message: safeText(normalized?.message, maxErrorMessageChars),
-  });
+  };
+  runtimeEvents.push(stored);
   if (runtimeEvents.length > 100) runtimeEvents.splice(0, runtimeEvents.length - 100);
+  recordDiagnostic({
+    category: stored.category,
+    level: stored.level ?? stored.status,
+    code: stored.code || stored.action,
+    action: stored.action,
+    message: stored.message,
+    source: stored.source,
+    requestId: stored.requestId,
+    details: stored.details,
+  });
+  return stored;
 }
 
 async function appendAdminEvent(event) {
@@ -7016,10 +7288,26 @@ async function appendAdminEvent(event) {
       });
       await writeJsonArray(adminEventsFile, stored.slice(-maxAdminEvents));
     });
-  adminEventWrite = queuedWrite.finally(() => {
+  const trackedWrite = queuedWrite.catch((error) => {
+    // 写入失败过去会被静默吞掉，导致后台看不到自身故障；这里限频上报一次。
+    const now = Date.now();
+    if (now - (adminEventFailureAt.get('write') || 0) >= diagnosticDedupeMs) {
+      adminEventFailureAt.set('write', now);
+      recordRuntimeEvent({
+        category: 'admin',
+        action: 'event-write',
+        code: 'admin-event-write-failed',
+        level: 'error',
+        message: `后台事件写入失败：${safeError(error).message}`,
+        details: errorDiagnostic(error),
+      });
+    }
+    throw error;
+  });
+  adminEventWrite = trackedWrite.finally(() => {
     adminEventPending = Math.max(0, adminEventPending - 1);
   }).catch(() => {});
-  return await queuedWrite;
+  return await trackedWrite;
 }
 
 const cookieReadAuditAt = new Map();
@@ -7367,7 +7655,7 @@ async function fileDiagnostic(label, filePath) {
 async function adminSystemSummary() {
   const memory = process.memoryUsage();
   const resources = process.resourceUsage();
-  const [storage, browserPids, cgroupMemory, hostMemory, disk, adminEvents] = await Promise.all([
+  const [storage, browserPids, cgroupMemory, hostMemory, disk, adminEvents, edgeAccess] = await Promise.all([
     Promise.all([
       fileDiagnostic('浏览器运行缓存', runtimeCacheDir),
       fileDiagnostic('浏览器运行目录', runtimeHomeDir),
@@ -7385,6 +7673,7 @@ async function adminSystemSummary() {
     hostMemoryDiagnostic(),
     diskDiagnostic(),
     readJsonArray(adminEventsFile),
+    edgeAccessLogDiagnostics(),
   ]);
   const recentSamples = memorySamples.slice(-288);
   const memoryTrend = analyzeMemoryTrend(recentSamples.slice(-72));
@@ -7477,6 +7766,7 @@ async function adminSystemSummary() {
       drawRetention: { ...drawRetentionState },
       requests: { ...requestStats },
       http: httpDiagnostics(),
+      diagnostics: { ...diagnosticSummary(), edge: edgeAccess },
     },
     service: {
       version: releaseInfo.version,
@@ -7575,6 +7865,13 @@ async function adminSystemSummary() {
       maxAdminEventQueue,
       maxAdminEvents,
       maxHttpErrorRecords,
+      maxDiagnosticEvents,
+      maxDiagnosticBuckets,
+      maxSecuritySignals,
+      diagnosticDedupeMs,
+      securitySignalWindowMs,
+      securitySignalThreshold,
+      edgeAccessLogEnabled: Boolean(edgeAccessLogPath),
     },
     storage,
     events: [...adminEvents.slice(-maxAdminEvents), ...runtimeEvents]
@@ -8091,6 +8388,7 @@ const ADMIN_ASSET_FILES = new Map([
   ['admin-list-state.js', 'server-admin/admin-list-state.js'],
   ['admin-status.js', 'src/lib/adminStatus.js'],
   ['api-response.js', 'src/lib/apiResponse.js'],
+  ['diagnostics.js', 'src/lib/diagnostics.js'],
 ]);
 
 // 后台入口默认叫 /admin，但可以换成一段不好猜的路径，减少被扫到后台页面的机会。
@@ -8399,6 +8697,8 @@ const server = http.createServer(async (req, res) => {
         category: 'server',
         action: req.method || '',
         status: 'error',
+        code: diagnostic.code || 'server-error',
+        requestId,
         message: `${pathname || '未知接口'}：${normalized.message}`,
         details,
       });
@@ -8406,6 +8706,8 @@ const server = http.createServer(async (req, res) => {
         category: 'server',
         action: req.method || '',
         status: 'error',
+        code: diagnostic.code || 'server-error',
+        requestId,
         message: `${pathname || '未知接口'}：${normalized.message}`,
         details,
       }).catch(() => {});

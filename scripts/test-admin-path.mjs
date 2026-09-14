@@ -81,7 +81,7 @@ try {
   assert.doesNotMatch(adminHtml, /\/admin\/admin\.(?:css|js)/);
   assert.equal(admin.headers.get('x-robots-tag'), 'noindex, nofollow');
 
-  for (const asset of ['admin.js', 'admin.css', 'api-response.js', 'admin-status.js']) {
+  for (const asset of ['admin.js', 'admin.css', 'api-response.js', 'admin-status.js', 'diagnostics.js']) {
     const response = await fetch(`${running.baseUrl}${customPath}/${asset}`);
     assert.equal(response.status, 200, `自定义后台路径应能加载 ${asset}`);
   }

@@ -71,6 +71,9 @@ window.WEIBO_DRAW_LEGAL = window.WEIBO_DRAW_LEGAL || {
 - `COOKIE_READ_AUDIT_INTERVAL_MS=21600000`（可选；同一来源的只读接口成功审计最短合并间隔，默认 6 小时，避免高频轮询挤掉其他安全事件）
 - `ADMIN_BASE_PATH=/admin`（可选；后台入口路径。默认 `/admin`，改成例如 `/ops-9d2c` 之类不好猜的路径可以减少被扫描到后台页面的机会；必须以 `/` 开头，不能占用 `/api`、`/v1`。改完记得同步书签和部署自检。前端页面不链接后台入口，也不显示真实后端地址）
 - `SOURCE_FINGERPRINT_SECRET=去标识化来源与登录态指纹密钥（若配置则为 64 位十六进制字符，未配置时复用会话密钥）`
+- `EDGE_ACCESS_LOG_PATH=/var/log/caddy/sameko-access.log`（可选；Caddy 等边缘代理的 JSON 访问日志路径。配置后后台“安全提醒”会统计代理在应用之前直接拒绝的扫描请求；只按状态、路径和脱敏来源聚合，不保存原始 IP 和查询参数。未配置时后台显示“未启用”，不影响其他功能）
+- `SECURITY_SIGNAL_THRESHOLD=8`（可选；同一类可疑行为在统计窗口内达到多少次后生成后台风险提醒，默认 8 次）
+- `SECURITY_SIGNAL_WINDOW_MS=600000`（可选；风险提醒的统计窗口，默认 10 分钟）
 - `PLAYWRIGHT_BROWSERS_PATH=/opt/sameko-weibo-lottery/current/ms-playwright`
 - `WEIBO_BROWSER_SANDBOX=1`（生产环境默认开启 Chromium 沙箱；仅在目标主机明确不支持时才设为 `0`）
 - `MAX_DRAW_SAVE_BODY_BYTES=2097152`
@@ -136,6 +139,8 @@ https://你的后端地址/admin
 
 使用服务器配置的账号和密码登录。`ADMIN_KEY` 仅保留给接口运维调用，不会显示在登录页。后台可以查看开奖记录、中奖明细、用户反馈、抓取队列、内存趋势和 Cookie 保活状态；反馈可以标记处理或删除。
 
+“系统”页把运行异常按分类、级别和错误码聚合展示：接口请求、登录鉴权、安全防护、微博抓取、Cookie 与登录态、浏览器、抓取任务、存储、开奖记录、用户反馈、后台和服务运行各自独立计数，扫描探测不再拉高业务错误率。诊断事件在内存中有界保留，按来源和错误码限频去重；微博抓取、Cookie 失效、后台事件写入失败等非 HTTP 故障也会进入同一份统计。达到阈值的可疑行为（扫描探测、后台登录失败、接口限流、畸形请求、上游失败）会在“安全提醒”里汇总，并附上脱敏后的来源指纹。
+
 ## 只读 Cookie 接口
 
 微博 Cookie 没有 refresh token，其他项目无法自行续期。安装脚本会为新部署默认生成独立密钥并开启该接口；升级已有部署时，若 `/etc/sameko-weibo-lottery.env` 里还没有这两行，可手动追加后重启服务：
@@ -179,6 +184,8 @@ sudo bash deploy/install.sh
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
+
+模板里的 `log` 指令会让 Caddy 把 JSON 访问日志写入 `/var/log/caddy/sameko-access.log`（10 MB 轮转、保留 3 份）。服务以 `www-data` 运行，只需要该文件的读权限（默认 `0644` 即可）；日志目录建议保持 `0755`。如果日志文件不可读，后台只会显示“边缘代理拦截：读取失败”，业务功能不受影响。
 
 生产环境应只开放 `22`、`80`、`443`，不要直接暴露应用端口。Caddy 模板会在应用前拦截常见环境文件、管理端点和扫描路径；更稳妥的部署方式是在 Caddy 前接入 Cloudflare 代理和免费 WAF，并把源站防火墙限制为只接受 Cloudflare 回源。后台使用随机 `ADMIN_BASE_PATH`、强密码和仅密钥 SSH，不要为了消除扫描器的 404 而创建 `.env`、`actuator`、`mcp` 等路径。
 

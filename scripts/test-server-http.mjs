@@ -72,6 +72,7 @@ const avatarHttpCancelFile = path.join(testOutputDir, 'avatar-http-cancelled.mar
 const avatarMimeCancelFile = path.join(testOutputDir, 'avatar-mime-cancelled.marker');
 const avatarHttpErrorUrl = 'https://sinaimg.cn/http-error.jpg';
 const avatarMimeErrorUrl = 'https://sinaimg.cn/mime-error.jpg';
+const edgeAccessLogFile = path.join(testOutputDir, 'edge-access.log');
 const packageVersion = JSON.parse(await readFile(
   fileURLToPath(new URL('../package.json', import.meta.url)),
   'utf8',
@@ -87,6 +88,23 @@ const freshCacheFile = path.join(runtimeCacheDir, 'fresh.cache');
 await Promise.all([
   writeFile(staleCacheFile, 'stale', 'utf8'),
   writeFile(freshCacheFile, 'fresh', 'utf8'),
+  writeFile(edgeAccessLogFile, [
+    JSON.stringify({
+      ts: Math.floor(Date.now() / 1000),
+      status: 404,
+      request: { remote_ip: '203.0.113.77', method: 'GET', uri: '/.env.production' },
+    }),
+    JSON.stringify({
+      ts: Math.floor(Date.now() / 1000),
+      status: 404,
+      request: { remote_ip: '203.0.113.77', method: 'GET', uri: '/wp-login.php' },
+    }),
+    JSON.stringify({
+      ts: Math.floor(Date.now() / 1000),
+      status: 200,
+      request: { remote_ip: '198.51.100.5', method: 'GET', uri: '/assets/index.js' },
+    }),
+  ].join('\n'), 'utf8'),
 ]);
 const staleDate = new Date(Date.now() - 31 * 24 * 60 * 60_000);
 await utimes(staleCacheFile, staleDate, staleDate);
@@ -389,6 +407,7 @@ function spawnServer() {
       AVATAR_HTTP_CANCEL_FILE: avatarHttpCancelFile,
       AVATAR_MIME_CANCEL_FILE: avatarMimeCancelFile,
       SERVER_TEST_MODE: '1',
+      EDGE_ACCESS_LOG_PATH: edgeAccessLogFile,
       AVATAR_DNS_OVERRIDES: JSON.stringify({
         'sinaimg.cn': [{ address: '93.184.216.34', family: 4 }],
       }),
@@ -1089,6 +1108,30 @@ try {
   assert.ok(diagnosticsAfterScannerProbe.http.probeRoutes.some((item) => item.path === '/.env.production'));
   assert.ok(!diagnosticsAfterScannerProbe.http.routeErrors.some((item) => item.path === '/.env.production'));
   assert.ok(!diagnosticsAfterScannerProbe.http.recentErrors.some((item) => item.path === '/.env.production'));
+  const scannerDiagnostics = diagnosticsAfterScannerProbe.diagnostics;
+  assert.ok(scannerDiagnostics, '后台汇总应包含异常分类');
+  assert.ok(Array.isArray(scannerDiagnostics.byCategory));
+  assert.ok(
+    scannerDiagnostics.byCategory.some((item) => item.category === 'security'),
+    '扫描探测应归入安全防护分类',
+  );
+  assert.ok(
+    scannerDiagnostics.recent.some((item) => item.code === 'scanner-probe'),
+    '扫描探测应出现在最近诊断事件中',
+  );
+  assert.equal(
+    diagnosticsAfterScannerProbe.requests.applicationErrors,
+    diagnosticsAfterScannerProbe.requests.clientErrors
+      - diagnosticsAfterScannerProbe.requests.probeErrors
+      + diagnosticsAfterScannerProbe.requests.serverErrors,
+    '业务错误数应等于非扫描 4xx 加 5xx',
+  );
+  const edgeDiagnostics = scannerDiagnostics.edge;
+  assert.equal(edgeDiagnostics.enabled, true);
+  assert.equal(edgeDiagnostics.available, true);
+  assert.equal(edgeDiagnostics.scannerCount, 2);
+  assert.ok(edgeDiagnostics.scanners.some((item) => item.path === '/.env.production'));
+  assert.deepEqual(edgeDiagnostics.topSources, [{ source: '203.0.x.x', count: 2 }]);
 
   const drawsDiagnostic = summaryBody.system.storage.find((item) => item.label === '开奖记录目录');
   assert.ok(drawsDiagnostic.size > 0);

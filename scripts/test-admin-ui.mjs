@@ -139,6 +139,64 @@ const summary = {
           upstream: { host: 'weibo.com', path: '/ajax/statuses/repostTimeline', status: 429 },
         }],
       },
+      diagnostics: {
+        total: 12,
+        dropped: 0,
+        byLevel: [
+          { level: 'warning', label: '警告', count: 3 },
+          { level: 'error', label: '错误', count: 2 },
+        ],
+        byCategory: [
+          {
+            category: 'weibo',
+            label: '微博抓取',
+            level: 'error',
+            count: 2,
+            lastAt: new Date().toISOString(),
+            message: '桌面端抓取失败',
+          },
+          {
+            category: 'security',
+            label: '安全防护',
+            level: 'warning',
+            count: 3,
+            lastAt: new Date().toISOString(),
+            message: '扫描探测：GET /.env → 404',
+          },
+        ],
+        buckets: [{
+          category: 'security',
+          level: 'warning',
+          code: 'scanner-probe',
+          action: 'GET /.env',
+          count: 3,
+          firstAt: new Date().toISOString(),
+          lastAt: new Date().toISOString(),
+        }],
+        signals: [{
+          key: 'scanner-scan',
+          title: '疑似漏洞扫描',
+          level: 'warning',
+          count: 12,
+          firstAt: new Date().toISOString(),
+          lastAt: new Date().toISOString(),
+          detail: '10 分钟内 12 次扫描探测',
+        }],
+        recent: [],
+        signalWindowText: '10 分钟',
+        signalThreshold: 8,
+        edge: {
+          enabled: true,
+          available: true,
+          path: 'sameko-access.log',
+          scannerCount: 21,
+          errorCount: 23,
+          readAt: new Date().toISOString(),
+          truncated: false,
+          scanners: [{ method: 'GET', path: '/.env', count: 7 }],
+          topSources: [],
+        },
+      },
     },
     service: {
       version: releaseInfo.version,
@@ -511,7 +569,18 @@ try {
   assert.equal(await page.locator('#requestErrorPanel').getByText('GET /api/missing', { exact: true }).isVisible(), true);
   assert.equal(await page.locator('#requestErrorPanel').getByText(/weibo\.com\/ajax\/statuses\/repostTimeline · 429/).isVisible(), true);
   assert.equal(await page.locator('#systemEventPanel details').getByText('技术详情', { exact: true }).isVisible(), true);
+  const taxonomyText = await page.locator('#errorTaxonomyPanel').innerText();
+  assert.match(taxonomyText, /微博抓取/);
+  assert.match(taxonomyText, /错误码 scanner-probe/);
+  const securityText = await page.locator('#securityPanel').innerText();
+  assert.match(securityText, /疑似漏洞扫描/);
+  assert.match(securityText, /21 次扫描/);
+  await page.screenshot({
+    path: fileURLToPath(new URL('admin-system-desktop.png', outputDir)),
+    fullPage: true,
+  });
   assert.match(systemText, /API 3 · 后台登录 1 · 已退出会话 2/);
+  assert.match(systemText, /业务 4xx 2 · 5xx 1 · 扫描 0/);
   assert.match(systemText, /订阅页面 5 个 · 单任务上限 12 个/);
   assert.match(systemText, /最近清理 4 个旧缓存目录 · 新缓存上限 64 MB \+ 16 MB/);
   await page.getByRole('tab', { name: 'Cookie', exact: true }).click();
@@ -706,6 +775,19 @@ try {
   await page.getByRole('tab', { name: '记录', exact: true }).click();
   await page.waitForTimeout(320);
   await page.screenshot({ path: fileURLToPath(new URL('admin-records-mobile.png', outputDir)) });
+  await page.getByRole('tab', { name: '系统', exact: true }).click();
+  await page.waitForTimeout(320);
+  assert.equal(
+    await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+    true,
+    '手机端系统页不应出现横向滚动',
+  );
+  assert.equal(await page.locator('#errorTaxonomyPanel').isVisible(), true);
+  assert.equal(await page.locator('#securityPanel').isVisible(), true);
+  await page.screenshot({
+    path: fileURLToPath(new URL('admin-system-mobile.png', outputDir)),
+    fullPage: true,
+  });
   await context.close();
 } finally {
   await browser.close();

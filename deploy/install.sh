@@ -79,15 +79,17 @@ try {
     && body?.ok === true
     && body?.service === 'sameko-weibo-lottery';
   if (!verifyReleaseAssets) process.exit(healthy ? 0 : 1);
-  const [admin, adminScript, adminStyle, adminResponse, adminStatus] = await Promise.all([
+  const [admin, adminScript, adminStyle, adminResponse, adminStatus, diagnostics] = await Promise.all([
     request(adminBase),
     request(`${adminBase}/admin.js`),
     request(`${adminBase}/admin.css`),
     request(`${adminBase}/api-response.js`),
     request(`${adminBase}/admin-status.js`),
+    request(`${adminBase}/diagnostics.js`),
   ]);
   const adminHtml = await admin.text();
-  const assetsReady = [adminScript, adminStyle, adminResponse, adminStatus].every((response) => response.ok);
+  const assetsReady = [adminScript, adminStyle, adminResponse, adminStatus, diagnostics]
+    .every((response) => response.ok);
   process.exit(
     healthy
       && admin.ok
@@ -576,7 +578,7 @@ printf '%s\n' "${source_revision:-unversioned}" >"${stage_dir}/.release-commit"
   node --check server-admin/admin.js
 )
 
-for item in server.mjs server-admin/admin.html server-admin/admin.css server-admin/admin.js server-admin/admin-list-state.js src/lib/adminStatus.js src/lib/apiResponse.js src/lib/weiboBrowserLifecycle.js static/config.js dist/index.html node_modules ms-playwright; do
+for item in server.mjs server-admin/admin.html server-admin/admin.css server-admin/admin.js server-admin/admin-list-state.js src/lib/adminStatus.js src/lib/apiResponse.js src/lib/diagnostics.js src/lib/weiboBrowserLifecycle.js static/config.js dist/index.html node_modules ms-playwright; do
   [[ -e "${stage_dir}/${item}" ]] || { echo "Staged release is missing ${item}." >&2; exit 1; }
 done
 chown -R --no-dereference www-data:www-data "${stage_dir}"

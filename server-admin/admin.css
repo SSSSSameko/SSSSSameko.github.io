@@ -748,6 +748,11 @@ button:disabled {
   grid-template-columns: minmax(360px, .8fr) minmax(0, 1.2fr);
 }
 
+/* 系统页左栏很长，避免右栏被拉伸出一大片空白。 */
+.system-layout {
+  align-items: start;
+}
+
 .panel,
 .records-panel,
 .detail-panel {
@@ -980,9 +985,43 @@ button:disabled {
   box-shadow: 0 0 0 4px rgba(233, 120, 121, .09);
 }
 
-.event-row.blocked .status-dot {
+.event-row.blocked .status-dot,
+.event-row.warning .status-dot {
   background: #d69542;
   box-shadow: 0 0 0 4px rgba(214, 149, 66, .09);
+}
+
+.event-row.critical .status-dot {
+  background: #c2464f;
+  box-shadow: 0 0 0 4px rgba(194, 70, 79, .14);
+}
+
+.level-chip {
+  display: inline-flex;
+  min-height: 18px;
+  align-items: center;
+  margin-right: 6px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: rgba(84, 90, 121, .1);
+  color: #5b6175;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.level-chip.warning {
+  background: rgba(214, 149, 66, .14);
+  color: #a4671d;
+}
+
+.level-chip.error {
+  background: rgba(233, 120, 121, .14);
+  color: #b34f52;
+}
+
+.level-chip.critical {
+  background: rgba(194, 70, 79, .16);
+  color: #a6333c;
 }
 
 .event-row p,
@@ -1033,7 +1072,7 @@ button:disabled {
 
 .http-error-row {
   display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
+  grid-template-columns: minmax(42px, max-content) minmax(0, 1fr);
   gap: 9px;
   align-items: start;
   padding: 9px 10px;
@@ -1047,11 +1086,13 @@ button:disabled {
   min-height: 24px;
   align-items: center;
   justify-content: center;
+  padding: 0 7px;
   border-radius: 7px;
   background: rgba(214, 149, 66, .12);
   color: #a4671d;
   font-size: 10.5px;
   font-weight: 700;
+  white-space: nowrap;
 }
 
 .http-error-row .http-status.error {
