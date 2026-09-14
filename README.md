@@ -185,7 +185,7 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-模板里的 `log` 指令会让 Caddy 把 JSON 访问日志写入 `/var/log/caddy/sameko-access.log`（10 MB 轮转、保留 3 份）。服务以 `www-data` 运行，只需要该文件的读权限（默认 `0644` 即可）；日志目录建议保持 `0755`。如果日志文件不可读，后台只会显示“边缘代理拦截：读取失败”，业务功能不受影响。
+模板里的 `log` 指令会让 Caddy 把 JSON 访问日志写入 `/var/log/caddy/sameko-access.log`（10 MB 轮转、保留 3 份、权限 `0644`）。服务以 `www-data` 运行，只需要该文件的读权限；日志目录建议保持 `0755`。如果日志文件不可读，后台只会显示“边缘代理拦截：读取失败”，业务功能不受影响。
 
 生产环境应只开放 `22`、`80`、`443`，不要直接暴露应用端口。Caddy 模板会在应用前拦截常见环境文件、管理端点和扫描路径；更稳妥的部署方式是在 Caddy 前接入 Cloudflare 代理和免费 WAF，并把源站防火墙限制为只接受 Cloudflare 回源。后台使用随机 `ADMIN_BASE_PATH`、强密码和仅密钥 SSH，不要为了消除扫描器的 404 而创建 `.env`、`actuator`、`mcp` 等路径。
 

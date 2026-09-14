@@ -27,6 +27,7 @@ https://draw.example.com {
 			roll_size 10MB
 			roll_keep 3
 			roll_keep_for 168h
+			mode 0644
 		}
 		format json
 	}

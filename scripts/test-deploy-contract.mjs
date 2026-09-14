@@ -158,6 +158,7 @@ assert.match(caddy, /\/api\/actuator\*/);
 assert.match(caddy, /\/api\/mcp\*/);
 assert.match(caddy, /max_header_size\s+16KB/);
 assert.match(caddy, /output file \/var\/log\/caddy\/sameko-access\.log/);
+assert.match(caddy, /mode\s+0644/);
 assert.match(service, /^Environment=EDGE_ACCESS_LOG_PATH=\/var\/log\/caddy\/sameko-access\.log$/m);
 
 const swapCommand = 'mv -Tf -- "${next_link}" "${CURRENT_LINK}"';
