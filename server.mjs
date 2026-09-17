@@ -184,6 +184,7 @@ import {
 import { createLatestWriteQueue } from './src/lib/latestWriteQueue.js';
 import {
   classifyHttpFailure,
+  diagnosticCategoryLabel,
   diagnosticLevelRank,
   isScannerPath,
   normalizeDiagnosticCategory,
@@ -335,6 +336,8 @@ const avatarProxyMaxBytes = envNumber('AVATAR_PROXY_MAX_BYTES', 512 * 1024, 16 *
 const avatarCacheMaxBytes = envNumber('AVATAR_CACHE_MAX_BYTES', 12 * 1024 * 1024, 1024 * 1024);
 const avatarCacheMaxEntries = envInteger('AVATAR_CACHE_MAX_ENTRIES', 512, 32);
 const avatarCacheTtlMs = envNumber('AVATAR_CACHE_TTL_MS', 24 * 60 * 60_000, 60_000);
+const avatarMissCacheMaxEntries = envInteger('AVATAR_MISS_CACHE_MAX_ENTRIES', 512, 32);
+const avatarMissCacheTtlMs = envNumber('AVATAR_MISS_CACHE_TTL_MS', 10 * 60_000, 30_000);
 const avatarFetchConcurrency = envInteger('AVATAR_FETCH_CONCURRENCY', 8, 1);
 const avatarFetchQueueMax = envInteger('AVATAR_FETCH_QUEUE_MAX', 128, 0);
 const cookieAuthQuarantineMs = envNumber('COOKIE_AUTH_QUARANTINE_MS', 45 * 60_000, 60_000);
@@ -473,6 +476,7 @@ const repostTaskStats = {
   recentSnapshot: 0,
 };
 const avatarCache = new Map();
+const avatarMissCache = new Map();
 const avatarFetches = new Map();
 const cookieAuthQuarantine = new Map();
 const avatarFetchGate = createAsyncGate({
@@ -569,8 +573,9 @@ const requestStats = {
   total: 0,
   clientErrors: 0,
   serverErrors: 0,
-  // 业务错误 = 非扫描的 4xx + 5xx，后台两处错误率都读这个字段。
+  // 404 单列为路由/资源缺失，避免随机扫描把业务错误率抬高。
   applicationErrors: 0,
+  routeMisses: 0,
   probeRequests: 0,
   probeErrors: 0,
   lastRequestAt: '',
@@ -719,6 +724,18 @@ function securityHeaders() {
 
 function isApiPath(pathname) {
   return pathname === '/api/health' || pathname.startsWith('/api/') || pathname === COOKIE_CURRENT_PATH;
+}
+
+function isKnownApplicationPath(pathname) {
+  if (KNOWN_API_RATE_PATHS.has(pathname)) return true;
+  if (/^\/api\/admin\/(?:draws|feedback)\/[^/]+$/.test(pathname)) return true;
+  if (/^\/api\/weibo\/reposts\/jobs\/[^/]+$/.test(pathname)) return true;
+  if (adminAssetPath(pathname)) return true;
+  return pathname === '/'
+    || pathname === '/index.html'
+    || pathname === '/config.js'
+    || pathname.startsWith('/assets/')
+    || /^\/(?:apple-touch-icon|avatar-96|favicon-32|favicon-192)\.(?:png|webp)$/.test(pathname);
 }
 
 function requestOriginSet(req) {
@@ -1734,6 +1751,37 @@ function cachedAvatar(url) {
   return cached;
 }
 
+function cachedAvatarMiss(url) {
+  const expiresAt = avatarMissCache.get(url);
+  if (!expiresAt) return false;
+  if (expiresAt <= Date.now()) {
+    avatarMissCache.delete(url);
+    return false;
+  }
+  avatarMissCache.delete(url);
+  avatarMissCache.set(url, expiresAt);
+  return true;
+}
+
+function storeAvatarMiss(url) {
+  avatarMissCache.delete(url);
+  while (avatarMissCache.size >= avatarMissCacheMaxEntries) {
+    avatarMissCache.delete(avatarMissCache.keys().next().value);
+  }
+  avatarMissCache.set(url, Date.now() + avatarMissCacheTtlMs);
+}
+
+function avatarMissingError(avatar, response = null) {
+  return Object.assign(new Error('头像资源不存在'), {
+    status: 404,
+    code: 'avatar-upstream-missing',
+    category: 'weibo',
+    level: 'info',
+    label: '头像资源不存在',
+    upstream: upstreamDiagnostic(avatar, response || { status: 404 }),
+  });
+}
+
 function storeAvatar(url, entry) {
   if (!entry.body.length || entry.body.length > avatarCacheMaxBytes) return;
   const previous = avatarCache.get(url);
@@ -1782,8 +1830,12 @@ async function fetchAvatar(avatar) {
   });
   if (!response.ok) {
     await cancelResponseBody(response);
+    if (response.status === 404) {
+      storeAvatarMiss(avatar);
+      throw avatarMissingError(avatar, response);
+    }
     const error = new Error(`头像服务返回 ${response.status}`);
-    error.status = response.status === 404 ? 404 : 502;
+    error.status = 502;
     throw error;
   }
   const contentType = String(response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
@@ -1819,6 +1871,7 @@ async function fetchAvatar(avatar) {
 async function avatarEntry(avatar) {
   const cached = cachedAvatar(avatar);
   if (cached) return cached;
+  if (cachedAvatarMiss(avatar)) throw avatarMissingError(avatar);
   const running = avatarFetches.get(avatar);
   if (running) return await running;
   const operation = avatarFetchGate.run(() => fetchAvatar(avatar))
@@ -2662,6 +2715,9 @@ function errorDiagnostic(error) {
     ...normalized,
     name: safeText(error?.name, 80),
     code: safeText(error?.code, 120),
+    ...(error?.category ? { category: safeText(error.category, 40) } : {}),
+    ...(error?.level ? { level: safeText(error.level, 20) } : {}),
+    ...(error?.label ? { label: safeText(error.label, 80) } : {}),
     ...(error?.upstream ? { upstream: boundedRuntimeValue(error.upstream) } : {}),
   };
 }
@@ -2735,10 +2791,12 @@ function recordDiagnostic(input = {}) {
   }
   if (throttled) return event;
 
-  recentDiagnosticEvents.push(event);
-  if (recentDiagnosticEvents.length > maxDiagnosticEvents) {
-    diagnosticEventDropped += recentDiagnosticEvents.length - maxDiagnosticEvents;
-    recentDiagnosticEvents.splice(0, recentDiagnosticEvents.length - maxDiagnosticEvents);
+  if (input.sample !== false) {
+    recentDiagnosticEvents.push(event);
+    if (recentDiagnosticEvents.length > maxDiagnosticEvents) {
+      diagnosticEventDropped += recentDiagnosticEvents.length - maxDiagnosticEvents;
+      recentDiagnosticEvents.splice(0, recentDiagnosticEvents.length - maxDiagnosticEvents);
+    }
   }
   if (event.level === 'error' || event.level === 'critical') {
     if (category === 'weibo') noteRepeatedFailure({ code: 'upstream-error', label: '微博抓取失败' }, action, '');
@@ -2774,6 +2832,7 @@ function noteSecuritySignal(key, level, detail) {
 
 const securitySignalRules = {
   'scanner-probe': { key: 'scanner-scan', level: 'warning' },
+  'admin-decoy': { key: 'admin-decoy', level: 'warning' },
   'admin-auth-rejected': { key: 'admin-login-failure', level: 'warning' },
   'rate-limited': { key: 'rate-limit-abuse', level: 'warning' },
   'invalid-request': { key: 'malformed-request', level: 'warning' },
@@ -2828,8 +2887,10 @@ function recordHttpResult(req, res, url, startedAt, requestId) {
   httpStatusCounts.set(status, (httpStatusCounts.get(status) || 0) + 1);
   if (status >= 500) requestStats.serverErrors += 1;
   else if (status >= 400) requestStats.clientErrors += 1;
-  const probe = isScannerPath(pathname);
-  if (status >= 400 && !probe) requestStats.applicationErrors += 1;
+  if (status === 404) requestStats.routeMisses += 1;
+  const routeMiss = status === 404 && !isKnownApplicationPath(pathname);
+  const probe = res.httpErrorContext?.probe === true || isScannerPath(pathname) || routeMiss;
+  if (status >= 400 && status !== 404 && !probe) requestStats.applicationErrors += 1;
   if (probe) {
     requestStats.probeRequests += 1;
     if (status >= 400) requestStats.probeErrors += 1;
@@ -2844,7 +2905,7 @@ function recordHttpResult(req, res, url, startedAt, requestId) {
         elapsedMs: elapsed,
       });
     }
-  } else if (status >= 400) {
+  } else if (status >= 400 && status !== 404) {
     requestStats.lastErrorAt = requestStats.lastRequestAt;
     const routeKey = `${status} ${method} ${pathname}`;
     incrementBoundedCounter(httpRouteErrors, routeKey);
@@ -2860,7 +2921,14 @@ function recordHttpResult(req, res, url, startedAt, requestId) {
   }
   if (status < 400) return;
 
-  const failure = classifyHttpFailure({ status, method, path: pathname, probe });
+  const failure = res.httpErrorContext?.category
+    ? {
+        category: normalizeDiagnosticCategory(res.httpErrorContext.category),
+        level: normalizeDiagnosticLevel(res.httpErrorContext.level || 'info'),
+        code: safeText(res.httpErrorContext.code, 80, 'request-failed'),
+        label: safeText(res.httpErrorContext.label, 80, '请求处理失败'),
+      }
+    : classifyHttpFailure({ status, method, path: pathname, probe });
   const source = sourceFingerprint(req);
   // 抛错路径已由顶层异常处理写入更详细的诊断事件，这里不再重复记一条。
   const alreadyRecorded = status >= 500 && Boolean(res.httpErrorContext?.name);
@@ -2873,6 +2941,7 @@ function recordHttpResult(req, res, url, startedAt, requestId) {
       message: `${failure.label}：${method} ${pathname} → ${status}`,
       source,
       requestId,
+      sample: status !== 404,
       details: {
         status,
         method,
@@ -2913,11 +2982,42 @@ function diagnosticSummary() {
     .sort((left, right) => diagnosticLevelRank(right.level) - diagnosticLevelRank(left.level)
       || Date.parse(right.lastAt || 0) - Date.parse(left.lastAt || 0))
     .slice(0, 12);
+  const categoryMap = new Map();
+  for (const bucket of diagnosticBuckets.values()) {
+    const category = normalizeDiagnosticCategory(bucket.category);
+    const level = normalizeDiagnosticLevel(bucket.level);
+    const rank = diagnosticLevelRank(level);
+    const current = categoryMap.get(category);
+    if (current) {
+      current.count += bucket.count;
+      if (rank > current.rank) {
+        current.level = level;
+        current.rank = rank;
+      }
+      if (!current.lastAt || Date.parse(bucket.lastAt || 0) > Date.parse(current.lastAt || 0)) {
+        current.lastAt = bucket.lastAt || current.lastAt;
+        current.message = bucket.message || current.message;
+      }
+    } else {
+      categoryMap.set(category, {
+        category,
+        label: diagnosticCategoryLabel(category),
+        level,
+        rank,
+        count: bucket.count,
+        lastAt: bucket.lastAt || '',
+        message: bucket.message || '',
+      });
+    }
+  }
+  const byCategory = [...categoryMap.values()]
+    .map(({ rank, ...item }) => item)
+    .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label));
   return {
     total: summarized.total,
     dropped: diagnosticEventDropped,
     byLevel: summarized.byLevel,
-    byCategory: summarized.byCategory,
+    byCategory,
     buckets,
     signals,
     recent: summarized.recent,
@@ -2953,10 +3053,6 @@ async function edgeAccessLogDiagnostics() {
       await handle.close();
     }
     const summary = summarizeEdgeAccessLog(text, { maxLines: 4000, top: 8 });
-    const errorCount = summary.statusCounts
-      .filter((item) => item.status >= 400)
-      .reduce((total, item) => total + item.count, 0);
-    const scannerCount = summary.scanners.reduce((total, item) => total + item.count, 0);
     value = {
       enabled: true,
       available: true,
@@ -2965,8 +3061,6 @@ async function edgeAccessLogDiagnostics() {
       tailBytes,
       truncated: start > 0,
       readAt: new Date().toISOString(),
-      errorCount,
-      scannerCount,
       ...summary,
     };
   } catch (error) {
@@ -7761,6 +7855,7 @@ async function adminSystemSummary() {
       adminEventDropped,
       avatarCacheEntries: avatarCache.size,
       avatarCacheMb: bytesToMb(avatarCacheBytes),
+      avatarMissCacheEntries: avatarMissCache.size,
       quarantinedCookies: quarantinedCookieCount(),
       runtimeCacheCleanup: { ...runtimeCacheCleanupState },
       drawRetention: { ...drawRetentionState },
@@ -7857,6 +7952,9 @@ async function adminSystemSummary() {
       adminScryptConcurrency,
       avatarFetchConcurrency,
       avatarFetchQueueMax,
+      avatarMissCacheMaxEntries,
+      avatarMissCacheTtlMs,
+      avatarMissCacheTtlText: formatDurationMs(avatarMissCacheTtlMs),
       cookieAuthQuarantineMs,
       cookieAuthQuarantineText: formatDurationMs(cookieAuthQuarantineMs),
       runtimeCacheMaxFiles,
@@ -8415,6 +8513,12 @@ function adminAssetPath(pathname) {
   return ADMIN_ASSET_FILES.get(relative) || '';
 }
 
+// 真实后台路径被自定义后，默认 /admin 保留为无内容的诱捕入口。
+function isAdminDecoyPath(pathname) {
+  return adminBasePath !== '/admin'
+    && (pathname === '/admin' || pathname.startsWith('/admin/'));
+}
+
 async function serveAdminAsset(req, res, pathname) {
   const assetPath = adminAssetPath(pathname);
   if (!assetPath) return false;
@@ -8665,6 +8769,17 @@ const server = http.createServer(async (req, res) => {
     if (isApiPath(url.pathname)) {
       return sendJson(res, 404, { ok: false, error: '接口不存在' });
     }
+    if (isAdminDecoyPath(url.pathname)) {
+      prepareRejectedRequestBody(req, res);
+      res.httpErrorContext = {
+        probe: true,
+        category: 'security',
+        level: 'warning',
+        code: 'admin-decoy',
+        label: '后台诱捕路径访问',
+      };
+      return sendText(res, 404, 'Not Found');
+    }
     if (req.method === 'GET' || req.method === 'HEAD') return await serveStatic(req, res);
     return sendText(res, 405, 'Method Not Allowed');
   } catch (error) {
@@ -8682,6 +8797,9 @@ const server = http.createServer(async (req, res) => {
     res.httpErrorContext = {
       code: diagnostic.code,
       name: diagnostic.name,
+      ...(diagnostic.category ? { category: diagnostic.category } : {}),
+      ...(diagnostic.level ? { level: diagnostic.level } : {}),
+      ...(diagnostic.label ? { label: diagnostic.label } : {}),
       ...(diagnostic.upstream ? { upstream: diagnostic.upstream } : {}),
     };
     if (normalized.status >= 500) {

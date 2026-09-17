@@ -72,6 +72,8 @@ const avatarHttpCancelFile = path.join(testOutputDir, 'avatar-http-cancelled.mar
 const avatarMimeCancelFile = path.join(testOutputDir, 'avatar-mime-cancelled.marker');
 const avatarHttpErrorUrl = 'https://sinaimg.cn/http-error.jpg';
 const avatarMimeErrorUrl = 'https://sinaimg.cn/mime-error.jpg';
+const avatarMissingUrl = 'https://sinaimg.cn/missing-avatar.jpg';
+const avatarMissingCountFile = path.join(testOutputDir, 'avatar-missing-count.txt');
 const edgeAccessLogFile = path.join(testOutputDir, 'edge-access.log');
 const packageVersion = JSON.parse(await readFile(
   fileURLToPath(new URL('../package.json', import.meta.url)),
@@ -172,6 +174,8 @@ const drawWriteStartedFile = process.env.DRAW_WRITE_STARTED_FILE || '';
 const drawWriteReleaseFile = process.env.DRAW_WRITE_RELEASE_FILE || '';
 const avatarHttpErrorUrl = process.env.AVATAR_HTTP_ERROR_URL || '';
 const avatarMimeErrorUrl = process.env.AVATAR_MIME_ERROR_URL || '';
+const avatarMissingUrl = process.env.AVATAR_MISSING_URL || '';
+const avatarMissingCountFile = process.env.AVATAR_MISSING_COUNT_FILE || '';
 const avatarHttpCancelFile = process.env.AVATAR_HTTP_CANCEL_FILE || '';
 const avatarMimeCancelFile = process.env.AVATAR_MIME_CANCEL_FILE || '';
 const cookieMigrationTargetFile = path.resolve(process.env.COOKIE_MIGRATION_TARGET_FILE || '');
@@ -352,6 +356,18 @@ globalThis.fetch = async (input, options) => {
       headers: { 'content-type': 'text/html' },
     });
   }
+  if (requestUrl === avatarMissingUrl) {
+    let count = 0;
+    try {
+      count = Number(await fs.readFile(avatarMissingCountFile, 'utf8')) || 0;
+    } catch {
+    }
+    await fs.writeFile(avatarMissingCountFile, String(count + 1), 'utf8');
+    return new Response('missing', {
+      status: 404,
+      headers: { 'content-type': 'text/plain' },
+    });
+  }
   return await originalFetch(input, options);
 };
 `, 'utf8');
@@ -404,6 +420,8 @@ function spawnServer() {
       DIRECTORY_SYNC_FAILURE_MARKER: directorySyncFailureMarker,
       AVATAR_HTTP_ERROR_URL: avatarHttpErrorUrl,
       AVATAR_MIME_ERROR_URL: avatarMimeErrorUrl,
+      AVATAR_MISSING_URL: avatarMissingUrl,
+      AVATAR_MISSING_COUNT_FILE: avatarMissingCountFile,
       AVATAR_HTTP_CANCEL_FILE: avatarHttpCancelFile,
       AVATAR_MIME_CANCEL_FILE: avatarMimeCancelFile,
       SERVER_TEST_MODE: '1',
@@ -715,6 +733,20 @@ try {
   );
   assert.equal(avatarMimeError.status, 502);
   await waitForFile(avatarMimeCancelFile);
+
+  const avatarMissing = await fetch(
+    `${baseUrl}/api/weibo/avatar?url=${encodeURIComponent(avatarMissingUrl)}`,
+  );
+  assert.equal(avatarMissing.status, 404);
+  const avatarMissingAgain = await fetch(
+    `${baseUrl}/api/weibo/avatar?url=${encodeURIComponent(avatarMissingUrl)}`,
+  );
+  assert.equal(avatarMissingAgain.status, 404);
+  assert.equal(
+    Number(await readFile(avatarMissingCountFile, 'utf8')),
+    1,
+    '头像 404 应使用短时负缓存，避免重复请求上游',
+  );
 
   const admin = await fetch(`${baseUrl}/admin`);
   assert.equal(admin.status, 200);
@@ -1116,15 +1148,15 @@ try {
     '扫描探测应归入安全防护分类',
   );
   assert.ok(
-    scannerDiagnostics.recent.some((item) => item.code === 'scanner-probe'),
-    '扫描探测应出现在最近诊断事件中',
+    scannerDiagnostics.buckets.some((item) => item.code === 'scanner-probe'),
+    '扫描探测应出现在错误码统计中',
   );
   assert.equal(
     diagnosticsAfterScannerProbe.requests.applicationErrors,
     diagnosticsAfterScannerProbe.requests.clientErrors
-      - diagnosticsAfterScannerProbe.requests.probeErrors
+      - diagnosticsAfterScannerProbe.requests.routeMisses
       + diagnosticsAfterScannerProbe.requests.serverErrors,
-    '业务错误数应等于非扫描 4xx 加 5xx',
+    '业务错误数应排除扫描、404 与 5xx 以外的客户端错误',
   );
   const edgeDiagnostics = scannerDiagnostics.edge;
   assert.equal(edgeDiagnostics.enabled, true);

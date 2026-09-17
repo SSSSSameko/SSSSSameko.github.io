@@ -41,6 +41,11 @@ https://draw.example.com {
 	handle @blocked_probe {
 		respond 404
 	}
+	# PHP/源码探测、PHPUnit 漏洞链和常见扫描入口也尽量在边缘结束。
+	@blocked_probe_regex path_regexp "(?i)(?:^|/)(?:vendor|phpunit)(?:/|$)|\.(?:asp|aspx|cgi|jsp|php)$|^/dns-query$|^/sellers\.json$|^/security\.txt$|^/web\.config$"
+	handle @blocked_probe_regex {
+		respond 404
+	}
 	header {
 		-Server
 		Strict-Transport-Security "max-age=31536000"

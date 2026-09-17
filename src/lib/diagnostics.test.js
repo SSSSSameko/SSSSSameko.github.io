@@ -34,6 +34,8 @@ test('isScannerPath recognises probes without matching normal routes', () => {
   assert.equal(isScannerPath('/.env.production'), true);
   assert.equal(isScannerPath('/.git/config'), true);
   assert.equal(isScannerPath('/wp-login.php'), true);
+  assert.equal(isScannerPath('/zend/vendor/phpunit/src/Util/PHP/eval-stdin.php'), true);
+  assert.equal(isScannerPath('/dns-query'), true);
   assert.equal(isScannerPath('/api/mcp'), true);
   assert.equal(isScannerPath('/sitemap.xml'), true);
   assert.equal(isScannerPath('/api/weibo/reposts/jobs'), false);
@@ -97,6 +99,8 @@ test('summarizeEdgeAccessLog aggregates probes and masks client addresses', () =
 
   assert.equal(summary.parsed, 3);
   assert.equal(summary.skipped, 1);
+  assert.equal(summary.errorCount, 2);
+  assert.equal(summary.scannerCount, 2);
   assert.deepEqual(summary.statusCounts, [{ status: 200, count: 1 }, { status: 404, count: 2 }]);
   assert.equal(summary.scanners.length, 2);
   assert.equal(summary.scanners.every((item) => !item.path.includes('?')), true);
@@ -106,5 +110,6 @@ test('summarizeEdgeAccessLog aggregates probes and masks client addresses', () =
 
 test('securitySignalLabel falls back for unknown keys', () => {
   assert.equal(securitySignalLabel('scanner-scan'), '疑似漏洞扫描');
+  assert.equal(securitySignalLabel('admin-decoy'), '后台诱捕路径访问');
   assert.equal(securitySignalLabel('unknown'), '安全提醒');
 });

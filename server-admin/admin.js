@@ -624,17 +624,16 @@ import {
     const probeRequests = numericValue(requests.probeRequests) || 0;
     const probeErrors = numericValue(requests.probeErrors) || 0;
     const applicationErrors = numericValue(requests.applicationErrors);
-    const applicationClientErrors = clientErrors === null ? null : Math.max(0, clientErrors - probeErrors);
     const requestErrors = applicationErrors !== null
       ? applicationErrors
-      : applicationClientErrors === null || serverErrors === null
+      : clientErrors === null || serverErrors === null
         ? null
-        : applicationClientErrors + serverErrors;
+        : Math.max(0, clientErrors - probeErrors) + serverErrors;
     const requestErrorPercent = requestErrors === null ? null : percentOf(requestErrors, requests.total);
     const queuePercent = percentOf(queue.active, queue.maxActive);
     els.requestPanel.innerHTML = [
       quickRow('事件循环 P99', numericValue(runtime.eventLoopP99Ms) === null ? '-' : `${runtime.eventLoopP99Ms} ms`, numericValue(runtime.eventLoopP99Ms) !== null && numericValue(runtime.eventLoopP99Ms) < 100 ? '响应正常' : '等待有效采样'),
-      quickRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 业务 4xx ${formatNumber(applicationClientErrors)} · 5xx ${formatNumber(requests.serverErrors)} · 扫描 ${formatNumber(probeRequests)}`),
+      quickRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 应用异常 ${formatNumber(requests.applicationErrors)} · 路由缺失 ${formatNumber(requests.routeMisses)} · 扫描 ${formatNumber(probeRequests)}`),
       quickRow('自动重启', formatDate(service.nextRecycleAt), `每 ${plain(service.recycleIntervalText)} 回收进程`),
       quickRow('磁盘', formatPercent(numericValue(disk.usedPercent)), `可用 ${formatMemoryMb(disk.availableMb)}`),
       quickRow('并发占用', formatPercent(queuePercent), `${formatNumber(queue.active)} 运行 · ${formatNumber(queue.queued)} 排队 · ${formatNumber(queue.retained)} 暂存`),
@@ -793,7 +792,8 @@ import {
     els.errorTaxonomyPanel.innerHTML = `
       <div class="diagnostic-list">
         ${diagnosticRow('运行事件', `${formatNumber(diagnostics.total)} 条`, `${levelText}${diagnostics.dropped ? ` · 超出上限已丢弃 ${formatNumber(diagnostics.dropped)} 条` : ''}`)}
-        ${diagnosticRow('业务错误', `${formatNumber(requests.applicationErrors ?? requests.clientErrors)} 次`, `非扫描的 4xx 与 5xx · 扫描另计 ${formatNumber(requests.probeErrors || 0)} 次`)}
+        ${diagnosticRow('业务错误', `${formatNumber(requests.applicationErrors ?? requests.clientErrors)} 次`, `不含 404 路由缺失与扫描探测 · 扫描另计 ${formatNumber(requests.probeErrors || 0)} 次`)}
+        ${diagnosticRow('路由缺失', `${formatNumber(requests.routeMisses || 0)} 次`, '404 路径或外部资源不存在，不计入业务错误率')}
         ${diagnosticRow('诊断快照', formatDate(system.now), '重复事件只累计次数，不重复列出')}
       </div>
       <div class="http-error-group">
@@ -1094,11 +1094,11 @@ import {
         ${diagnosticRow('系统负载', Array.isArray(system.loadAverage) ? system.loadAverage.join(' / ') : '-', system.cpus ? `${system.cpus} 核 CPU` : '')}
         ${diagnosticRow('事件循环', numericValue(runtime.eventLoopP99Ms) === null ? '-' : `P99 ${runtime.eventLoopP99Ms} ms`, numericValue(runtime.eventLoopMeanMs) === null ? '等待有效采样' : `平均 ${runtime.eventLoopMeanMs} ms`)}
         ${diagnosticRow('限流与会话缓存', `${formatNumber(Number(runtime.rateLimitBuckets || 0) + Number(runtime.adminLoginBuckets || 0) + Number(runtime.revokedAdminSessions || 0))} 项`, `API ${formatNumber(runtime.rateLimitBuckets)} · 后台登录 ${formatNumber(runtime.adminLoginBuckets)} · 已退出会话 ${formatNumber(runtime.revokedAdminSessions)} · 容量回收 ${formatNumber(runtime.rateLimitEvictions)} 次`)}
-        ${diagnosticRow('头像服务', `${formatNumber(runtime.avatarFetches)} 个请求`, `排队 ${formatNumber(runtime.avatarFetchQueue)} · 缓存 ${formatNumber(runtime.avatarCacheEntries)} 张 / ${formatMemoryMb(runtime.avatarCacheMb)} · 并发上限 ${formatNumber(config.avatarFetchConcurrency)}`)}
+        ${diagnosticRow('头像服务', `${formatNumber(runtime.avatarFetches)} 个请求`, `排队 ${formatNumber(runtime.avatarFetchQueue)} · 缓存 ${formatNumber(runtime.avatarCacheEntries)} 张 / ${formatMemoryMb(runtime.avatarCacheMb)} · 空结果 ${formatNumber(runtime.avatarMissCacheEntries || 0)} 个 · 并发上限 ${formatNumber(config.avatarFetchConcurrency)}`)}
         ${diagnosticRow('Cookie 临时隔离', `${formatNumber(runtime.quarantinedCookies)} 条`, runtime.quarantinedCookies ? `认证失败后暂停 ${plain(config.cookieAuthQuarantineText)}，避免重复请求` : '当前没有因认证失败而暂停的 Cookie')}
         ${diagnosticRow('后台事件写入', `${formatNumber(runtime.adminEventQueue)} 条排队`, `容量 ${formatNumber(config.maxAdminEventQueue)} · 已跳过 ${formatNumber(runtime.adminEventDropped)} 条`)}
         ${diagnosticRow('指标写入', metricsWriteState, `累计成功 ${formatNumber(runtime.metricsWriteCount)} 次 · 合并 ${formatNumber(runtime.metricsWriteCoalesced)} 次 · 失败 ${formatNumber(runtime.metricsWriteFailures)} 次${runtime.metricsWriteLastFailureAt ? ` · 最近失败 ${formatDate(runtime.metricsWriteLastFailureAt)}` : ''}`)}
-        ${diagnosticRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 业务 4xx ${formatNumber(Math.max(0, (clientErrors ?? 0) - probeErrors))} · 5xx ${formatNumber(requests.serverErrors)} · 扫描 ${formatNumber(requests.probeRequests || 0)} · 最慢 ${plain(requests.slowestMs, 0)} ms`)}
+        ${diagnosticRow('HTTP 错误率', formatPercent(requestErrorPercent), `${formatNumber(requests.total)} 次请求 · 应用异常 ${formatNumber(requests.applicationErrors)} · 路由缺失 ${formatNumber(requests.routeMisses)} · 扫描 ${formatNumber(requests.probeRequests || 0)} · 最慢 ${plain(requests.slowestMs, 0)} ms`)}
         ${diagnosticRow('Chromium', `${formatNumber(browser.processCount)} 个进程`, browser.operation?.label ? `正在执行 ${browser.operation.label}` : '当前无浏览器任务')}
         ${diagnosticRow('并发占用', formatPercent(queuePercent), `运行 ${formatNumber(queue.active)} / 上限 ${formatNumber(queue.maxActive)} · 排队 ${formatNumber(queue.queued)}`)}
         ${diagnosticRow('任务暂存', `${formatNumber(queue.retained)} / ${formatNumber(queue.maxRetained)} 个`, `订阅页面 ${formatNumber(queue.subscribers)} 个 · 单任务上限 ${formatNumber(queue.maxSubscribersPerTask)} 个`)}

@@ -123,6 +123,10 @@ const summary = {
         total: 240,
         clientErrors: 2,
         serverErrors: 1,
+        applicationErrors: 1,
+        routeMisses: 1,
+        probeRequests: 0,
+        probeErrors: 0,
         slowestMs: 86,
         lastErrorAt: new Date().toISOString(),
       },
@@ -572,6 +576,7 @@ try {
   const taxonomyText = await page.locator('#errorTaxonomyPanel').innerText();
   assert.match(taxonomyText, /微博抓取/);
   assert.match(taxonomyText, /错误码 scanner-probe/);
+  assert.match(taxonomyText, /路由缺失/);
   const securityText = await page.locator('#securityPanel').innerText();
   assert.match(securityText, /疑似漏洞扫描/);
   assert.match(securityText, /21 次扫描/);
@@ -580,7 +585,7 @@ try {
     fullPage: true,
   });
   assert.match(systemText, /API 3 · 后台登录 1 · 已退出会话 2/);
-  assert.match(systemText, /业务 4xx 2 · 5xx 1 · 扫描 0/);
+  assert.match(systemText, /应用异常 1 · 路由缺失 1 · 扫描 0/);
   assert.match(systemText, /订阅页面 5 个 · 单任务上限 12 个/);
   assert.match(systemText, /最近清理 4 个旧缓存目录 · 新缓存上限 64 MB \+ 16 MB/);
   await page.getByRole('tab', { name: 'Cookie', exact: true }).click();

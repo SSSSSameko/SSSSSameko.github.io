@@ -84,6 +84,16 @@ const SCANNER_PATH_PATTERNS = [
   /^\/telescope/,
   /^\/boaform\//,
   /^\/geoserver/,
+  /\.(?:asp|aspx|cgi|jsp|php)$/,
+  /(?:^|\/)(?:phpunit|vendor)(?:\/|$)/,
+  /\/eval-stdin\.php$/,
+  /^\/dns-query(?:\/|$)/,
+  /^\/sellers\.json$/,
+  /^\/security\.txt$/,
+  /^\/web\.config$/,
+  /^\/backend\//,
+  /^\/portal\//,
+  /^\/storage\/logs(?:\/|$)/,
 ];
 
 function boundedText(value, maxChars, fallback = '') {
@@ -166,6 +176,7 @@ export function classifyHttpFailure(input = {}) {
 export function securitySignalLabel(key) {
   return {
     'scanner-scan': '疑似漏洞扫描',
+    'admin-decoy': '后台诱捕路径访问',
     'admin-login-failure': '后台登录失败聚集',
     'rate-limit-abuse': '接口触发限流聚集',
     'malformed-request': '畸形请求聚集',
@@ -244,6 +255,8 @@ export function summarizeEdgeAccessLog(text, options = {}) {
   const sources = new Map();
   let parsed = 0;
   let skipped = 0;
+  let errorCount = 0;
+  let scannerCount = 0;
   let firstAt = '';
   let lastAt = '';
   for (const line of lines) {
@@ -273,10 +286,12 @@ export function summarizeEdgeAccessLog(text, options = {}) {
     }
     statusCounts.set(status, (statusCounts.get(status) || 0) + 1);
     if (status >= 400) {
+      errorCount += 1;
       const key = `${status}\u0000${method}\u0000${uri}`;
       errorPaths.set(key, (errorPaths.get(key) || 0) + 1);
     }
     if (isScannerPath(uri)) {
+      scannerCount += 1;
       const key = `${method}\u0000${uri}`;
       scannerPaths.set(key, (scannerPaths.get(key) || 0) + 1);
       if (source) sources.set(source, (sources.get(source) || 0) + 1);
@@ -290,6 +305,8 @@ export function summarizeEdgeAccessLog(text, options = {}) {
     lines: lines.length,
     parsed,
     skipped,
+    errorCount,
+    scannerCount,
     firstAt,
     lastAt,
     statusCounts: [...statusCounts.entries()]

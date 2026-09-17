@@ -2,6 +2,18 @@
 
 把本文件整份发给接收方项目（或它的 AI 助手）即可。文中 `YOUR-BACKEND` 和 `YOUR-COOKIE-READ-KEY` 由抽奖服务器运营者提供。
 
+## 在另一个软件中填写
+
+如果软件提供“远程 Cookie 接口”“接口地址”和“接口访问密钥”三个输入项，按下面填写：
+
+| 输入项 | 填写内容 |
+| --- | --- |
+| 接口地址 | `https://YOUR-BACKEND/v1/cookie/current` |
+| 接口访问密钥 | 抽奖服务器 `/etc/sameko-weibo-lottery.env` 中 `COOKIE_READ_KEY` 的 64 位值 |
+| 保存方式 | 保存到服务端环境变量或密钥存储，不要写进前端、仓库或日志 |
+
+接收软件应自动同时发送 `Authorization: Bearer` 和 `x-cookie-read-key` 两种请求头。不要改成 `x-api-key`，也不要把这条接口暴露给浏览器或小程序前端。
+
 ## 为什么有这个接口
 
 微博 Cookie 没有 refresh token，接收方无法自行续期。抽奖服务器内部会持续保活并轮换微博登录态，因此由它统一暴露一个只读接口，接收方按需拉取当前可用的登录态，不需要自己登录微博。

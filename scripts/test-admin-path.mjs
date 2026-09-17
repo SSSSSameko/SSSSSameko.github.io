@@ -87,6 +87,7 @@ try {
   }
 
   const defaultAdmin = await fetch(`${running.baseUrl}/admin`);
+  assert.equal(defaultAdmin.status, 404, '默认 /admin 应作为诱捕路径返回 404');
   assert.doesNotMatch(
     await defaultAdmin.text(),
     /id="loginPanel"/,
