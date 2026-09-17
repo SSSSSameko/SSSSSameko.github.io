@@ -1,0 +1,9 @@
+[sameko-caddy]
+enabled = true
+filter = sameko-caddy
+backend = polling
+logpath = /var/log/caddy/sameko-access.log
+maxretry = 6
+findtime = 10m
+bantime = 2h
+action = %(banaction_allports)s

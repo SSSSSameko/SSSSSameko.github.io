@@ -29,7 +29,19 @@ https://draw.example.com {
 			roll_keep_for 168h
 			mode 0644
 		}
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>Authorization delete
+				request>headers>Cookie delete
+				request>headers>X-Api-Key delete
+				request>headers>X-Admin-Csrf delete
+				request>headers>X-Cookie-Read-Key delete
+				request>headers>X-Cookie-Write-Key delete
+				request>headers>X-Job-Cancel-Token delete
+				request>headers>X-Job-Read-Token delete
+			}
+		}
 	}
 	request_body {
 		max_size 3MB
@@ -49,6 +61,10 @@ https://draw.example.com {
 	header {
 		-Server
 		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "SAMEORIGIN"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
 	}
 	# 可选：只允许指定来源访问只读登录态接口（启用前先替换为真实来源 IP）。
 	# @cookie path /v1/cookie/current

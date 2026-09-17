@@ -189,9 +189,21 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-模板里的 `log` 指令会让 Caddy 把 JSON 访问日志写入 `/var/log/caddy/sameko-access.log`（10 MB 轮转、保留 3 份、权限 `0644`）。服务以 `www-data` 运行，只需要该文件的读权限；日志目录建议保持 `0755`。如果日志文件不可读，后台只会显示“边缘代理拦截：读取失败”，业务功能不受影响。
+模板里的 `log` 指令会让 Caddy 把 JSON 访问日志写入 `/var/log/caddy/sameko-access.log`（10 MB 轮转、保留 3 份、权限 `0644`）。日志会删除 `Authorization`、Cookie、API Key、后台 CSRF 和任务令牌等敏感请求头；服务以 `www-data` 运行，只需要该文件的读权限，日志目录建议保持 `0755`。如果日志文件不可读，后台只会显示“边缘代理拦截：读取失败”，业务功能不受影响。
 
 生产环境应只开放 `22`、`80`、`443`，不要直接暴露应用端口。Caddy 模板会在应用前拦截常见环境文件、管理端点和扫描路径；更稳妥的部署方式是在 Caddy 前接入 Cloudflare 代理和免费 WAF，并把源站防火墙限制为只接受 Cloudflare 回源。后台使用随机 `ADMIN_BASE_PATH`、强密码和仅密钥 SSH，不要为了消除扫描器的 404 而创建 `.env`、`actuator`、`mcp` 等路径。
+
+`deploy/fail2ban/` 提供可选的 Caddy 扫描封禁规则。复制到服务器后只统计明确的漏洞扫描路径，不会因为普通 404 或头像缺失封禁访客：
+
+```bash
+sudo install -m 0644 deploy/fail2ban/sameko-caddy.conf /etc/fail2ban/filter.d/sameko-caddy.conf
+sudo install -m 0644 deploy/fail2ban/sameko-caddy.local /etc/fail2ban/jail.d/sameko-caddy.local
+sudo fail2ban-client -t
+sudo systemctl reload fail2ban
+sudo fail2ban-client status sameko-caddy
+```
+
+默认在一个统计窗口内命中 6 次扫描特征后封禁 2 小时，重复违规会按 `fail2ban` 的递增策略延长，最长 1 周。规则使用“全端口封禁”动作，因此已被确认扫描的 IP 也无法继续访问 SSH；不要把它改成仅按普通 404 状态计数。
 
 依赖版本或发布平台变更后运行 `npm run licenses`，按当前环境实际安装的 npm 包同步更新 `THIRD_PARTY_NOTICES.md` 和前端可查看的许可文本；已安装的平台 optional 包会纳入，未安装的平台包会跳过。部署脚本会在 Linux 发布 stage 内安装 Chromium 后重新生成清单，并检查浏览器目录至少带有许可或复制声明；该工程检查不等于对 Chromium/Playwright 全部再分发义务的法律结论。普通构建不会改写已审核的许可清单。
 

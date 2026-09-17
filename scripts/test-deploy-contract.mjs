@@ -6,10 +6,22 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
-const [installer, service, caddy, noticeGenerator, notices, staticNotices, legalConfigChecker] = await Promise.all([
+const [
+  installer,
+  service,
+  caddy,
+  fail2banFilter,
+  fail2banJail,
+  noticeGenerator,
+  notices,
+  staticNotices,
+  legalConfigChecker,
+] = await Promise.all([
   readFile(new URL('../deploy/install.sh', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/sameko-weibo-lottery.service', import.meta.url), 'utf8'),
   readFile(new URL('../deploy/Caddyfile', import.meta.url), 'utf8'),
+  readFile(new URL('../deploy/fail2ban/sameko-caddy.conf', import.meta.url), 'utf8'),
+  readFile(new URL('../deploy/fail2ban/sameko-caddy.local', import.meta.url), 'utf8'),
   readFile(new URL('./generate-third-party-notices.mjs', import.meta.url), 'utf8'),
   readFile(new URL('../THIRD_PARTY_NOTICES.md', import.meta.url), 'utf8'),
   readFile(new URL('../static/third-party-notices.txt', import.meta.url), 'utf8'),
@@ -160,7 +172,31 @@ assert.match(caddy, /max_header_size\s+16KB/);
 assert.match(caddy, /blocked_probe_regex/);
 assert.match(caddy, /output file \/var\/log\/caddy\/sameko-access\.log/);
 assert.match(caddy, /mode\s+0644/);
+assert.match(caddy, /format\s+filter/);
+assert.match(caddy, /strict-origin-when-cross-origin/);
+for (const header of [
+  'Authorization',
+  'Cookie',
+  'X-Api-Key',
+  'X-Admin-Csrf',
+  'X-Cookie-Read-Key',
+  'X-Cookie-Write-Key',
+  'X-Job-Cancel-Token',
+  'X-Job-Read-Token',
+]) {
+  assert.match(caddy, new RegExp(`request>headers>${header}\\s+delete`));
+}
 assert.match(service, /^Environment=EDGE_ACCESS_LOG_PATH=\/var\/log\/caddy\/sameko-access\.log$/m);
+assert.match(fail2banFilter, /^failregex = .*remote_ip/m);
+assert.match(fail2banFilter, /datepattern =/);
+assert.doesNotMatch(fail2banFilter, /favicon\.ico/i);
+assert.match(fail2banJail, /^\[sameko-caddy\]$/m);
+assert.match(fail2banJail, /^enabled = true$/m);
+assert.match(fail2banJail, /^filter = sameko-caddy$/m);
+assert.match(fail2banJail, /^logpath = \/var\/log\/caddy\/sameko-access\.log$/m);
+assert.match(fail2banJail, /^maxretry = 6$/m);
+assert.match(fail2banJail, /^findtime = 10m$/m);
+assert.match(fail2banJail, /^bantime = 2h$/m);
 
 const swapCommand = 'mv -Tf -- "${next_link}" "${CURRENT_LINK}"';
 const swappedFlag = 'current_swapped=1';
