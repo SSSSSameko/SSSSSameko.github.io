@@ -759,7 +759,7 @@ test('buildFairnessSummary includes the filters and actual random method', () =>
   }));
 
   assert.match(text, /本链接第 2 次开奖/);
-  assert.match(text, /载入 20 人 · 可抽 18 人/);
+  assert.match(text, /载入 20 条候选 · 可抽 18 条/);
   assert.match(text, /筛选规则：同一用户只保留一次 \/ 排除当前任务已中奖用户/);
   assert.match(text, /随机规则：SHA-256 · Fisher–Yates/);
   assert.match(text, /随机种子：seed-1/);

@@ -1,6 +1,9 @@
 import { listDisplayState } from './admin-list-state.js';
 import { formatDurationMs } from './admin-status.js';
 import { readJsonResponse } from './api-response.js';
+import { collectDrawRecords } from './admin-export.js';
+import { createDiagnosticsView, sourceEvidenceHtml } from './admin-diagnostics-view.js';
+import { diagnosticEvents } from './admin-diagnostics.js';
 import {
   diagnosticCategoryLabel,
   diagnosticLevelLabel,
@@ -51,7 +54,8 @@ import {
     loginActive: false,
     loginPollingWanted: false,
     summaryPoller: null,
-    exporting: false,
+    autoRefresh: true,
+    exportController: null,
     detailLoading: false,
     detailError: '',
     detailFile: '',
@@ -126,6 +130,8 @@ import {
     exportStatus: $('exportStatus'),
     toast: $('toast'),
   };
+
+  const diagnosticsView = createDiagnosticsView({ eventHtml, goTab: setTab, notify: showToast });
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -308,6 +314,8 @@ import {
     state.drawsController = null;
     state.detailController?.abort();
     state.detailController = null;
+    state.exportController?.abort();
+    state.exportController = null;
     for (const controller of state.requestControllers) controller.abort();
     state.requestControllers.clear();
   }
@@ -317,6 +325,10 @@ import {
   }
 
   function clearSessionState() {
+    diagnosticsView.reset();
+    state.autoRefresh = true;
+    $('autoRefreshBtn').setAttribute('aria-pressed', 'true');
+    $('autoRefreshBtn').textContent = '自动刷新';
     state.username = '';
     state.csrfToken = '';
     state.sessionExpiresAt = '';
@@ -330,6 +342,8 @@ import {
     state.feedback = [];
     state.feedbackFilter = 'all';
     state.selected = null;
+    state.detailCache.clear();
+    setExportStatus('');
     state.detailOpen = false;
     state.detailLoading = false;
     state.detailError = '';
@@ -410,11 +424,16 @@ import {
   async function readAdminJson(response, options = {}) {
     const lifecycle = responseLifecycles.get(response);
     try {
-      return await readJsonResponse(response, {
+      const data = await readJsonResponse(response, {
         invalidJsonMessage: '服务器返回格式异常',
+        allowEmpty: false,
         ...options,
         signal: lifecycle?.signal || options.signal,
       });
+      if (!data || typeof data !== 'object' || Array.isArray(data)) {
+        throw new Error('服务器返回格式异常');
+      }
+      return data;
     } catch (error) {
       if (lifecycle?.timedOut()) {
         const timeoutError = new Error('服务器响应超时，请稍后重试');
@@ -469,6 +488,14 @@ import {
   }
 
   function metricCard(value, label, note = '', progress = null) {
+    const symbol = {
+      '服务内存': '<rect x="4" y="5" width="16" height="14" rx="3"/><path d="M8 9h8M8 14h4"/>',
+      '匿名内存': '<rect x="6" y="6" width="12" height="12" rx="3"/><path d="M9 2v4m6-4v4M9 18v4m6-4v4M2 9h4m12 0h4M2 15h4m12 0h4"/>',
+      '主机内存': '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+      Chromium: '<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M3 9h18M7 6.5h.01m3 0h.01"/>',
+      '已验证账号': '<path d="m8 12 3 3 5-6M12 3l8 4v5c0 5-8 9-8 9s-8-4-8-9V7Z"/>',
+      '并发占用': '<path d="M4 7h16M4 12h12M4 17h8"/>',
+    }[label] || '';
     const displayed = typeof value === 'number' ? formatNumber(value) : plain(value);
     const progressValue = progress === null ? Number.NaN : Number(progress);
     const tone = progressValue >= 90 ? ' is-critical' : progressValue >= 75 ? ' is-warning' : '';
@@ -477,8 +504,8 @@ import {
       : '';
     return `
       <div class="metric-card${tone}">
+        <div class="metric-heading"><div class="metric-label">${escapeHtml(label)}</div><span class="metric-icon"><svg viewBox="0 0 24 24" aria-hidden="true">${symbol}</svg></span></div>
         <div class="metric-value">${escapeHtml(displayed)}</div>
-        <div class="metric-label">${escapeHtml(label)}</div>
         ${note ? `<div class="metric-note">${escapeHtml(note)}</div>` : ''}
         ${meter}
       </div>
@@ -540,6 +567,7 @@ import {
     renderHttpDiagnostics(system.runtime || {});
     renderEvents(system.events || []);
     renderSystem(system, queue);
+    diagnosticsView.update(summary);
   }
 
   function chartPoints(samples, field, plot, min, max) {
@@ -647,7 +675,7 @@ import {
       ? item.details
       : null;
     const detailHtml = details && Object.keys(details).length
-      ? `<details class="event-details"><summary>技术详情</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>`
+      ? `<details class="event-details" data-preserve="${escapeHtml([item.at, item.action, details.crawlId, details.provider].join('|'))}"><summary>技术详情</summary><pre>${escapeHtml(JSON.stringify(details, null, 2))}</pre></details>`
       : '';
     const category = normalizeDiagnosticCategory(item?.category);
     const level = normalizeDiagnosticLevel(item?.level ?? item?.status);
@@ -667,10 +695,9 @@ import {
   }
 
   function renderEvents(events) {
-    const items = Array.isArray(events) ? events : [];
+    const items = diagnosticEvents(events);
     const empty = '<div class="empty-list compact">暂无运行事件。</div>';
     els.eventPanel.innerHTML = items.length ? items.slice(0, 5).map(eventHtml).join('') : empty;
-    els.systemEventPanel.innerHTML = items.length ? items.map(eventHtml).join('') : empty;
   }
 
   function renderHttpDiagnostics(runtime) {
@@ -1310,10 +1337,11 @@ import {
         <button class="ghost-button danger-text" type="button" data-action="delete">删除</button>
       </div>
       <div class="detail-audit">
-        <span>候选 ${escapeHtml(formatNumber(item.totalCount))}</span>
-        <span>可抽 ${escapeHtml(formatNumber(item.eligibleCount))}</span>
+        <span>载入 ${escapeHtml(formatNumber(item.totalCount))} 条</span>
+        <span>可抽 ${escapeHtml(formatNumber(item.eligibleCount))} 条</span>
         <span title="${escapeHtml(auditHash)}">过程哈希 ${escapeHtml(compactHash(auditHash))}</span>
       </div>
+      ${sourceEvidenceHtml(item.sourceMeta)}
       <div class="winner-grid detail-results">${resultHtml || '<div class="empty-list">暂无中奖明细。</div>'}</div>
     `;
   }
@@ -1426,7 +1454,7 @@ import {
   function startSummaryPolling() {
     if (state.summaryPoller) return;
     state.summaryPoller = setInterval(() => {
-      if (!document.hidden && state.username && !state.loading) {
+      if (!document.hidden && state.username && !state.loading && state.autoRefresh) {
         loadSummary()
           .then(() => clearAlert('summary'))
           .catch((error) => showAlert(`总览数据刷新失败：${errorText(error)}`, 'summary'));
@@ -1438,6 +1466,13 @@ import {
     clearInterval(state.summaryPoller);
     state.summaryPoller = null;
   }
+
+  $('autoRefreshBtn').addEventListener('click', () => {
+    state.autoRefresh = !state.autoRefresh;
+    $('autoRefreshBtn').setAttribute('aria-pressed', String(state.autoRefresh));
+    $('autoRefreshBtn').textContent = state.autoRefresh ? '自动刷新' : '已暂停';
+    showToast(state.autoRefresh ? '已恢复每分钟刷新运行数据' : '已暂停自动刷新，可手动刷新数据');
+  });
 
   async function loadWeiboLoginStatus(showMessage = true, pollGeneration = null) {
     const generation = state.sessionGeneration;
@@ -1890,48 +1925,38 @@ import {
   }
 
   async function exportAll() {
-    if (state.exporting) return;
+    if (state.exportController || !state.username) return;
     if (!state.draws.length) {
       showToast('暂无可导出的开奖记录');
       return;
     }
-    state.exporting = true;
+    const generation = state.sessionGeneration;
+    const controller = new AbortController();
+    state.exportController = controller;
     try {
       els.exportAllBtn.disabled = true;
       clearAlert('export');
-      const items = state.draws.slice();
-      const records = [];
-      for (let index = 0; index < items.length; index += 1) {
-        const item = items[index];
-        setExportStatus(`正在准备 ${index + 1} / ${items.length} 条`);
-        let detail = state.selected?.file === item.file ? state.selected : state.detailCache.get(item.file);
-        if (!detail) {
-          try {
-            const data = await api(`/api/admin/draws/${encodeURIComponent(item.file)}`);
-            detail = data.item;
-          } catch (error) {
-            const retryAfter = numericValue(error.retryAfter);
-            if (error.status !== 429 || retryAfter === null || retryAfter > 60) throw error;
-            const delay = Math.max(1, Math.ceil(retryAfter));
-            setExportStatus(`请求较频繁，${delay} 秒后继续 · ${index + 1} / ${items.length}`);
-            await new Promise((resolve) => setTimeout(resolve, delay * 1000));
-            const data = await api(`/api/admin/draws/${encodeURIComponent(item.file)}`);
-            detail = data.item;
-          }
-          cacheDetail(detail);
-        }
-        records.push(detail);
-      }
-      exportCsv(records, `sameko-draws-${Date.now()}.csv`);
+      const records = await collectDrawRecords({
+        items: state.draws.slice(),
+        cached: (file) => state.selected?.file === file ? state.selected : state.detailCache.get(file),
+        load: async (file, signal) => (await api('/api/admin/draws/' + encodeURIComponent(file), { signal })).item,
+        remember: cacheDetail,
+        progress: setExportStatus,
+        signal: controller.signal,
+      });
+      if (!isCurrentSession(generation)) return;
+      exportCsv(records, 'sameko-draws-' + Date.now() + '.csv');
       setExportStatus(`已导出 ${records.length} 条记录`);
       showToast(`已导出当前列表的 ${records.length} 条记录`);
     } catch (error) {
-      const message = errorText(error);
-      setExportStatus(`导出中断：${message}`);
+      if (controller.signal.aborted || !isCurrentSession(generation)) return;
+      setExportStatus(`导出中断：${errorText(error)}`);
       presentError(error, 'export');
     } finally {
-      state.exporting = false;
-      els.exportAllBtn.disabled = !state.username;
+      if (state.exportController === controller) {
+        state.exportController = null;
+        els.exportAllBtn.disabled = !state.username;
+      }
     }
   }
 

@@ -64,6 +64,12 @@ test('measureResultPoster grows with the number of winners without excess empty 
   assert.ok(longLayout.height - shortLayout.height < 1400);
 });
 
+test('legacy posters distinguish an unrecorded candidate total from zero', () => {
+  const model = buildResultPosterModel({ ...sample, candidateCount: 0, candidateCountKnown: false });
+  assert.equal(model.fairness.candidateCountKnown, false);
+  assert.equal(buildResultPosterModel(sample).fairness.candidateCountKnown, true);
+});
+
 test('result poster caps rendered rows while preserving the actual winner total', () => {
   const model = buildResultPosterModel({
     ...sample,

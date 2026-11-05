@@ -12,10 +12,16 @@ import { serverTestEnv } from './server-test-env.mjs';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scripts = [
   'test-ui-console.mjs',
+  'test-settings-entry-ui.mjs',
+  'test-error-recovery-ui.mjs',
   'test-dark-scheme-ui.mjs',
   'test-desktop-layout-ui.mjs',
+  'test-studio-ui.mjs',
+  'test-mobile-viewport-ui.mjs',
   'test-candidate-load-ui.mjs',
+  'test-draw-count-ui.mjs',
   'test-candidate-tools-ui.mjs',
+  'test-large-list-ui.mjs',
   'test-tablist-keyboard-ui.mjs',
   'test-main-flow-guards-ui.mjs',
   'test-draw-receipt-ui.mjs',
@@ -25,6 +31,7 @@ const scripts = [
   'test-sheet-motion-ui.mjs',
   'test-feedback-ui.mjs',
   'test-admin-ui.mjs',
+  'test-admin-diagnostics-ui.mjs',
 ];
 const SCRIPT_TIMEOUT_MS = 120_000;
 

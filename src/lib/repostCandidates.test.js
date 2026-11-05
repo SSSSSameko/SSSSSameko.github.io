@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   createEmptyPageGuard,
   createRepeatedPageGuard,
+  hasStableRepostId,
   repostIdentity,
   uniqueReposts,
 } from './repostCandidates.js';
@@ -21,6 +22,24 @@ test('unique reposts remove repeated provider copies of one repost', () => {
   const mobile = { uid: '1001', repostId: 'same-repost', source: 'mobile' };
 
   assert.deepEqual(uniqueReposts([desktop, mobile]), [desktop]);
+});
+
+test('legacy BID and decimal MID identify one repost without merging different reposts by the same user', () => {
+  const desktop = { uid: '1001', repostId: '5000000123456789', source: 'desktop-cookie' };
+  const legacy = { ...desktop, repostId: 'O000cevgF', source: 'weibo-cn' };
+  const another = { ...desktop, repostId: '5000000123456790' };
+  assert.equal(repostIdentity(desktop), repostIdentity(legacy));
+  assert.deepEqual(uniqueReposts([desktop, legacy, another]), [desktop, another]);
+  assert.deepEqual(uniqueReposts([legacy, desktop, another]), [legacy, another]);
+});
+
+test('opaque and ambiguous numeric IDs are not guessed into unrelated identities', () => {
+  assert.equal(repostIdentity({ repostId: '987654321', source: 'weibo-cn' }), 'repost:987654321');
+  assert.equal(repostIdentity({ repostId: 'OZZZZZZZZ', source: 'weibo-cn' }), 'repost:OZZZZZZZZ');
+  assert.equal(repostIdentity({ repostId: 'O000cevgF', source: 'manual' }), 'repost:O000cevgF');
+  assert.equal(hasStableRepostId({ repostId: '987654321', source: 'weibo-cn' }), false);
+  assert.equal(hasStableRepostId({ repostId: 'O000cevgF', source: 'weibo-cn' }), true);
+  assert.equal(hasStableRepostId({ repostId: 'weibo-cn-1-0-900001', source: 'weibo-cn' }), false);
 });
 
 test('repeated page guard stops only after consecutive non-empty duplicate pages', () => {

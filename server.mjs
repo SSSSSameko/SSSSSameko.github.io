@@ -1,19 +1,12 @@
 import http from 'node:http';
 import fs from 'node:fs/promises';
 import { constants as fsConstants } from 'node:fs';
-import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import os from 'node:os';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
-import {
-  brotliCompress as brotliCompressCallback,
-  gzip as gzipCallback,
-  constants as zlibConstants,
-} from 'node:zlib';
 import {
   adminSessionCookie,
   createAdminSession,
@@ -47,127 +40,8 @@ import { createAsyncGate } from './src/lib/asyncGate.js';
 import {
   createEmptyPageGuard,
   createRepeatedPageGuard,
-  repostIdentity,
-  uniqueReposts,
 } from './src/lib/repostCandidates.js';
 import { createSnapshotCache, repostTaskKey } from './src/lib/repostTaskCache.js';
-function isPrivateIpv4(address) {
-  const parts = String(address || '').split('.');
-  if (parts.length !== 4 || parts.some((part) => !/^\d+$/.test(part))) return false;
-  const octets = parts.map((part) => Number(part));
-  if (octets.some((octet) => !Number.isInteger(octet) || octet < 0 || octet > 255)) return false;
-  const [first, second] = octets;
-  return first === 0
-    || first === 10
-    || first === 127
-    || (first === 100 && second >= 64 && second <= 127)
-    || (first === 169 && second === 254)
-    || (first === 172 && second >= 16 && second <= 31)
-    || (first === 192 && second === 0)
-    || (first === 192 && second === 168)
-    || (first === 192 && second === 88 && parts[2] === '99')
-    || (first === 198 && second >= 18 && second <= 19)
-    || (first === 198 && second === 51 && parts[2] === '100')
-    || (first === 203 && second === 0 && parts[2] === '113')
-    || first >= 224;
-}
-
-function isPrivateIpv6(address) {
-  let value = String(address || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
-  if (!value) return false;
-  if (value.includes('.')) {
-    const separator = value.lastIndexOf(':');
-    if (separator < 0) return false;
-    const dottedPart = value.slice(separator + 1);
-    const octets = dottedPart.split('.');
-    if (octets.length !== 4 || octets.some((item) => !/^\d{1,3}$/.test(item) || Number(item) > 255)) return false;
-    const high = ((Number(octets[0]) << 8) | Number(octets[1])).toString(16);
-    const low = ((Number(octets[2]) << 8) | Number(octets[3])).toString(16);
-    value = `${value.slice(0, separator + 1)}${high}:${low}`;
-  }
-  const parts = value.split('::');
-  if (parts.length > 2) return false;
-  const parsePart = (part) => part
-    .split(':')
-    .filter(Boolean)
-    .map((item) => /^[0-9a-f]{1,4}$/.test(item) ? Number.parseInt(item, 16) : null);
-  let left = parsePart(parts[0]);
-  let right = parts.length === 2 ? parsePart(parts[1]) : [];
-  if (left.includes(null) || right.includes(null)) return false;
-  const missing = 8 - left.length - right.length;
-  if (missing < 0 || (parts.length === 1 && missing !== 0)) return false;
-  const hextets = parts.length === 2
-    ? [...left, ...Array(missing).fill(0), ...right]
-    : left;
-  if (hextets.length !== 8) return false;
-  const first = hextets[0];
-  const mappedIpv4 = hextets.slice(0, 5).every((part) => part === 0) && hextets[5] === 0xffff;
-  const compatibleIpv4 = hextets.slice(0, 6).every((part) => part === 0);
-  if (mappedIpv4 || compatibleIpv4) {
-    const ipv4 = [hextets[6] >> 8, hextets[6] & 255, hextets[7] >> 8, hextets[7] & 255].join('.');
-    return isPrivateIpv4(ipv4);
-  }
-  return first === 0
-    || (first & 0xfe00) === 0xfc00
-    || (first & 0xffc0) === 0xfe80
-    || (first & 0xff00) === 0xff00
-    || (first === 0x2001 && hextets[1] === 0x0db8);
-}
-
-function isPrivateAddress(address) {
-  const value = String(address || '').trim().replace(/^\[|\]$/g, '');
-  const version = isIP(value);
-  if (version === 4) return isPrivateIpv4(value);
-  if (version === 6) return isPrivateIpv6(value);
-  return false;
-}
-
-function avatarDnsOverridesForTests() {
-  if (process.env.SERVER_TEST_MODE !== '1') return null;
-  const raw = String(process.env.AVATAR_DNS_OVERRIDES || '').trim();
-  if (!raw) return null;
-  const parsed = JSON.parse(raw);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    throw new Error('AVATAR_DNS_OVERRIDES must be a JSON object');
-  }
-  const overrides = new Map();
-  for (const [hostname, records] of Object.entries(parsed)) {
-    if (!Array.isArray(records) || !records.length) {
-      throw new Error(`AVATAR_DNS_OVERRIDES.${hostname} must be a non-empty array`);
-    }
-    const normalized = records.map((record) => ({
-      address: String(record?.address || '').trim(),
-      family: Number(record?.family),
-    }));
-    if (normalized.some((record) => !record.address || ![4, 6].includes(record.family))) {
-      throw new Error(`AVATAR_DNS_OVERRIDES.${hostname} contains an invalid address record`);
-    }
-    overrides.set(String(hostname).toLowerCase(), normalized);
-  }
-  return overrides;
-}
-
-const avatarDnsOverrides = avatarDnsOverridesForTests();
-
-async function avatarHostIsPublic(avatar) {
-  let url;
-  try {
-    url = new URL(avatar);
-  } catch {
-    return false;
-  }
-  const hostname = url.hostname;
-  if (isIP(hostname)) return !isPrivateAddress(hostname);
-  try {
-    const records = avatarDnsOverrides?.get(hostname.toLowerCase())
-      || await dnsLookup(hostname, { all: true, verbatim: true });
-    if (!records.length) return false;
-    return records.every((record) => !isPrivateAddress(record.address));
-  } catch {
-    return false;
-  }
-}
-
 import {
   clientAddress,
   firstHeaderValue,
@@ -182,6 +56,7 @@ import {
   selectFilesToPrune,
 } from './src/lib/storageRetention.js';
 import { createLatestWriteQueue } from './src/lib/latestWriteQueue.js';
+import { replaceFileAtomically } from './server/storage/atomic-replace.mjs';
 import {
   classifyHttpFailure,
   diagnosticCategoryLabel,
@@ -216,6 +91,28 @@ import {
   throttleRetryDelayMs,
 } from './src/lib/weiboPacing.js';
 import { readReleaseInfo } from './scripts/release-info.mjs';
+import { diagnosticEvents } from './src/lib/adminDiagnostics.js';
+import {
+  StaticAssetCache,
+  staticCacheHeaders,
+  staticContentType,
+  staticRequestNotModified,
+  staticResponseBody,
+} from './server/http/static-assets.mjs';
+import { CandidateCollection, repostCompletenessTolerance, repostCountIsComplete } from './server/weibo/candidate-collection.mjs';
+import { decideRepostFallback, repostScanStopReason } from './server/weibo/fallback-policy.mjs';
+import { assertTimelineShape, assertWeiboHttpResponse, parseWeiboResponse } from './server/weibo/response-policy.mjs';
+import {
+  desktopTimelineList,
+  legacyMaxPage,
+  legacyTimelineList,
+  mobileTimelineList,
+  normalizeCandidate,
+} from './server/weibo/timeline-parsers.mjs';
+
+import { createAvatarHostPolicy } from './server/security/avatar-host-policy.mjs';
+
+const avatarHostIsPublic = createAvatarHostPolicy();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname);
@@ -343,14 +240,14 @@ const avatarFetchQueueMax = envInteger('AVATAR_FETCH_QUEUE_MAX', 128, 0);
 const cookieAuthQuarantineMs = envNumber('COOKIE_AUTH_QUARANTINE_MS', 45 * 60_000, 60_000);
 const disableCookieStore = /^(1|true|yes)$/i.test(String(process.env.DISABLE_COOKIE_STORE || '').trim());
 const pageDelayJitterMs = envNumber('PAGE_DELAY_JITTER_MS', 1000, 0);
-const providerSwitchDelayMs = envNumber('PROVIDER_SWITCH_DELAY_MS', 6000, 0);
+const providerSwitchDelayMs = envNumber('PROVIDER_SWITCH_DELAY_MS', 8000, 0);
 const officialPageDelayMs = envNumber('OFFICIAL_PAGE_DELAY_MS', 6000, 0);
-const desktopPageDelayMs = envNumber('DESKTOP_PAGE_DELAY_MS', 255, 0);
-const desktopPageDelayJitterMs = envNumber('DESKTOP_PAGE_DELAY_JITTER_MS', 145, 0);
+const desktopPageDelayMs = envNumber('DESKTOP_PAGE_DELAY_MS', 400, 0);
+const desktopPageDelayJitterMs = envNumber('DESKTOP_PAGE_DELAY_JITTER_MS', 300, 0);
 const legacyPageDelayMs = envNumber('LEGACY_PAGE_DELAY_MS', 6000, 0);
-const legacyPageDelayJitterMs = envNumber('LEGACY_PAGE_DELAY_JITTER_MS', 0, 0);
-const mobilePageDelayMs = envNumber('MOBILE_PAGE_DELAY_MS', 600, 0);
-const mobilePageDelayJitterMs = envNumber('MOBILE_PAGE_DELAY_JITTER_MS', 700, 0);
+const legacyPageDelayJitterMs = envNumber('LEGACY_PAGE_DELAY_JITTER_MS', 1000, 0);
+const mobilePageDelayMs = envNumber('MOBILE_PAGE_DELAY_MS', 800, 0);
+const mobilePageDelayJitterMs = envNumber('MOBILE_PAGE_DELAY_JITTER_MS', 800, 0);
 const pageCooldownEvery = envInteger('PAGE_COOLDOWN_EVERY', 8, 2);
 const pageCooldownMs = envNumber('PAGE_COOLDOWN_MS', 5000, 0);
 const weiboThrottleRetryMax = envInteger('WEIBO_THROTTLE_RETRY_MAX', 2, 0);
@@ -603,21 +500,6 @@ let drawStatisticsCache = null;
 let completedDrawIndex = null;
 let completedDrawIndexLoad = null;
 let completedDrawIndexRevision = 0;
-
-const MIME = {
-  '.html': 'text/html; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.json': 'application/json; charset=utf-8',
-  '.txt': 'text/plain; charset=utf-8',
-  '.webmanifest': 'application/manifest+json; charset=utf-8',
-  '.svg': 'image/svg+xml; charset=utf-8',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp',
-  '.ico': 'image/x-icon',
-};
 
 const WEIBO_BASE62 = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const KNOWN_API_RATE_PATHS = new Set([
@@ -1626,7 +1508,7 @@ async function writeFileAtomic(filePath, content, options = {}) {
       }
     }
     await fs.chmod(temporary, options.fileMode || 0o600).catch(() => {});
-    await fs.rename(temporary, filePath);
+    await replaceFileAtomically(temporary, filePath);
     await fs.chmod(filePath, options.fileMode || 0o600).catch(() => {});
     if (durable) await syncParentDirectory(filePath);
   } finally {
@@ -2529,158 +2411,6 @@ async function getDrawCountForStatus(statusId, auditHash = '') {
     ),
     ...stats,
   };
-}
-
-function stripHtml(input) {
-  return String(input || '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .trim();
-}
-
-function stripLegacyHtml(input) {
-  return stripHtml(String(input || '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/&ensp;/g, ' ')
-    .replace(/&emsp;/g, ' '));
-}
-
-function candidateKey(raw) {
-  const stable = [
-    raw.uid,
-    raw.screenName,
-    raw.repostId,
-    raw.text,
-    raw.createdAt,
-  ].filter(Boolean).join('|');
-  return crypto.createHash('sha1').update(stable || crypto.randomUUID()).digest('hex').slice(0, 16);
-}
-
-function normalizeCandidate(item, source) {
-  const user = item?.user || item?.mblog?.user || item?.retweeted_status?.user || {};
-  const uid = String(user.idstr || user.id || item.uid || item.user_id || '').trim().slice(0, 80);
-  const screenName = String(user.screen_name || user.name || item.screen_name || item.name || '未命名用户').trim().slice(0, 120);
-  const text = stripHtml(item.text || item.raw_text || item.mblog?.text || item.reason || '').slice(0, 1000);
-  const createdAt = String(item.created_at || item.createdAt || item.mblog?.created_at || '').slice(0, 100);
-  const repostId = String(item.idstr || item.id || item.mid || item.mblog?.idstr || item.mblog?.id || '').trim().slice(0, 100);
-
-  return {
-    id: candidateKey({ uid, screenName, repostId, text, createdAt }),
-    uid,
-    screenName,
-    avatar: safeAvatarUrl(user.profile_image_url || user.avatar_hd || user.avatar_large),
-    verified: Boolean(user.verified),
-    followers: Number(user.followers_count || 0),
-    text,
-    createdAt,
-    repostId,
-    source: String(source || '').slice(0, 80),
-  };
-}
-
-function createCandidateCollection(candidates = []) {
-  const seen = new Set();
-  let bytes = 2;
-  for (const [index, candidate] of candidates.entries()) {
-    const key = repostIdentity(candidate);
-    if (key) seen.add(key);
-    bytes += Buffer.byteLength(JSON.stringify(candidate), 'utf8') + (index ? 1 : 0);
-  }
-  return {
-    candidates,
-    seen,
-    bytes,
-    limitReason: '',
-    discardedCount: 0,
-  };
-}
-
-function appendCandidates(collection, items, source = '') {
-  for (const item of items || []) {
-    const candidate = source ? normalizeCandidate(item, source) : item;
-    const key = repostIdentity(candidate);
-    if (!key || collection.seen.has(key)) continue;
-    if (collection.candidates.length >= maxCandidates) {
-      collection.limitReason ||= 'count';
-      collection.discardedCount += 1;
-      return true;
-    }
-    const bytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8')
-      + (collection.candidates.length ? 1 : 0);
-    if (collection.bytes + bytes > maxCandidatePayloadBytes) {
-      collection.limitReason ||= 'bytes';
-      collection.discardedCount += 1;
-      return true;
-    }
-    collection.seen.add(key);
-    collection.candidates.push(candidate);
-    collection.bytes += bytes;
-  }
-  return false;
-}
-
-function prependCandidates(collection, items) {
-  const additions = [];
-  for (const candidate of uniqueReposts(items, maxCandidates)) {
-    const key = repostIdentity(candidate);
-    if (!key || collection.seen.has(key)) continue;
-    if (collection.candidates.length + additions.length >= maxCandidates) {
-      collection.limitReason ||= 'count';
-      collection.discardedCount += 1;
-      break;
-    }
-    const bytes = Buffer.byteLength(JSON.stringify(candidate), 'utf8')
-      + (collection.candidates.length || additions.length ? 1 : 0);
-    if (collection.bytes + bytes > maxCandidatePayloadBytes) {
-      collection.limitReason ||= 'bytes';
-      collection.discardedCount += 1;
-      break;
-    }
-    collection.seen.add(key);
-    collection.bytes += bytes;
-    additions.push(candidate);
-  }
-  if (additions.length) collection.candidates.unshift(...additions);
-  return {
-    addedCount: additions.length,
-    truncatedCount: collection.discardedCount,
-  };
-}
-
-function candidateCollectionMeta(collection) {
-  return {
-    candidatePayloadBytes: collection.bytes,
-    candidatePayloadLimitBytes: maxCandidatePayloadBytes,
-    candidateLimitReason: collection.limitReason,
-  };
-}
-
-function repostCompletenessTolerance(totalNumber) {
-  const total = Math.max(0, Number(totalNumber) || 0);
-  return Math.max(2, Math.ceil(total * 0.10));
-}
-
-function repostCountLooksComplete(candidateCount, totalNumber) {
-  const count = Math.max(0, Number(candidateCount) || 0);
-  if (totalNumber === null || totalNumber === undefined) return count > 0;
-  const missingCount = Math.max(0, Number(totalNumber) || 0) - count;
-  return missingCount <= 0 || (count > 0 && missingCount <= repostCompletenessTolerance(totalNumber));
-}
-
-function candidateLimitWarnings(collection) {
-  if (collection.limitReason === 'count') {
-    return [`为控制服务器资源，本次最多载入 ${maxCandidates} 位候选。`];
-  }
-  if (collection.limitReason === 'bytes') {
-    return [`候选数据体积已达到 ${Math.round(maxCandidatePayloadBytes / 1024 / 1024)} MB，本次载入 ${collection.candidates.length} 位候选后停止。`];
-  }
-  return [];
 }
 
 function safeError(error) {
@@ -4464,7 +4194,7 @@ function finiteNumber(value, fallback = null) {
 }
 
 function storedCount(value, fallback = null, maximum = maxDrawStatCount) {
-  const number = Number(value);
+  const number = finiteNumber(value);
   return Number.isSafeInteger(number) && number >= 0 && number <= maximum
     ? number
     : fallback;
@@ -4532,70 +4262,15 @@ function waitForPromiseOrAbort(promise, signal) {
 }
 
 async function fetchJson(url, options = {}) {
-  const { headers = {}, signal, onThrottle, ...rest } = options;
-  let response;
-  try {
-    response = await fetchWeiboResponse(url, {
-      ...rest,
-      signal,
-      onThrottle,
-      headers: {
-        accept: 'application/json, text/plain, */*',
-        ...headers,
-      },
-    });
-  } catch (error) {
-    if (signal?.aborted) throw taskCancelledError();
-    const wrapped = new Error(`请求微博接口失败或超时：${safeErrorMessage(error, 800)}`);
-    wrapped.status = error.name === 'TimeoutError' || error.name === 'AbortError' ? 504 : 502;
-    wrapped.upstream = upstreamDiagnostic(url, null, { status: 0 });
-    throw wrapped;
-  }
-  const declaredLength = Number(response.headers.get('content-length') || 0);
-  if (declaredLength > maxWeiboResponseBytes) {
-    await cancelResponseBody(response);
-    const error = new Error('微博接口返回内容过大');
-    error.status = 502;
-    error.upstream = upstreamDiagnostic(url, response);
-    throw error;
-  }
-  const text = (await readResponseBuffer(response, maxWeiboResponseBytes, '微博接口返回内容过大')).toString('utf8');
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    const visitorSystem = /Sina Visitor System|passport\.sina|visitor/i.test(text);
-    const error = new Error(
-      visitorSystem
-        ? '微博返回访客系统页面，当前 H5 Cookie 不可用或已过期；请更新 Cookie 后重试，或改用手动导入名单'
-        : `返回内容不是 JSON：${text.slice(0, 120)}`,
-    );
-    error.status = response.status || 502;
-    error.upstream = upstreamDiagnostic(url, response);
-    throw error;
-  }
-
-  const businessFailed = json?.ok === 0 || json?.ok === false;
-  if (!response.ok || businessFailed || json.error || json.error_code) {
-    const error = new Error(safeErrorMessage(
-      json.error || json.msg || `微博接口返回 ${response.status}`,
-      1200,
-    ));
-    error.status = /频繁|风控|too many/i.test(error.message)
-      ? 429
-      : /(未登录|登录已失效|请先登录)/i.test(error.message) ? 401 : response.ok ? 502 : response.status || 502;
-    error.weibo = {
-      errorCode: safeText(json.error_code, 120),
-      request: safeText(json.request, 500),
-    };
-    error.upstream = upstreamDiagnostic(url, response);
-    throw error;
-  }
-  return json;
+  return readWeiboResponse(url, options, 'json');
 }
 
 async function fetchText(url, options = {}) {
-  const { headers = {}, signal, onThrottle, ...rest } = options;
+  return readWeiboResponse(url, options, 'text');
+}
+
+async function readWeiboResponse(url, options, format) {
+  const { headers = {}, signal, onThrottle, allowEmptyReposts = false, timeline = '', ...rest } = options;
   let response;
   try {
     response = await fetchWeiboResponse(url, {
@@ -4603,33 +4278,38 @@ async function fetchText(url, options = {}) {
       signal,
       onThrottle,
       headers: {
-        accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        accept: format === 'json'
+          ? 'application/json, text/plain, */*'
+          : 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         ...headers,
       },
     });
+    assertWeiboHttpResponse({
+      status: response.status,
+      location: response.headers.get('location'),
+      url,
+    });
+    const declaredLength = Number(response.headers.get('content-length') || 0);
+    if (declaredLength > maxWeiboResponseBytes) throw new Error('微博接口返回内容过大');
+    const text = (await readResponseBuffer(response, maxWeiboResponseBytes, '微博接口返回内容过大')).toString('utf8');
+    const value = parseWeiboResponse(text, { format, allowEmptyReposts });
+    if (timeline) assertTimelineShape(value, timeline);
+    return value;
   } catch (error) {
+    await cancelResponseBody(response);
     if (signal?.aborted) throw taskCancelledError();
-    const wrapped = new Error(`请求微博页面失败或超时：${safeErrorMessage(error, 800)}`);
+    if (String(error.code || '').startsWith('WEIBO_')) {
+      error.message = safeErrorMessage(error, 1200);
+      error.upstream = upstreamDiagnostic(url, response);
+      throw error;
+    }
+    // Include body consumption in the transport boundary. A dropped stream,
+    // timeout or oversized upstream response must be recoverable like a 5xx.
+    const wrapped = new Error(`读取微博响应失败或超时：${safeErrorMessage(error, 800)}`);
     wrapped.status = error.name === 'TimeoutError' || error.name === 'AbortError' ? 504 : 502;
-    wrapped.upstream = upstreamDiagnostic(url, null, { status: 0 });
+    wrapped.upstream = upstreamDiagnostic(url, response);
     throw wrapped;
   }
-  const declaredLength = Number(response.headers.get('content-length') || 0);
-  if (declaredLength > maxWeiboResponseBytes) {
-    await cancelResponseBody(response);
-    const error = new Error('微博页面返回内容过大');
-    error.status = 502;
-    error.upstream = upstreamDiagnostic(url, response);
-    throw error;
-  }
-  const text = (await readResponseBuffer(response, maxWeiboResponseBytes, '微博页面返回内容过大')).toString('utf8');
-  if (!response.ok) {
-    const error = new Error(`微博页面返回 ${response.status}`);
-    error.status = response.status || 502;
-    error.upstream = upstreamDiagnostic(url, response);
-    throw error;
-  }
-  return text;
 }
 
 async function sleep(ms, signal) {
@@ -4660,7 +4340,8 @@ async function fetchWeiboResponse(url, options = {}) {
     const timeoutSignal = AbortSignal.timeout(fetchTimeoutMs);
     const response = await fetch(url, {
       ...requestOptions,
-      redirect: 'error',
+      // Inspect the status/Location only; never forward credentials to a target.
+      redirect: 'manual',
       signal: configuredSignal
         ? AbortSignal.any([configuredSignal, timeoutSignal])
         : timeoutSignal,
@@ -4780,6 +4461,7 @@ function repostProviderDiagnostic(statusId, label, result) {
     missingCount,
     tolerance: totalNumber === null ? null : repostCompletenessTolerance(totalNumber),
     candidateLimitReason: safeText(result?.meta?.candidateLimitReason, 120),
+    paginationError: result?.meta?.paginationError || null,
     warnings: Array.isArray(result?.meta?.warnings)
       ? result.meta.warnings.map((warning) => safeText(warning, 400)).slice(0, 8)
       : [],
@@ -4897,7 +4579,7 @@ async function reconcileRepostHead({
     const head = await loadHead();
     const headCandidates = (Array.isArray(head.items) ? head.items : [])
       .map((item) => normalizeCandidate(item, head.source));
-    const merged = prependCandidates(candidateCollection, headCandidates);
+    const merged = candidateCollection.prepend(headCandidates);
     return {
       addedCount: merged.addedCount,
       reconciled: true,
@@ -4918,13 +4600,15 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
   const token = normalizeOfficialAccessToken(accessToken);
 
   const candidates = [];
-  const candidateCollection = createCandidateCollection(candidates);
+  const candidateCollection = new CandidateCollection({ candidates, maxCandidates, maxPayloadBytes: maxCandidatePayloadBytes });
   const pages = [];
   const startedAt = Date.now();
   let totalNumber = null;
   let hitPageCap = false;
   let hitCandidateCap = false;
   let repeatedPages = false;
+  let paginationError = null;
+  let scanStopReason = 'page-limit';
   const repeatedPageGuard = createRepeatedPageGuard();
 
   for (let page = 1; page <= OFFICIAL_MAX_PAGES; page += 1) {
@@ -4934,20 +4618,27 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
     apiUrl.searchParams.set('count', String(OFFICIAL_PAGE_SIZE));
     apiUrl.searchParams.set('page', String(page));
 
-    const json = await fetchJson(apiUrl, {
+    const loaded = await loadRepostPage(() => fetchJson(apiUrl, {
       signal,
       onThrottle: throttleProgress(reportProgress, '官方接口'),
-    });
+      timeline: 'official',
+    }), { page, candidateCount: candidates.length, signal });
+    if (loaded.failure) {
+      paginationError = loaded.failure;
+      scanStopReason = 'pagination-error';
+      break;
+    }
+    const json = loaded.value;
     const list = Array.isArray(json.reposts) ? json.reposts : [];
-    totalNumber = Number.isFinite(Number(json.total_number)) ? Number(json.total_number) : totalNumber;
+    totalNumber = finiteNumber(json.total_number, totalNumber);
     pages.push({ page, count: list.length });
     const previousCount = candidates.length;
-    hitCandidateCap = appendCandidates(candidateCollection, list, 'official');
+    hitCandidateCap = candidateCollection.append(list, 'official');
     repeatedPages = repeatedPageGuard.observe(list.length, candidates.length - previousCount);
-    if (hitCandidateCap) break;
-    if (repeatedPages) break;
-    if (totalNumber !== null && candidates.length >= totalNumber) break;
-    if (list.length < OFFICIAL_PAGE_SIZE) break;
+    if (hitCandidateCap) { scanStopReason = 'candidate-limit'; break; }
+    if (repeatedPages) { scanStopReason = 'repeated-pages'; break; }
+    if (repostCountIsComplete(candidates.length, totalNumber)) { scanStopReason = 'count-reached'; break; }
+    if (list.length < OFFICIAL_PAGE_SIZE) { scanStopReason = list.length ? 'short-page' : 'empty-end'; break; }
     if (page === OFFICIAL_MAX_PAGES) hitPageCap = true;
     await waitBetweenPages('官方接口', officialPageDelayMs, reportProgress, page, signal);
   }
@@ -4970,6 +4661,7 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
       const headJson = await fetchJson(headUrl, {
         signal,
         onThrottle: throttleProgress(reportProgress, '官方接口'),
+        timeline: 'official',
       });
       return {
         items: Array.isArray(headJson.reposts) ? headJson.reposts : [],
@@ -4980,35 +4672,57 @@ async function fetchOfficialReposts({ statusId, accessToken, reportProgress, sig
   });
   totalNumber = headResult.totalNumber ?? totalNumber;
   hitCandidateCap = headResult.hitCandidateCap;
+  const collectionMeta = candidateCollection.metadata();
+  const complete = !hitCandidateCap && !collectionMeta.identityUncertainCount
+    && repostCountIsComplete(unique.length, totalNumber);
   return {
     candidates: unique,
     meta: {
       provider: 'official',
       pages,
       totalNumber,
+      visibleNumber: unique.length,
+      missingCount: Number.isSafeInteger(totalNumber) && totalNumber >= 0
+        ? Math.max(0, totalNumber - unique.length) : null,
+      paginationError,
+      scanStopReason,
+      stopReason: hitCandidateCap ? 'candidate-limit' : complete ? 'count-reached' : scanStopReason,
       pageSize: OFFICIAL_PAGE_SIZE,
       headReconciled: headResult.reconciled,
       headAddedCount: headResult.addedCount,
-      ...candidateCollectionMeta(candidateCollection),
-      complete: !hitCandidateCap
-        && repostCountLooksComplete(unique.length, totalNumber),
+      ...collectionMeta,
+      complete,
       warnings: [
-        '已自动分页抓取全部可见转发；官方开放接口的配额和可见范围以账号权限为准。',
+        '已按官方接口分页读取可见转发；配额、返回数量和可见范围以账号权限为准。',
         ...(headResult.addedCount ? [`结束前补入 ${headResult.addedCount} 条刚新增的可见转发。`] : []),
         ...(headResult.warning ? [headResult.warning] : []),
         ...(repeatedPages ? ['官方接口连续返回重复页面，已停止无效分页请求。'] : []),
         ...(hitPageCap ? [`为避免异常长任务，本次在 ${OFFICIAL_MAX_PAGES} 页后停止。`] : []),
-        ...candidateLimitWarnings(candidateCollection),
+        ...paginationFailureWarnings('官方接口', paginationError),
+        ...candidateCollection.warnings(),
       ],
     },
   };
 }
 
-function desktopTimelineList(json) {
-  if (Array.isArray(json?.data)) return json.data;
-  if (Array.isArray(json?.data?.data)) return json.data.data;
-  if (Array.isArray(json?.reposts)) return json.reposts;
-  return [];
+async function loadRepostPage(load, { page, candidateCount, signal }) {
+  try {
+    return { value: await load(), failure: null };
+  } catch (error) {
+    throwIfTaskCancelled(signal);
+    // Authentication and throttling still stop collection/rotate credentials.
+    // Only retain a partial page sequence after a recoverable upstream failure.
+    if (!candidateCount || !Number.isInteger(Number(error?.status))
+      || isCookieAuthError(error) || isWeiboThrottleStatus(error?.status)
+      || Number(error?.status) < 500 || Number(error?.status) > 599) throw error;
+    return { value: null, failure: { page, ...errorDiagnostic(error) } };
+  }
+}
+
+function paginationFailureWarnings(label, failure) {
+  return failure
+    ? [`${label}第 ${failure.page} 页读取失败，已保留此前取得的候选：${failure.message}`]
+    : [];
 }
 
 async function fetchDesktopStatusInfo({ statusId, cookie, signal }) {
@@ -5032,15 +4746,17 @@ async function fetchDesktopStatusInfo({ statusId, cookie, signal }) {
 
 async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatusInfo, reportProgress, signal }) {
   const candidates = [];
-  const candidateCollection = createCandidateCollection(candidates);
+  const candidateCollection = new CandidateCollection({ candidates, maxCandidates, maxPayloadBytes: maxCandidatePayloadBytes });
   const pages = [];
   const startedAt = Date.now();
   let totalNumber = null;
+  const observedTotals = new Set();
   let maxPage = null;
   let hitPageCap = false;
   let hitCandidateCap = false;
   let repeatedPages = false;
   let stoppedOnEmptyPages = false;
+  let paginationError = null;
   const repeatedPageGuard = createRepeatedPageGuard();
   const emptyPageGuard = createEmptyPageGuard();
   let statusInfo = null;
@@ -5062,6 +4778,7 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
   }
 
   const timelineId = statusInfo.id || statusId;
+  if (totalNumber !== null) observedTotals.add(totalNumber);
   for (let page = 1; page <= DESKTOP_MAX_PAGES; page += 1) {
     const requestedPageSize = page === 1 ? DESKTOP_FIRST_PAGE_SIZE : DESKTOP_PAGE_SIZE;
     const apiUrl = new URL('https://weibo.com/ajax/statuses/repostTimeline');
@@ -5070,15 +4787,22 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
     apiUrl.searchParams.set('moduleID', 'feed');
     apiUrl.searchParams.set('count', String(requestedPageSize));
 
-    const json = await fetchJson(apiUrl, {
+    const loaded = await loadRepostPage(() => fetchJson(apiUrl, {
       signal,
       headers: desktopHeaders(cookie, statusInfo.referer),
       onThrottle: throttleProgress(reportProgress, '桌面端接口'),
-    });
+      timeline: 'desktop',
+    }), { page, candidateCount: candidates.length, signal });
+    if (loaded.failure) {
+      paginationError = loaded.failure;
+      break;
+    }
+    const json = loaded.value;
     const list = desktopTimelineList(json);
     const advertisedMax = finiteNumber(json?.max_page);
     if (advertisedMax) maxPage = Math.max(maxPage || 0, advertisedMax);
     totalNumber = finiteNumber(json?.total_number, totalNumber);
+    if (totalNumber !== null) observedTotals.add(totalNumber);
     pages.push({
       source: 'desktop',
       page,
@@ -5087,7 +4811,7 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
       nextCursor: json?.next_cursor || 0,
     });
     const previousCount = candidates.length;
-    hitCandidateCap = appendCandidates(candidateCollection, list, 'desktop-cookie');
+    hitCandidateCap = candidateCollection.append(list, 'desktop-cookie');
     repeatedPages = repeatedPageGuard.observe(list.length, candidates.length - previousCount);
     const tooManyEmptyPages = emptyPageGuard.observe(list.length);
     reportPageProgress(reportProgress, {
@@ -5135,6 +4859,7 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
         signal,
         headers: desktopHeaders(cookie, statusInfo.referer),
         onThrottle: throttleProgress(reportProgress, '桌面端接口'),
+        timeline: 'desktop',
       });
       return {
         items: desktopTimelineList(headJson),
@@ -5144,6 +4869,7 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
     },
   });
   totalNumber = headResult.totalNumber ?? totalNumber;
+  if (totalNumber !== null) observedTotals.add(totalNumber);
   hitCandidateCap = headResult.hitCandidateCap;
   return {
     candidates: unique,
@@ -5153,11 +4879,16 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
       totalNumber,
       maxPage,
       statusInfo,
+      paginationError,
+      scanStopReason: repostScanStopReason({ paginationError, hitCandidateCap, hitPageCap, repeatedPages, stoppedOnEmptyPages, pages, maxPage }),
+      totalChanged: observedTotals.size > 1,
+      headRefreshFailed: Boolean(headResult.warning),
       headReconciled: headResult.reconciled,
       headAddedCount: headResult.addedCount,
-      ...candidateCollectionMeta(candidateCollection),
-      complete: !hitCandidateCap
-        && repostCountLooksComplete(candidates.length, totalNumber),
+      ...candidateCollection.metadata(),
+      complete: !hitCandidateCap && !paginationError
+        && !candidateCollection.metadata().identityUncertainCount
+        && repostCountIsComplete(candidates.length, totalNumber),
       warnings: [
         '已按桌面端微博页面脚本的方式请求 ajax/statuses/repostTimeline，并扫描接口声明的页数范围。',
         ...(headResult.addedCount ? [`结束前补入 ${headResult.addedCount} 条刚新增的可见转发。`] : []),
@@ -5165,68 +4896,11 @@ async function fetchDesktopReposts({ statusId, cookie, statusInfo: initialStatus
         ...(repeatedPages ? ['桌面端接口连续返回重复页面，已停止无效分页请求。'] : []),
         ...(stoppedOnEmptyPages ? ['桌面端接口连续返回空页，已停止继续请求并尝试备用入口。'] : []),
         ...(hitPageCap ? [`为避免异常长任务，桌面端在 ${DESKTOP_MAX_PAGES} 页后停止。`] : []),
-        ...candidateLimitWarnings(candidateCollection),
+        ...paginationFailureWarnings('桌面端', paginationError),
+        ...candidateCollection.warnings(),
       ],
     },
   };
-}
-
-function mobileTimelineList(json) {
-  const data = json?.data;
-  if (Array.isArray(data?.data)) return data.data;
-  if (Array.isArray(data?.reposts)) return data.reposts;
-  if (Array.isArray(data?.cards)) return data.cards.flatMap((card) => card.card_group || card.mblog || card);
-  if (Array.isArray(json?.reposts)) return json.reposts;
-  return [];
-}
-
-function legacyDivs(html) {
-  return [...String(html || '').matchAll(/<div class="c"[^>]*>([\s\S]*?)<\/div>/g)].map((match) => match[0]);
-}
-
-function legacyMaxPage(html) {
-  const mpInput = String(html || '').match(/<input[^>]*name="mp"[^>]*>/)?.[0] || '';
-  const mpMatch = mpInput.match(/value="(\d+)"/);
-  if (mpMatch) return finiteNumber(mpMatch[1]);
-  const pageLinks = [...String(html || '').matchAll(/[?&]page=(\d+)/g)].map((match) => finiteNumber(match[1], 0));
-  return pageLinks.length ? Math.max(...pageLinks) : null;
-}
-
-function legacyTimelineList(html, page) {
-  const praisePattern = /\u8d5e\[\d+\]/;
-  return legacyDivs(html)
-    .map((div) => ({ html: div, text: stripLegacyHtml(div) }))
-    .filter((item) => praisePattern.test(item.text))
-    .map((item, index) => {
-      const anchors = [...item.html.matchAll(/<a href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g)].map((match) => ({
-        href: match[1],
-        text: stripLegacyHtml(match[2]),
-      }));
-      const userAnchor = anchors.find((anchor) => /(?:\/u\/|weibo\.cn\/|^\/)\d+/.test(anchor.href));
-      const uid = userAnchor?.href.match(/(?:\/u\/|weibo\.cn\/|^\/)(\d+)/)?.[1] || '';
-      const divRepostId = item.html.match(/\bid=(["'])M_([^"']+)\1/i)?.[2] || '';
-      const statusAnchor = anchors.find((anchor) => /\/(?:comment|detail)\/[A-Za-z0-9]+/i.test(anchor.href));
-      const attitudeAnchor = anchors.find((anchor) => /\/attitude\/[A-Za-z0-9]+/i.test(anchor.href));
-      const linkedRepostId = statusAnchor?.href.match(/\/(?:comment|detail)\/([A-Za-z0-9]+)/i)?.[1]
-        || attitudeAnchor?.href.match(/\/attitude\/([A-Za-z0-9]+)/i)?.[1]
-        || '';
-      const screenName = userAnchor?.text || item.text.split(':')[0] || '未命名用户';
-      const createdAt = item.text.match(/\d{2}月\d{2}日\s+\d{2}:\d{2}|[\d:]+分钟前|昨天\s+\d{2}:\d{2}/)?.[0] || '';
-      const cleanedText = item.text.replace(/^\[热门\]\s*/, '').trimStart();
-      const text = cleanedText.startsWith(screenName)
-        ? cleanedText.slice(screenName.length).replace(/^\s*:?\s*/, '').trim()
-        : cleanedText.trim();
-      return {
-        idstr: divRepostId || linkedRepostId
-          || `weibo-cn-${page}-${index}-${uid || crypto.createHash('sha1').update(item.text).digest('hex').slice(0, 10)}`,
-        text,
-        created_at: createdAt,
-        user: {
-          idstr: uid,
-          screen_name: screenName,
-        },
-      };
-    });
 }
 
 async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress, signal }) {
@@ -5238,6 +4912,7 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
         provider: 'weibo-cn',
         pages: [],
         totalNumber: info.repostsCount,
+        scanStopReason: 'skipped',
         complete: false,
         warnings: ['旧版 weibo.cn 页面缺少 bid 或 uid，已跳过。'],
       },
@@ -5245,7 +4920,7 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
   }
 
   const candidates = [];
-  const candidateCollection = createCandidateCollection(candidates);
+  const candidateCollection = new CandidateCollection({ candidates, maxCandidates, maxPayloadBytes: maxCandidatePayloadBytes });
   const pages = [];
   let totalNumber = info.repostsCount;
   let maxPage = null;
@@ -5253,6 +4928,7 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
   let hitCandidateCap = false;
   let repeatedPages = false;
   let stoppedOnEmptyPages = false;
+  let paginationError = null;
   const repeatedPageGuard = createRepeatedPageGuard();
   const emptyPageGuard = createEmptyPageGuard();
 
@@ -5261,11 +4937,16 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
     apiUrl.searchParams.set('uid', info.uid);
     apiUrl.searchParams.set('rl', '1');
     apiUrl.searchParams.set('page', String(page));
-    const html = await fetchText(apiUrl, {
+    const loaded = await loadRepostPage(() => fetchText(apiUrl, {
       signal,
       headers: legacyHeaders(cookie, `https://weibo.cn/${info.uid}/${info.bid}`),
       onThrottle: throttleProgress(reportProgress, '旧版页面'),
-    });
+    }), { page, candidateCount: candidates.length, signal });
+    if (loaded.failure) {
+      paginationError = loaded.failure;
+      break;
+    }
+    const html = loaded.value;
     const list = legacyTimelineList(html, page);
     const advertisedMax = legacyMaxPage(html);
     if (advertisedMax) maxPage = Math.max(maxPage || 0, advertisedMax);
@@ -5276,7 +4957,7 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
       maxPage,
     });
     const previousCount = candidates.length;
-    hitCandidateCap = appendCandidates(candidateCollection, list, 'weibo-cn');
+    hitCandidateCap = candidateCollection.append(list, 'weibo-cn');
     repeatedPages = repeatedPageGuard.observe(list.length, candidates.length - previousCount);
     const tooManyEmptyPages = emptyPageGuard.observe(list.length);
     reportPageProgress(reportProgress, {
@@ -5312,15 +4993,19 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
       pages,
       totalNumber,
       maxPage,
-      ...candidateCollectionMeta(candidateCollection),
-      complete: !hitCandidateCap
-        && repostCountLooksComplete(candidates.length, totalNumber),
+      paginationError,
+      scanStopReason: repostScanStopReason({ paginationError, hitCandidateCap, hitPageCap, repeatedPages, stoppedOnEmptyPages, pages, maxPage }),
+      ...candidateCollection.metadata(),
+      complete: !hitCandidateCap && !paginationError
+        && !candidateCollection.metadata().identityUncertainCount
+        && repostCountIsComplete(candidates.length, totalNumber),
       warnings: [
         '已补扫旧版 weibo.cn 转发页面；该页面必须使用 bid/mblogid，纯数字 mid 会返回目标不存在。',
         ...(repeatedPages ? ['旧版页面连续返回重复内容，已停止无效分页请求。'] : []),
         ...(stoppedOnEmptyPages ? ['旧版页面连续返回空页，已停止继续请求。'] : []),
         ...(hitPageCap ? [`为避免异常长任务，旧版页面在 ${LEGACY_MAX_PAGES} 页后停止。`] : []),
-        ...candidateLimitWarnings(candidateCollection),
+        ...paginationFailureWarnings('旧版页面', paginationError),
+        ...candidateCollection.warnings(),
       ],
     },
   };
@@ -5328,16 +5013,18 @@ async function fetchLegacyReposts({ statusId, cookie, statusInfo, reportProgress
 
 async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, signal }) {
   const candidates = [];
-  const candidateCollection = createCandidateCollection(candidates);
+  const candidateCollection = new CandidateCollection({ candidates, maxCandidates, maxPayloadBytes: maxCandidatePayloadBytes });
   const pages = [];
   const startedAt = Date.now();
   let hitPageCap = false;
   let hitCandidateCap = false;
   const cookie = cookieRequired(mobileCookie);
   let totalNumber = null;
+  const observedTotals = new Set();
   let maxPage = null;
   let repeatedPages = false;
   let stoppedOnEmptyPages = false;
+  let paginationError = null;
   const repeatedPageGuard = createRepeatedPageGuard();
   const emptyPageGuard = createEmptyPageGuard();
 
@@ -5346,15 +5033,23 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
     apiUrl.searchParams.set('id', statusId);
     apiUrl.searchParams.set('page', String(page));
 
-    const json = await fetchJson(apiUrl, {
+    const loaded = await loadRepostPage(() => fetchJson(apiUrl, {
       signal,
       headers: mobileHeaders(cookie, statusId),
       onThrottle: throttleProgress(reportProgress, 'H5 接口'),
-    });
+      allowEmptyReposts: true,
+      timeline: 'mobile',
+    }), { page, candidateCount: candidates.length, signal });
+    if (loaded.failure) {
+      paginationError = loaded.failure;
+      break;
+    }
+    const json = loaded.value;
     const list = mobileTimelineList(json);
     const advertisedMax = finiteNumber(json?.data?.max || json?.max);
     if (advertisedMax) maxPage = Math.max(maxPage || 0, advertisedMax);
     totalNumber = finiteNumber(json?.data?.total_number ?? json?.total_number, totalNumber);
+    if (totalNumber !== null) observedTotals.add(totalNumber);
     pages.push({
       source: 'mobile',
       page,
@@ -5364,7 +5059,7 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
       msg: json?.msg || '',
     });
     const previousCount = candidates.length;
-    hitCandidateCap = appendCandidates(candidateCollection, list, 'mobile');
+    hitCandidateCap = candidateCollection.append(list, 'mobile');
     repeatedPages = repeatedPageGuard.observe(list.length, candidates.length - previousCount);
     const tooManyEmptyPages = emptyPageGuard.observe(list.length);
     reportPageProgress(reportProgress, {
@@ -5409,6 +5104,8 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
         signal,
         headers: mobileHeaders(cookie, statusId),
         onThrottle: throttleProgress(reportProgress, 'H5 接口'),
+        allowEmptyReposts: true,
+        timeline: 'mobile',
       });
       return {
         items: mobileTimelineList(headJson),
@@ -5421,6 +5118,7 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
     },
   });
   totalNumber = headResult.totalNumber ?? totalNumber;
+  if (totalNumber !== null) observedTotals.add(totalNumber);
   hitCandidateCap = headResult.hitCandidateCap;
   return {
     candidates: unique,
@@ -5429,11 +5127,16 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
       pages,
       totalNumber,
       maxPage,
+      paginationError,
+      scanStopReason: repostScanStopReason({ paginationError, hitCandidateCap, hitPageCap, repeatedPages, stoppedOnEmptyPages, pages, maxPage }),
+      totalChanged: observedTotals.size > 1,
+      headRefreshFailed: Boolean(headResult.warning),
       headReconciled: headResult.reconciled,
       headAddedCount: headResult.addedCount,
-      ...candidateCollectionMeta(candidateCollection),
-      complete: !hitCandidateCap
-        && repostCountLooksComplete(candidates.length, totalNumber),
+      ...candidateCollection.metadata(),
+      complete: !hitCandidateCap && !paginationError
+        && !candidateCollection.metadata().identityUncertainCount
+        && repostCountIsComplete(candidates.length, totalNumber),
       cookieMode: Boolean(cookie),
       warnings: [
         '已按 H5 接口返回的页数范围扫描可见转发。',
@@ -5442,7 +5145,8 @@ async function fetchMobileReposts({ statusId, mobileCookie, reportProgress, sign
         ...(repeatedPages ? ['H5 接口连续返回重复页面，已停止无效分页请求。'] : []),
         ...(stoppedOnEmptyPages ? ['H5 接口连续返回空页，已停止继续请求并尝试备用入口。'] : []),
         ...(hitPageCap ? [`为避免异常长任务，本次在 ${MOBILE_MAX_PAGES} 页后停止。`] : []),
-        ...candidateLimitWarnings(candidateCollection),
+        ...paginationFailureWarnings('H5', paginationError),
+        ...candidateCollection.warnings(),
       ],
     },
   };
@@ -5453,9 +5157,12 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
   const warnings = [];
   const results = [];
   const authErrors = [];
-  const aggregate = createCandidateCollection([]);
+  const crawlId = crypto.randomUUID();
+  const providerAttempts = [];
+  const aggregate = new CandidateCollection({ maxCandidates, maxPayloadBytes: maxCandidatePayloadBytes });
   let rawVisibleNumber = 0;
   let statusInfo = null;
+  let fallbackDecision = null;
 
   try {
     reportProgress?.({ phase: 'status', percent: 2, message: '识别微博 mid / bid' });
@@ -5478,35 +5185,60 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
       ? providerLabel(providerPlan[index + 1][0])
       : '';
     throwIfTaskCancelled(signal);
+    const attemptStartedAt = new Date().toISOString();
+    const attemptStartedMs = Date.now();
     try {
       const result = await fetcher();
       results.push(result);
       rawVisibleNumber += result.candidates.length;
-      appendCandidates(aggregate, result.candidates);
+      const beforeCount = aggregate.candidates.length;
+      aggregate.append(result.candidates);
       const totalNumber = results.reduce((max, item) => {
         const value = finiteNumber(item.meta?.totalNumber);
         return value === null ? max : Math.max(max || 0, value);
-      }, null);
-      const reachedTolerance = repostCountLooksComplete(aggregate.candidates.length, totalNumber);
-      const reachedCandidateLimit = Boolean(result.meta?.candidateLimitReason) || Boolean(aggregate.limitReason);
-      if (result.meta?.complete === true || reachedTolerance || reachedCandidateLimit) break;
-      warnings.push(`${providerLabel(label)}返回的候选不完整，已自动尝试备用入口补齐。`);
-      const diagnostic = repostProviderDiagnostic(statusId, providerLabel(label), result);
-      recordRuntimeEvent({
-        category: 'reposts',
-        action: 'provider-incomplete',
-        status: 'warning',
-        message: `${providerLabel(label)}候选完整度不足${nextLabel ? `，准备切换${nextLabel}` : ''}`,
-        details: diagnostic,
+      }, finiteNumber(statusInfo?.repostsCount));
+      const addedCount = aggregate.candidates.length - beforeCount;
+      const attempt = {
+        provider: result.meta?.provider || label,
+        status: 'ok',
+        startedAt: attemptStartedAt,
+        finishedAt: new Date().toISOString(),
+        durationMs: Math.max(0, Date.now() - attemptStartedMs),
+        totalNumber: finiteNumber(result.meta?.totalNumber),
+        visibleNumber: result.candidates.length,
+        addedCount,
+        duplicateCount: aggregate.limitReason ? null : Math.max(0, result.candidates.length - addedCount),
+        aggregateNumber: aggregate.candidates.length,
+        pages: result.meta?.pages?.length || 0,
+        scanStopReason: result.meta?.scanStopReason || 'unknown',
+        paginationError: result.meta?.paginationError || null,
+        totalChanged: Boolean(result.meta?.totalChanged),
+        headRefreshFailed: Boolean(result.meta?.headRefreshFailed),
+        identityUncertainCount: result.meta?.identityUncertainCount || 0,
+      };
+      providerAttempts.push(attempt);
+      fallbackDecision = decideRepostFallback({
+        count: aggregate.candidates.length, total: totalNumber, attempts: providerAttempts,
+        limitReason: aggregate.limitReason || result.meta?.candidateLimitReason || '',
       });
-      await appendAdminEvent({
+      const event = {
         category: 'reposts',
-        action: 'provider-incomplete',
-        status: 'warning',
-        message: `${providerLabel(label)}候选完整度不足${nextLabel ? `，准备切换${nextLabel}` : ''}`,
-        details: diagnostic,
-      }).catch(() => {});
+        action: 'provider-result',
+        status: fallbackDecision.complete ? 'ok' : 'warning',
+        message: `${providerLabel(label)}返回 ${result.candidates.length} 条，去重后新增 ${addedCount} 条`,
+        details: {
+          ...repostProviderDiagnostic(statusId, providerLabel(label), result),
+          ...attempt, crawlId,
+          aggregateMissingCount: fallbackDecision.missingCount,
+          stopReason: fallbackDecision.stop ? fallbackDecision.stopReason : nextLabel ? 'next-provider' : 'providers-exhausted',
+          appliedTolerance: fallbackDecision.tolerance,
+        },
+      };
+      recordRuntimeEvent(event);
+      await appendAdminEvent(event).catch(() => {});
+      if (fallbackDecision.stop) break;
       if (nextLabel) {
+        warnings.push(`${providerLabel(label)}结束后名单仍不完整，继续尝试${nextLabel}。`);
         await waitBeforeProviderSwitch(providerLabel(label), nextLabel, reportProgress, signal);
       }
     } catch (error) {
@@ -5515,12 +5247,17 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
       if (isCookieAuthError(error)) authErrors.push(error);
       warnings.push(`${providerLabel(label)}抓取失败：${error.message}`);
       const diagnostic = errorDiagnostic(error);
+      providerAttempts.push({ provider: label === 'desktop' ? 'desktop-cookie' : label === 'legacy' ? 'weibo-cn' : label,
+        status: 'error', startedAt: attemptStartedAt, finishedAt: new Date().toISOString(),
+        durationMs: Math.max(0, Date.now() - attemptStartedMs), errorStatus: diagnostic.status,
+        addedCount: 0, aggregateNumber: aggregate.candidates.length });
       recordRuntimeEvent({
         category: 'reposts',
         action: 'provider-error',
         status: 'error',
         message: `${providerLabel(label)}抓取失败${nextLabel ? `，准备切换${nextLabel}` : ''}`,
         details: {
+          crawlId,
           statusId,
           provider: providerLabel(label),
           ...diagnostic,
@@ -5532,6 +5269,7 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
         status: 'error',
         message: `${providerLabel(label)}抓取失败${nextLabel ? `，准备切换${nextLabel}` : ''}`,
         details: {
+          crawlId,
           statusId,
           provider: providerLabel(label),
           ...diagnostic,
@@ -5555,8 +5293,20 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
   const totalNumber = results.reduce((max, result) => {
     const value = finiteNumber(result.meta?.totalNumber);
     return value === null ? max : Math.max(max || 0, value);
-  }, null);
+  }, finiteNumber(statusInfo?.repostsCount));
   const sourceWarnings = results.flatMap((result) => result.meta?.warnings || []);
+  // A final provider error may follow a successful partial result.
+  fallbackDecision = decideRepostFallback({
+    count: candidates.length, total: totalNumber, attempts: providerAttempts,
+    limitReason: aggregate.limitReason || results.find(result => result.meta?.candidateLimitReason)?.meta.candidateLimitReason || '',
+  });
+  const stopReason = fallbackDecision.stop ? fallbackDecision.stopReason : 'providers-exhausted';
+  const missingCount = fallbackDecision.missingCount;
+  const stopWarning = stopReason === 'stable-small-gap'
+    ? `桌面与 H5 正常扫描后名单一致，按小缺口规则停止补抓；已取得 ${candidates.length} / ${totalNumber} 条，仍差 ${missingCount} 条。`
+    : ['within-tolerance', 'large-list-tolerance'].includes(stopReason)
+      ? `已达到补抓停止阈值，保留 ${candidates.length} / ${totalNumber} 条，仍差 ${missingCount} 条；这不代表名单完整。`
+      : '';
 
   return {
     candidates,
@@ -5567,22 +5317,27 @@ async function fetchCookieReposts({ statusId, mobileCookie, reportProgress, sign
       totalNumber,
       visibleNumber: candidates.length,
       rawVisibleNumber,
+      crawlId,
+      providerAttempts,
+      missingCount,
+      stopReason,
+      tolerance: fallbackDecision.tolerance,
       statusInfo,
       headReconciled: results.some((result) => result.meta?.headReconciled === true),
       headAddedCount: results.reduce((maximum, result) => Math.max(
         maximum,
         finiteNumber(result.meta?.headAddedCount, 0),
       ), 0),
-      ...candidateCollectionMeta(aggregate),
-      complete: !aggregate.limitReason
-        && !results.some((result) => result.meta?.candidateLimitReason)
-        && repostCountLooksComplete(candidates.length, totalNumber),
+      ...aggregate.metadata(),
+      complete: fallbackDecision.complete,
       cookieMode: true,
       warnings: [
         '已优先使用桌面端可见转发入口，并在需要时尝试备用入口。',
         ...warnings,
         ...sourceWarnings,
-        ...candidateLimitWarnings(aggregate),
+        ...aggregate.warnings(),
+        ...(aggregate.metadata().identityUncertainCount ? ['部分转发缺少稳定标识，无法确认跨渠道去重，名单完整性仍需核对。'] : []),
+        stopWarning,
       ].filter(Boolean),
     },
   };
@@ -5763,6 +5518,7 @@ function pruneRetainedJobs() {
 }
 
 function expireJobLater(job, delayMs = completedJobReleaseMs) {
+  if (jobs.get(job.id) !== job) return;
   clearTimeout(job.detachTimer);
   job.detachTimer = null;
   clearTimeout(job.cleanupTimer);
@@ -5975,7 +5731,7 @@ function runRepostsJob(job) {
     };
     job.updatedAt = new Date().toISOString();
   }, job.controller.signal), job.controller.signal)
-    .then((result) => {
+    .then(async (result) => {
       throwIfTaskCancelled(job.controller.signal);
       job.status = 'done';
       job.result = result;
@@ -5987,6 +5743,36 @@ function runRepostsJob(job) {
       job.responseBody = Buffer.from(JSON.stringify(repostJobResponse(job, '')), 'utf8');
       job.responseBytes = job.responseBody.length;
       job.result = null;
+      const complete = result.meta?.complete === true;
+      const event = {
+        category: 'jobs',
+        action: 'load-result',
+        status: complete ? 'ok' : 'warning',
+        message: complete
+          ? `候选载入完成：${result.candidates.length} 条记录`
+          : `候选载入结束，名单仍不完整：${result.candidates.length} 条记录`,
+        details: {
+          jobId: job.id,
+          statusId,
+          complete,
+          visibleNumber: result.candidates.length,
+          totalNumber: finiteNumber(result.meta?.totalNumber),
+          providers: result.meta?.providers || [result.meta?.provider].filter(Boolean),
+          crawlId: result.meta?.crawlId || '',
+          missingCount: result.meta?.missingCount ?? null,
+          stopReason: result.meta?.stopReason || '',
+          tolerance: result.meta?.tolerance ?? null,
+          attemptCount: result.meta?.providerAttempts?.length || 0,
+          pages: result.meta?.pages?.length || 0,
+          candidateLimitReason: result.meta?.candidateLimitReason || '',
+          durationMs: Math.max(0, Date.parse(job.finishedAt) - Date.parse(job.startedAt)),
+        },
+      };
+      recordRuntimeEvent(event);
+      // Enforce the completed-job budget before yielding to event-log I/O.
+      clearJobCredentials(job);
+      pruneRetainedJobs();
+      await appendAdminEvent(event).catch(() => {});
     })
     .catch((error) => {
       const cancelled = !job.timedOut && (job.controller.signal.aborted || error?.code === 'REPOST_JOB_CANCELLED');
@@ -6345,9 +6131,8 @@ async function saveDrawRecord(body, res) {
   if (totalCount !== null && eligibleCount !== null && eligibleCount > totalCount) {
     throw invalidDrawRequest('可抽人数不能超过候选总数');
   }
-  if (sourceTotalNumber !== null && sourceVisibleNumber !== null && sourceVisibleNumber > sourceTotalNumber) {
-    throw invalidDrawRequest('来源可见数不能超过来源总数');
-  }
+  // Upstream totals can lag or decrease while paginating. Keep the reported
+  // total as evidence without rejecting a larger, deduplicated visible list.
   if (sourceVisibleNumber !== null && sourceRawVisibleNumber !== null && sourceRawVisibleNumber < sourceVisibleNumber) {
     throw invalidDrawRequest('来源原始可见数不能少于去重后的可见数');
   }
@@ -6401,7 +6186,7 @@ async function saveDrawRecord(body, res) {
   const clientDrawnAt = String(body.audit?.drawnAt || body.drawnAt || '');
   const parsedDrawnAt = Date.parse(clientDrawnAt);
   const stableDrawnAt = Number.isFinite(parsedDrawnAt)
-    && Math.abs(parsedDrawnAt - Date.now()) <= 7 * 24 * 60 * 60_000
+    && parsedDrawnAt <= Date.now() + 7 * 24 * 60 * 60_000
     ? new Date(parsedDrawnAt).toISOString()
     : savedAt;
   const auditHash = crypto.createHash('sha256')
@@ -6437,6 +6222,12 @@ async function saveDrawRecord(body, res) {
       visibleNumber: sourceVisibleNumber,
       rawVisibleNumber: sourceRawVisibleNumber,
       complete: typeof sourceMeta.complete === 'boolean' ? sourceMeta.complete : null,
+      crawlId: safeText(sourceMeta.crawlId, 80),
+      loadedAt: safeText(sourceMeta.loadedAt, 40),
+      stopReason: safeText(sourceMeta.stopReason, 80),
+      missingCount: sourceMeta.missingCount == null ? null : storedCount(sourceMeta.missingCount, null),
+      tolerance: sourceMeta.tolerance == null ? null : storedCount(sourceMeta.tolerance, null),
+      identityUncertainCount: storedCount(sourceMeta.identityUncertainCount, 0),
     },
     results: normalizedResults,
     winners,
@@ -6981,6 +6772,12 @@ function drawRecordPublic(record, file, detail = false) {
       visibleNumber: storedCount(record.sourceMeta?.visibleNumber, null),
       rawVisibleNumber: storedCount(record.sourceMeta?.rawVisibleNumber, null),
       complete: typeof record.sourceMeta?.complete === 'boolean' ? record.sourceMeta.complete : null,
+      crawlId: safeText(record.sourceMeta?.crawlId, 80),
+      loadedAt: safeText(record.sourceMeta?.loadedAt, 40),
+      stopReason: safeText(record.sourceMeta?.stopReason, 80),
+      missingCount: record.sourceMeta?.missingCount == null ? null : storedCount(record.sourceMeta.missingCount, null),
+      tolerance: record.sourceMeta?.tolerance == null ? null : storedCount(record.sourceMeta.tolerance, null),
+      identityUncertainCount: storedCount(record.sourceMeta?.identityUncertainCount, 0),
     },
   };
 }
@@ -7317,6 +7114,9 @@ function boundedRuntimeValue(value, depth = 0) {
   if (typeof value === 'string') return safeText(value, 1200);
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
   if (typeof value === 'boolean' || value === null) return value;
+  // Nested diagnostics may already be null-prototype objects. String(value)
+  // would throw and turn a logging operation into a second provider failure.
+  if (depth >= 3 && value && typeof value === 'object') return Array.isArray(value) ? '[array]' : '[object]';
   if (depth >= 3) return safeText(String(value ?? ''), 300);
   if (Array.isArray(value)) {
     return value.slice(0, 20).map((item) => boundedRuntimeValue(item, depth + 1));
@@ -7972,9 +7772,7 @@ async function adminSystemSummary() {
       edgeAccessLogEnabled: Boolean(edgeAccessLogPath),
     },
     storage,
-    events: [...adminEvents.slice(-maxAdminEvents), ...runtimeEvents]
-      .sort((a, b) => Date.parse(b.at || 0) - Date.parse(a.at || 0))
-      .slice(0, 120),
+    events: diagnosticEvents([...adminEvents.slice(-maxAdminEvents), ...runtimeEvents]).slice(0, 300),
   };
 }
 
@@ -8354,91 +8152,13 @@ async function handleAdminDeleteDraw(req, res, fileName) {
 
 // HTTP server
 
-const gzipBuffer = promisify(gzipCallback);
-const brotliBuffer = promisify(brotliCompressCallback);
-const COMPRESSIBLE_STATIC_TYPE = /^(?:text\/|application\/(?:javascript|json|manifest\+json|xml)|image\/svg\+xml)/;
-const staticAssetCache = new Map();
-const staticAssetCacheMaxEntries = 64;
-const staticAssetCacheMaxBytes = 48 * 1024 * 1024;
-let staticAssetCacheBytes = 0;
+const staticAssetCache = new StaticAssetCache();
 let runtimeConfigAsset = null;
-
-function staticEtag(stat) {
-  return `"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
-}
-
-function staticEntryBytes(entry) {
-  return entry.raw.length + (entry.gzip?.length || 0) + (entry.brotli?.length || 0);
-}
-
-function evictStaticAssetCache() {
-  while (
-    staticAssetCache.size > staticAssetCacheMaxEntries
-    || staticAssetCacheBytes > staticAssetCacheMaxBytes
-  ) {
-    const oldest = staticAssetCache.keys().next().value;
-    if (oldest === undefined) break;
-    staticAssetCacheBytes -= staticEntryBytes(staticAssetCache.get(oldest));
-    staticAssetCache.delete(oldest);
-  }
-}
-
-async function loadStaticAsset(filePath) {
-  const stat = await fs.stat(filePath);
-  const cached = staticAssetCache.get(filePath);
-  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) {
-    staticAssetCache.delete(filePath);
-    staticAssetCache.set(filePath, cached);
-    return cached;
-  }
-  if (cached) {
-    staticAssetCacheBytes -= staticEntryBytes(cached);
-    staticAssetCache.delete(filePath);
-  }
-  const raw = await fs.readFile(filePath);
-  const contentType = MIME[path.extname(filePath)] || 'application/octet-stream';
-  const entry = { raw, size: stat.size, mtimeMs: stat.mtimeMs, contentType, etag: staticEtag(stat) };
-  if (raw.length >= 1024 && COMPRESSIBLE_STATIC_TYPE.test(contentType)) {
-    [entry.gzip, entry.brotli] = await Promise.all([
-      gzipBuffer(raw, { level: 6 }),
-      brotliBuffer(raw, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } }),
-    ]);
-  }
-  staticAssetCache.set(filePath, entry);
-  staticAssetCacheBytes += staticEntryBytes(entry);
-  evictStaticAssetCache();
-  return entry;
-}
-
-function acceptedStaticEncodings(req) {
-  const accepted = { brotli: false, gzip: false };
-  for (const part of String(req.headers['accept-encoding'] || '').toLowerCase().split(',')) {
-    const [rawToken, ...params] = part.trim().split(';');
-    const token = rawToken.trim();
-    if (token !== 'br' && token !== 'gzip' && token !== '*') continue;
-    const quality = params.map((param) => param.trim()).find((param) => param.startsWith('q='));
-    if (quality && Number(quality.slice(2)) === 0) continue;
-    if (token === 'br' || token === '*') accepted.brotli = true;
-    if (token === 'gzip' || token === '*') accepted.gzip = true;
-  }
-  return accepted;
-}
-
-function staticResponseBody(req, entry) {
-  const accepted = acceptedStaticEncodings(req);
-  if (entry.brotli && accepted.brotli) return { body: entry.brotli, encoding: 'br' };
-  if (entry.gzip && accepted.gzip) return { body: entry.gzip, encoding: 'gzip' };
-  return { body: entry.raw, encoding: '' };
-}
-
-function staticRequestNotModified(req, etag) {
-  const header = String(req.headers['if-none-match'] || '');
-  return Boolean(header) && header.split(',').map((item) => item.trim()).includes(etag);
-}
+let runtimeConfigSourceEntry = null;
 
 function runtimeConfigEntryFor(entry) {
   if (!apiKey) return entry;
-  if (runtimeConfigAsset && runtimeConfigAsset.mtimeMs === entry.mtimeMs) return runtimeConfigAsset;
+  if (runtimeConfigSourceEntry === entry) return runtimeConfigAsset;
   const injection = Buffer.from(`\nwindow.WEIBO_DRAW_API_KEY = ${JSON.stringify(apiKey)};\n`);
   runtimeConfigAsset = {
     ...entry,
@@ -8447,6 +8167,7 @@ function runtimeConfigEntryFor(entry) {
     brotli: undefined,
     etag: `${entry.etag.slice(0, -1)}-api-key"`,
   };
+  runtimeConfigSourceEntry = entry;
   return runtimeConfigAsset;
 }
 
@@ -8464,26 +8185,14 @@ async function runtimeConfigSourceFile() {
   }
 }
 
-function staticCacheHeaders(filePath) {
-  const normalized = filePath.replace(/\\/g, '/');
-  const name = path.basename(filePath);
-  if (name === 'index.html' || name === 'config.js') {
-    return { 'cache-control': 'no-cache' };
-  }
-  if (normalized.includes('/assets/')) {
-    return { 'cache-control': 'public, max-age=31536000, immutable' };
-  }
-  if (/\.(?:avif|gif|jpe?g|png|webp)$/i.test(name)) {
-    return { 'cache-control': 'public, max-age=2592000' };
-  }
-  return { 'cache-control': 'public, max-age=3600' };
-}
-
 const ADMIN_ASSET_FILES = new Map([
   ['', 'server-admin/admin.html'],
   ['admin.css', 'server-admin/admin.css'],
   ['admin.js', 'server-admin/admin.js'],
   ['admin-list-state.js', 'server-admin/admin-list-state.js'],
+  ['admin-export.js', 'server-admin/admin-export.js'],
+  ['admin-diagnostics.js', 'src/lib/adminDiagnostics.js'],
+  ['admin-diagnostics-view.js', 'server-admin/admin-diagnostics-view.js'],
   ['admin-status.js', 'src/lib/adminStatus.js'],
   ['api-response.js', 'src/lib/apiResponse.js'],
   ['diagnostics.js', 'src/lib/diagnostics.js'],
@@ -8543,7 +8252,7 @@ async function serveAdminAsset(req, res, pathname) {
     const content = await fs.readFile(safePath);
     res.writeHead(200, {
       ...securityHeaders(),
-      'content-type': MIME[path.extname(safePath)] || 'application/octet-stream',
+      'content-type': staticContentType(safePath),
       'cache-control': path.basename(assetPath) === 'admin.html' ? 'no-store' : 'no-cache',
       'x-robots-tag': 'noindex, nofollow',
     });
@@ -8594,18 +8303,31 @@ async function serveStatic(req, res) {
       error.code = 'ENOENT';
       throw error;
     }
-    let entry = await loadStaticAsset(safeFilePath);
+    let entry = await staticAssetCache.load(safeFilePath);
     if (pathname === '/config.js') {
       const sourceFile = await runtimeConfigSourceFile();
-      if (sourceFile && sourceFile !== safeFilePath) entry = await loadStaticAsset(sourceFile);
+      if (sourceFile && sourceFile !== safeFilePath) entry = await staticAssetCache.load(sourceFile);
       entry = runtimeConfigEntryFor(entry);
     }
-    const cacheHeaders = staticCacheHeaders(safeFilePath);
+    const cacheHeaders = {
+      ...staticCacheHeaders(safeFilePath),
+      ...((entry.gzip || entry.brotli) ? { vary: 'accept-encoding' } : {}),
+    };
+    const representation = staticResponseBody(req, entry);
+    if (!representation) {
+      res.writeHead(406, {
+        ...securityHeaders(),
+        ...cacheHeaders,
+        vary: 'accept-encoding',
+        'content-length': 0,
+      });
+      return res.end();
+    }
     if (staticRequestNotModified(req, entry.etag)) {
       res.writeHead(304, { ...securityHeaders(), etag: entry.etag, ...cacheHeaders });
       return res.end();
     }
-    const { body, encoding } = staticResponseBody(req, entry);
+    const { body, encoding } = representation;
     const headers = {
       ...securityHeaders(),
       'content-type': entry.contentType,

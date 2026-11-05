@@ -16,11 +16,11 @@ const POSTER_GROUP_LIMIT = 20;
 const IMAGE_CACHE_LIMIT = 80;
 const imageCache = new Map();
 const TONES = [
-  { fill: '#fff0f3', strong: '#b83f62', soft: '#ef9db4' },
-  { fill: '#edf4fb', strong: '#315f8b', soft: '#8eb8dc' },
-  { fill: '#f1effa', strong: '#6656ae', soft: '#a99ce0' },
-  { fill: '#eaf7f4', strong: '#227b6f', soft: '#77c6ba' },
-  { fill: '#fff4e8', strong: '#a86431', soft: '#dba16c' },
+  { fill: '#faf7f9', strong: '#85455c', soft: '#ecd6de' },
+  { fill: '#fffcfd', strong: '#92516b', soft: '#eee6e9' },
+  { fill: '#f9edf2', strong: '#756a72', soft: '#ecd6de' },
+  { fill: '#faf7f9', strong: '#85455c', soft: '#eee6e9' },
+  { fill: '#fffcfd', strong: '#92516b', soft: '#ecd6de' },
 ];
 
 function safeText(value, fallback = '') {
@@ -95,6 +95,7 @@ export function buildResultPosterModel(payload = {}) {
     groups,
     fairness: {
       candidateCount: Number(payload.candidateCount || 0),
+      candidateCountKnown: payload.candidateCountKnown !== false,
       eligibleCount: Number(payload.eligibleCount || 0),
       provider,
       algorithm: DRAW_RANDOM_ALGORITHM,
@@ -144,7 +145,7 @@ function roundedRect(ctx, x, y, width, height, radius, fill, stroke = '') {
 
 function glassPanel(ctx, x, y, width, height, radius = 34, fill = 'rgba(255,255,255,0.84)') {
   ctx.save();
-  ctx.shadowColor = 'rgba(34, 43, 60, 0.07)';
+  ctx.shadowColor = 'rgba(74, 43, 60, 0.04)';
   ctx.shadowBlur = 22;
   ctx.shadowOffsetY = 8;
   roundedRect(ctx, x, y, width, height, radius, fill, 'rgba(31, 38, 52, 0.08)');
@@ -153,7 +154,7 @@ function glassPanel(ctx, x, y, width, height, radius = 34, fill = 'rgba(255,255,
 }
 
 function fillText(ctx, text, x, y, {
-  color = '#17181d',
+  color = '#3c363b',
   font = `500 24px ${FONT_STACK}`,
   align = 'left',
 } = {}) {
@@ -203,7 +204,7 @@ function wrapLines(ctx, value, maxWidth, maxLines = Infinity) {
 function drawInitialAvatar(ctx, winner, x, y, size, borderWidth = 4) {
   const tone = winner.tone || TONES[0];
   ctx.save();
-  ctx.shadowColor = 'rgba(44, 55, 83, 0.12)';
+  ctx.shadowColor = 'rgba(74, 43, 60, 0.06)';
   ctx.shadowBlur = 18;
   ctx.shadowOffsetY = 8;
   roundedRect(ctx, x, y, size, size, size * 0.34, tone.fill, '#ffffff');
@@ -296,7 +297,7 @@ function drawAvatar(ctx, winner, imageMap, x, y, size, borderWidth = 4) {
     return;
   }
   ctx.save();
-  ctx.shadowColor = 'rgba(44, 55, 83, 0.16)';
+  ctx.shadowColor = 'rgba(74, 43, 60, 0.07)';
   ctx.shadowBlur = 18;
   ctx.shadowOffsetY = 8;
   drawCoverImage(ctx, image, x, y, size, size, size * 0.34);
@@ -342,11 +343,7 @@ async function loadWinnerAvatars(model, apiBase) {
 }
 
 function drawBackground(ctx, width, height) {
-  const background = ctx.createLinearGradient(0, 0, width, height);
-  background.addColorStop(0, '#f7f7fa');
-  background.addColorStop(0.58, '#f2f2f7');
-  background.addColorStop(1, '#fafafd');
-  ctx.fillStyle = background;
+  ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, width, height);
 }
 
@@ -359,9 +356,9 @@ function drawBrandHeader(ctx, model, y, brandImage) {
     drawCoverImage(ctx, brandImage, iconX, iconY, iconSize, iconSize, 24);
     roundedRect(ctx, iconX, iconY, iconSize, iconSize, 24, '', 'rgba(255,255,255,0.92)');
   } else {
-    roundedRect(ctx, iconX, iconY, iconSize, iconSize, 24, '#f2f2f7', 'rgba(60, 60, 67, 0.1)');
+    roundedRect(ctx, iconX, iconY, iconSize, iconSize, 24, '#faf7f9', 'rgba(60, 60, 67, 0.1)');
     fillText(ctx, 'S', iconX + iconSize / 2, iconY + 20, {
-      color: '#3a3a3c',
+      color: '#92516b',
       font: `700 34px ${FONT_STACK}`,
       align: 'center',
     });
@@ -371,16 +368,16 @@ function drawBrandHeader(ctx, model, y, brandImage) {
     font: `700 27px ${FONT_STACK}`,
   });
   fillText(ctx, 'by.sameko', iconX + 96, y + 68, {
-    color: '#737884',
+    color: '#756a72',
     font: `500 16px ${FONT_STACK}`,
   });
 
   const pillWidth = 190;
   const pillX = POSTER_WIDTH - POSTER_PADDING - pillWidth - 18;
-  roundedRect(ctx, pillX, y + 33, pillWidth, 50, 16, '#eef5ff', 'rgba(10, 124, 255, 0.1)');
+  roundedRect(ctx, pillX, y + 33, pillWidth, 50, 16, '#faf7f9', '#eee6e9');
   ctx.font = `650 17px ${FONT_STACK}`;
   fillText(ctx, fitText(ctx, model.drawLabel, pillWidth - 22), pillX + pillWidth / 2, y + 46, {
-    color: '#1268c4',
+    color: '#85455c',
     font: `650 17px ${FONT_STACK}`,
     align: 'center',
   });
@@ -393,19 +390,19 @@ function drawHero(ctx, model, y, avatarImages) {
   ctx.shadowOffsetY = 10;
   roundedRect(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 208, 34, '#ffffff', 'rgba(60, 60, 67, 0.1)');
   ctx.restore();
-  roundedRect(ctx, POSTER_PADDING + 24, y + 24, 112, 36, 18, '#e8f7f0');
+  roundedRect(ctx, POSTER_PADDING + 24, y + 24, 112, 36, 18, '#edf7f2');
   fillText(ctx, '开奖完成', POSTER_PADDING + 80, y + 32, {
-    color: '#1f7a5d',
+    color: '#357563',
     font: `650 15px ${FONT_STACK}`,
     align: 'center',
   });
 
   fillText(ctx, `${model.winnerCount} 位中奖用户`, POSTER_PADDING + 24, y + 75, {
-    color: '#1d1d1f',
+    color: '#3c363b',
     font: `760 46px ${FONT_STACK}`,
   });
   fillText(ctx, `${model.groups.length} 个奖项 · ${model.drawnAt}`, POSTER_PADDING + 26, y + 145, {
-    color: '#6e6e73',
+    color: '#756a72',
     font: `500 17px ${FONT_STACK}`,
   });
 
@@ -423,9 +420,9 @@ function drawHero(ctx, model, y, avatarImages) {
   });
   if (remaining > 0) {
     const moreX = stackX + visibleWinners.length * (avatarSize - overlap);
-    roundedRect(ctx, moreX, y + 78, avatarSize, avatarSize, 21, '#f1efff', '#ffffff');
+    roundedRect(ctx, moreX, y + 78, avatarSize, avatarSize, 21, '#faf7f9', '#ffffff');
     fillText(ctx, `+${remaining}`, moreX + avatarSize / 2, y + 97, {
-      color: '#5e5ce6',
+      color: '#756a72',
       font: `700 20px ${FONT_STACK}`,
       align: 'center',
     });
@@ -435,14 +432,14 @@ function drawHero(ctx, model, y, avatarImages) {
 function drawSource(ctx, model, y) {
   glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 92, 26, 'rgba(255,255,255,0.94)');
   fillText(ctx, '微博来源', POSTER_PADDING + 24, y + 15, {
-    color: '#858a96',
+    color: '#756a72',
     font: `500 14px ${FONT_STACK}`,
   });
   ctx.font = `560 17px ${FONT_STACK}`;
   const lines = wrapLines(ctx, model.source, POSTER_INNER_WIDTH - 48, 2);
   lines.forEach((line, index) => {
     fillText(ctx, line, POSTER_PADDING + 24, y + 39 + index * 23, {
-      color: '#343842',
+      color: '#3c363b',
       font: `560 17px ${FONT_STACK}`,
     });
   });
@@ -450,8 +447,8 @@ function drawSource(ctx, model, y) {
 
 function drawStats(ctx, model, y) {
   const values = [
-    ['载入候选', model.fairness.candidateCount.toLocaleString('zh-CN'), TONES[1]],
-    ['符合规则', model.fairness.eligibleCount.toLocaleString('zh-CN'), TONES[3]],
+    ['载入条目', model.fairness.candidateCountKnown ? model.fairness.candidateCount.toLocaleString('zh-CN') : '未记录', TONES[1]],
+    ['可抽条目', model.fairness.eligibleCount.toLocaleString('zh-CN'), TONES[3]],
     ['中奖人数', model.winnerCount.toLocaleString('zh-CN'), TONES[0]],
   ];
   glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 116, 28, 'rgba(255,255,255,0.94)');
@@ -463,7 +460,7 @@ function drawStats(ctx, model, y) {
       ctx.fillRect(x, y + 24, 1.5, 68);
     }
     fillText(ctx, label, x + cellWidth / 2, y + 22, {
-      color: '#8b909b',
+      color: '#756a72',
       font: `500 14px ${FONT_STACK}`,
       align: 'center',
     });
@@ -480,7 +477,7 @@ function drawSectionTitle(ctx, model, y) {
     font: `730 30px ${FONT_STACK}`,
   });
   fillText(ctx, `共 ${model.winnerCount} 人`, POSTER_WIDTH - POSTER_PADDING - 2, y + 7, {
-    color: '#858a96',
+    color: '#756a72',
     font: `520 17px ${FONT_STACK}`,
     align: 'right',
   });
@@ -500,7 +497,7 @@ function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
     font: `680 24px ${FONT_STACK}`,
   });
   fillText(ctx, `${group.totalWinnerCount} 名`, POSTER_WIDTH - POSTER_PADDING - 22, y + 28, {
-    color: '#858a96',
+    color: '#756a72',
     font: `520 17px ${FONT_STACK}`,
     align: 'right',
   });
@@ -519,7 +516,7 @@ function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
     ctx.font = `500 15px ${FONT_STACK}`;
     const uid = winner.uid === 'UID 未记录' ? winner.uid : `UID ${winner.uid}`;
     fillText(ctx, fitText(ctx, uid, POSTER_INNER_WIDTH - 184), POSTER_PADDING + 92, rowY + 44, {
-      color: '#8b909b',
+      color: '#756a72',
       font: `500 15px ${FONT_STACK}`,
     });
     fillText(ctx, String(winner.rank).padStart(2, '0'), POSTER_WIDTH - POSTER_PADDING - 22, rowY + 25, {
@@ -534,7 +531,7 @@ function drawWinnerGroup(ctx, group, groupIndex, y, avatarImages) {
 function drawOmittedWinners(ctx, displayedCount, omittedCount, y) {
   glassPanel(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 56, 20, 'rgba(255,255,255,0.78)');
   fillText(ctx, `结果图展示 ${displayedCount} 位，另有 ${omittedCount} 位请在开奖记录中查看`, POSTER_WIDTH / 2, y + 17, {
-    color: '#737884',
+    color: '#756a72',
     font: `520 16px ${FONT_STACK}`,
     align: 'center',
   });
@@ -547,18 +544,18 @@ function drawFairness(ctx, model, y) {
   ctx.shadowOffsetY = 9;
   roundedRect(ctx, POSTER_PADDING, y, POSTER_INNER_WIDTH, 292, 30, '#ffffff', 'rgba(60, 60, 67, 0.1)');
   ctx.restore();
-  roundedRect(ctx, POSTER_PADDING + 20, y + 20, 56, 56, 18, '#f2f2f7', 'rgba(60, 60, 67, 0.1)');
+  roundedRect(ctx, POSTER_PADDING + 20, y + 20, 56, 56, 18, '#faf7f9', 'rgba(60, 60, 67, 0.1)');
   fillText(ctx, 'SHA', POSTER_PADDING + 48, y + 39, {
-    color: '#636366',
+    color: '#756a72',
     font: `700 14px ${FONT_STACK}`,
     align: 'center',
   });
   fillText(ctx, '随机过程记录', POSTER_PADDING + 94, y + 20, {
-    color: '#1d1d1f',
+    color: '#3c363b',
     font: `700 27px ${FONT_STACK}`,
   });
   fillText(ctx, model.drawLabel, POSTER_PADDING + 94, y + 55, {
-    color: '#6e6e73',
+    color: '#756a72',
     font: `520 16px ${FONT_STACK}`,
   });
 
@@ -576,14 +573,14 @@ function drawFairness(ctx, model, y) {
     const x = gridX + (index % 2) * cellWidth;
     const cellY = gridY + Math.floor(index / 2) * cellHeight;
     fillText(ctx, label, x, cellY, {
-      color: '#8e8e93',
+      color: '#756a72',
       font: `500 14px ${FONT_STACK}`,
     });
     ctx.font = `600 17px ${FONT_STACK}`;
     const lines = wrapLines(ctx, value, cellWidth - 22, 2);
     lines.forEach((line, lineIndex) => {
       fillText(ctx, line, x, cellY + 23 + lineIndex * 20, {
-        color: '#2c2c2e',
+        color: '#3c363b',
         font: `600 17px ${FONT_STACK}`,
       });
     });
@@ -592,16 +589,16 @@ function drawFairness(ctx, model, y) {
   ctx.fillStyle = 'rgba(60,60,67,0.1)';
   ctx.fillRect(POSTER_PADDING + 20, y + 226, POSTER_INNER_WIDTH - 40, 1.5);
   fillText(ctx, `随机种子 ${model.fairness.seed}`, POSTER_PADDING + 20, y + 240, {
-    color: '#8e8e93',
+    color: '#756a72',
     font: `500 13px ${FONT_STACK}`,
   });
   fillText(ctx, `名单指纹 ${model.fairness.digest}`, POSTER_WIDTH - POSTER_PADDING - 20, y + 240, {
-    color: '#8e8e93',
+    color: '#756a72',
     font: `500 13px ${FONT_STACK}`,
     align: 'right',
   });
   fillText(ctx, `过程哈希 ${model.fairness.auditHash}`, POSTER_PADDING + 20, y + 264, {
-    color: '#6e6e73',
+    color: '#756a72',
     font: `540 13px ${FONT_STACK}`,
   });
 }
@@ -610,11 +607,11 @@ function drawFooter(ctx, model, y) {
   ctx.fillStyle = 'rgba(31,31,38,0.09)';
   ctx.fillRect(POSTER_PADDING, y, POSTER_INNER_WIDTH, 1.5);
   fillText(ctx, '微博转发抽奖助手 · by.sameko', POSTER_PADDING, y + 28, {
-    color: '#737884',
+    color: '#756a72',
     font: `560 16px ${FONT_STACK}`,
   });
   fillText(ctx, model.drawnAt, POSTER_WIDTH - POSTER_PADDING, y + 28, {
-    color: '#9297a3',
+    color: '#756a72',
     font: `500 16px ${FONT_STACK}`,
     align: 'right',
   });

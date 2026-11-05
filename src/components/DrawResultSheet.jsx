@@ -297,8 +297,10 @@ export default function DrawResultSheet({
             </div>
             <div className="receipt-summary-metrics">
               <span>
-                <small>候选范围</small>
-                <strong>{receipt.eligibleCount} / {receipt.candidateCount}</strong>
+                <small>候选条目 · 可抽 / 载入</small>
+                <strong>{receipt.sourceMeta?.legacyCountsIncomplete
+                  ? `${receipt.eligibleCount} / 未记录`
+                  : `${receipt.eligibleCount} / ${receipt.candidateCount}`}</strong>
               </span>
               <span>
                 <small>奖项</small>
@@ -457,10 +459,10 @@ export default function DrawResultSheet({
 
             <div className="receipt-audit-grid">
               <span>
-                <small>候选范围</small>
+                <small>候选条目 · 可抽 / 载入</small>
                 <strong>{receipt.sourceMeta?.legacyCountsIncomplete
-                  ? `可抽 ${receipt.eligibleCount} 人（旧版记录）`
-                  : `${receipt.eligibleCount} / ${receipt.candidateCount} 人`}</strong>
+                  ? `可抽 ${receipt.eligibleCount} 条（旧版记录）`
+                  : `${receipt.eligibleCount} / ${receipt.candidateCount} 条`}</strong>
               </span>
               <span><small>数据来源</small><strong>{sourceScope(receipt)}</strong></span>
               <span className="receipt-audit-code"><small>名单指纹</small><strong title={receipt.candidateDigest}>{compactHash(receipt.candidateDigest)}</strong></span>
@@ -500,7 +502,7 @@ export default function DrawResultSheet({
               <dl>
                 <div><dt>开奖时间</dt><dd>{formatReceiptDate(receipt.drawnAt)}</dd></div>
                 <div><dt>名单截止</dt><dd>{cutoffText}</dd></div>
-                <div><dt>排除候选</dt><dd>{receipt.excludedCount} 人</dd></div>
+                <div><dt>排除候选</dt><dd>{receipt.excludedCount} 条</dd></div>
                 <div><dt>奖项快照</dt><dd>{prizeText}</dd></div>
                 <div><dt>筛选规则</dt><dd>{filterText}</dd></div>
                 <div><dt>随机规则</dt><dd>{DRAW_RANDOM_ALGORITHM}</dd></div>

@@ -232,35 +232,11 @@ button:disabled {
   animation-delay: 50ms;
 }
 
-.root-tabbar .tab-highlight {
-  transition:
-    transform 290ms var(--ease-drawer),
-    box-shadow 220ms var(--ease-out),
-    background-color 220ms var(--ease-out);
-}
-
-.root-tabbar button svg,
-.root-tabbar button span {
-  transition:
-    transform 280ms var(--ease-drawer),
-    opacity 180ms var(--ease-out),
-    color 180ms var(--ease-out);
-}
-
-.root-tabbar button.is-active svg {
-  transform: translateY(-1px) scale(1.035);
-}
-
-.root-tabbar button.is-active span {
-  transform: translateY(1px);
-}
-
 .root-view.is-active .root-scroll {
   animation: root-page-enter 140ms var(--ease-out) both;
 }
 
-.title-status.is-busy i,
-.app-shell[data-draw-state="running"] .scene-caption i {
+.title-status.is-busy i {
   animation: status-pulse 760ms var(--ease-in-out) infinite alternate;
 }
 
@@ -344,7 +320,7 @@ button:disabled {
   .flow-sheet,
   .receipt-sheet {
     opacity: 0;
-    transform: translate3d(0, 28px, 0) scale(0.975);
+    transform: translate3d(0, 36px, 0) scale(0.97);
   }
 }
 
@@ -697,17 +673,6 @@ button:disabled {
   animation: winner-badge-settle 420ms var(--ease-drawer) 190ms both;
 }
 
-.scene-caption {
-  transition:
-    opacity 240ms var(--ease-out),
-    transform 320ms var(--ease-drawer);
-}
-
-.app-shell[data-draw-state="finished"] .scene-caption {
-  opacity: 0.18;
-  transform: translateY(8px);
-}
-
 .result-rail {
   transition:
     transform 380ms var(--ease-drawer) 100ms,
@@ -948,7 +913,6 @@ button:disabled {
 }
 
 .app-shell[data-motion="reduced"] .title-status.is-busy i,
-.app-shell[data-motion="reduced"] .scene-caption i,
 .app-shell[data-motion="reduced"] .progress-indicator,
 .app-shell[data-motion="reduced"] .receipt-local-note.is-syncing > svg,
 .app-shell[data-motion="reduced"] .candidate-deck,
@@ -1003,7 +967,6 @@ button:disabled {
   }
 
   .app-shell:not([data-motion="full"]) .title-status.is-busy i,
-  .app-shell:not([data-motion="full"]) .scene-caption i,
   .app-shell:not([data-motion="full"]) .progress-indicator,
   .app-shell:not([data-motion="full"]) .candidate-deck,
   .app-shell:not([data-motion="full"]) .v3-intake-symbol,

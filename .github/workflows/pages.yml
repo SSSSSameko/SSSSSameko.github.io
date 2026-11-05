@@ -27,7 +27,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: bash -n deploy/install.sh
-      - run: npx playwright install --with-deps chromium
+      - name: Verify release metadata and legal configuration
+        run: npm run release:check && npm run legal:check
       - name: Audit dependencies
         run: npm audit --audit-level=low
       - name: Verify dependency licenses
@@ -42,6 +43,8 @@ jobs:
         run: node scripts/test-server-http.mjs
       - name: Test admin entry path
         run: node scripts/test-admin-path.mjs
+      - name: Test Cookie read API
+        run: node scripts/test-cookie-read-api.mjs
       - name: Test draw retention recovery
         run: node scripts/test-draw-retention-recovery.mjs
       - name: Test service lifecycle
@@ -60,6 +63,8 @@ jobs:
           exit "${status}"
       - name: Test Weibo provider fallback
         run: node scripts/test-weibo-provider-fallback.mjs
+      - name: Install browser for browser and UI checks
+        run: npx playwright install --with-deps chromium
       - name: Test browser lifecycle
         run: npm run test:browser-lifecycle
       - name: Test memory stability

@@ -760,10 +760,10 @@ export function buildFairnessSummary(receiptInput) {
   }
   if (receipt.drawnAt) lines.push(`时间：${receipt.drawnAt}`);
   if (receipt.sourceMeta?.legacyCountsIncomplete) {
-    lines.push(`可抽 ${receipt.eligibleCount} 人 · 旧版记录未保存候选总数`);
+    lines.push(`可抽 ${receipt.eligibleCount} 条候选 · 旧版记录未保存候选总数`);
   } else {
     lines.push(
-      `载入 ${receipt.candidateCount} 人 · 可抽 ${receipt.eligibleCount} 人 · 排除 ${receipt.excludedCount} 人`,
+      `载入 ${receipt.candidateCount} 条候选 · 可抽 ${receipt.eligibleCount} 条 · 排除 ${receipt.excludedCount} 条`,
     );
   }
   lines.push(`筛选规则：${

@@ -50,7 +50,19 @@ test('candidate load warning only keeps actionable limits', () => {
     totalNumber: 4,
     visibleNumber: 3,
     warnings: ['接口显示总转发约 4 条，本次只拿到 3 条可见可抓取记录。'],
-  }), '');
+  }), '已取得 3 / 4 条，仍差 1 条。');
+});
+
+test('exempting further retries still displays the actual missing count', () => {
+  assert.match(candidateLoadWarning({ complete: false, totalNumber: 200, visibleNumber: 160, stopReason: 'large-list-tolerance' }), /仍差 40 条.*部分名单/);
+  assert.match(candidateLoadWarning({ complete: false, totalNumber: 29, visibleNumber: 24, stopReason: 'stable-small-gap' }), /仍差 5 条.*两次核对.*重新载入/);
+  assert.match(candidateLoadWarning({ complete: false, totalNumber: 20, visibleNumber: 20, identityUncertainCount: 1 }), /无法确认跨渠道去重/);
+});
+
+test('unknown totals and unclassified incomplete results keep an explicit confirmation warning', () => {
+  assert.match(candidateLoadWarning({ complete: false, totalNumber: null, visibleNumber: 201 }), /已取得 201 条.*总数未知.*无法确认名单完整性/);
+  assert.match(candidateLoadWarning({ complete: false, totalNumber: null, visibleNumber: 1, warnings: ['第 2 页读取失败'] }), /总数未知.*读取失败/);
+  assert.match(candidateLoadWarning({ complete: false, totalNumber: 200, visibleNumber: 200 }), /无法确认名单完整性/);
 });
 
 test('candidate cutoff keeps an explicit draw-list boundary', () => {

@@ -1,35 +1,4 @@
-import { useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
-import {
-  AlertCircle,
-  ArchiveRestore,
-  BadgeCheck,
-  BookOpen,
-  ChevronRight,
-  CheckCircle2,
-  ClipboardCopy,
-  Clock,
-  Download,
-  Ellipsis,
-  FileText,
-  Gift,
-  History,
-  Info,
-  Link2,
-  ListChecks,
-  MessageSquareHeart,
-  Minus,
-  Play,
-  Plus,
-  RefreshCw,
-  Settings,
-  Send,
-  ShieldCheck,
-  Shuffle,
-  Trash2,
-  Users,
-  X,
-  Zap,
-} from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   buildFilterSummary,
   candidateCutoffInfo,
@@ -47,17 +16,7 @@ import {
   toCsv,
   writeStoredValue,
 } from './lib/appCore.js';
-import CandidateAvatar from './components/CandidateAvatar.jsx';
-import CandidateSourceForm from './components/CandidateSourceForm.jsx';
-import DrawResultSheet from './components/DrawResultSheet.jsx';
 import { avatarProxyUrl, safeAvatarUrl } from './lib/avatar.js';
-import useDialogStack from './hooks/useDialogStack.js';
-import useSheetDrag from './hooks/useSheetDrag.js';
-import {
-  cancelDrawDeckMotion,
-  settleDrawDeckMotion,
-  startDrawDeckMotion,
-} from './lib/drawDeckMotion.js';
 import {
   buildFairnessSummary,
   clearDrawHistoryStorage,
@@ -89,9 +48,7 @@ import {
 import {
   getAccountStatusText,
   getCandidateFreshnessText,
-  getDrawActionState,
   getDrawCountText,
-  getIntakeState,
   getNextDrawText,
 } from './lib/drawUiModel.js';
 import {
@@ -101,14 +58,28 @@ import {
   summarizeCandidateEligibility,
 } from './lib/candidateEligibility.js';
 import { buildAnnouncementText } from './lib/drawAnnouncements.js';
+import { normalizeFeedbackSubmission } from './lib/feedback.js';
+import AppWorkspace from './components/AppWorkspace.jsx';
+import { useBackendStatus } from './hooks/useBackendStatus.js';
+import { useDrawCount } from './hooks/useDrawCount.js';
+import { validateRepostResult } from './lib/repostResponse.js';
+import { countEligibleUsers, uniqueWinnerPool } from './lib/drawPool.js';
 import {
-  FEEDBACK_CATEGORIES,
-  FEEDBACK_MAX_LENGTH,
-  normalizeFeedbackSubmission,
-} from './lib/feedback.js';
+  apiError,
+  initialApiBase,
+  initialApiBaseInput,
+  initialApiKey,
+  isPresetApiBase,
+  isTrustedApiBase,
+  presetApiBase,
+  readApiResponse,
+  requestApi,
+} from './lib/browserApi.js';
+import { COLORS, DEFAULT_PRIZES, MAX_DRAW_WINNERS, MAX_DRAW_RESULT_GROUPS, defaultPrize } from './lib/drawConfig.js';
+import { initialMotionPreference, shouldReduceMotion } from './lib/motionPreferences.js';
+import { rollingStore } from './lib/rollingCandidates.js';
+
 import { isWeiboStatusReference } from './lib/weiboStatus.js';
-import { isResponseBodyTimeout, readResponseTextWithin } from './lib/apiResponse.js';
-import { trapDialogFocus } from './lib/dialogFocus.js';
 
 const sleep = (ms, signal) => new Promise((resolve, reject) => {
   let timer;
@@ -137,16 +108,8 @@ const REPOST_JOB_TIMEOUT_MS = 90 * 60 * 1000;
 const REPOST_JOB_POLL_MS = 2000;
 const REPOST_JOB_RECONNECT_ATTEMPTS = 4;
 const REPOST_JOB_RECONNECT_BASE_MS = 900;
-const API_FETCH_TIMEOUT_MS = 45_000;
-// Keep the full roster in memory for a fair draw, but only render a small page at a time.
-const CANDIDATE_PAGE_SIZE = 20;
-const CANDIDATE_RENDER_LIMIT = 200;
-const MAX_DRAW_WINNERS = 500;
-const MAX_DRAW_RESULT_GROUPS = 20;
 const MAX_HISTORY_BACKUP_BYTES = 2 * 1024 * 1024;
 const DRAW_HISTORY_MUTATION_CANCELLED = Symbol('draw-history-mutation-cancelled');
-const API_RESPONSE_MAX_BYTES = 24 * 1024 * 1024;
-const apiResponseLifecycles = new WeakMap();
 
 async function warmDrawAvatars(candidates, apiBase, signal) {
   if (typeof window.Image !== 'function') return;
@@ -192,130 +155,6 @@ async function warmDrawAvatars(candidates, apiBase, signal) {
   ]);
 }
 
-const historyDateFormatter = new Intl.DateTimeFormat('zh-CN', {
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-});
-const candidateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-});
-
-function configuredApiBases() {
-  const configured = [
-    window.WEIBO_DRAW_API_BASE,
-    ...(Array.isArray(window.WEIBO_DRAW_ALLOWED_API_BASES) ? window.WEIBO_DRAW_ALLOWED_API_BASES : []),
-  ];
-  return [...new Set(configured.map(cleanApiBase).filter(Boolean))];
-}
-function isLocalApiBase(value) {
-  try {
-    const url = new URL(cleanApiBase(value));
-    return ['http:', 'https:'].includes(url.protocol)
-      && /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(url.hostname);
-  } catch {
-    return false;
-  }
-}
-function isTrustedApiBase(value) {
-  const cleaned = cleanApiBase(value);
-  if (!cleaned) return true;
-  try {
-    const url = new URL(cleaned);
-    if (!['http:', 'https:'].includes(url.protocol)) return false;
-    if (isLocalApiBase(cleaned)) return true;
-    return configuredApiBases().includes(cleaned);
-  } catch {
-    return false;
-  }
-}
-function initialApiBase() {
-  const storedApi = cleanApiBase(readStoredValue('weibo-draw-api-base'));
-  if (storedApi && isTrustedApiBase(storedApi)) return storedApi;
-  if (storedApi) writeStoredValue('weibo-draw-api-base', '');
-  return cleanApiBase(window.WEIBO_DRAW_API_BASE || '');
-}
-function presetApiBase() {
-  return cleanApiBase(window.WEIBO_DRAW_API_BASE || '');
-}
-function isPresetApiBase(value) {
-  const cleaned = cleanApiBase(value);
-  return Boolean(cleaned) && configuredApiBases().includes(cleaned);
-}
-// 预置服务地址不对访客展示，输入框只保留用户自己填过的自定义地址。
-function initialApiBaseInput() {
-  const stored = cleanApiBase(readStoredValue('weibo-draw-api-base'));
-  if (!stored || !isTrustedApiBase(stored) || isPresetApiBase(stored)) return '';
-  return stored;
-}
-function initialApiKey() {
-  const injected = String(window.WEIBO_DRAW_API_KEY || '').trim();
-  const stored = readStoredValue('weibo-draw-api-key').trim();
-  const storedApiBase = cleanApiBase(readStoredValue('weibo-draw-api-base'));
-  if (injected && !storedApiBase) return injected;
-  return stored || injected;
-}
-let cachedClientId = '';
-function requestClientId() {
-  if (cachedClientId) return cachedClientId;
-  const stored = readStoredValue('weibo-draw-client-id').trim();
-  if (/^[A-Za-z0-9._:-]{8,64}$/.test(stored)) {
-    cachedClientId = stored;
-    return cachedClientId;
-  }
-  const generated = String(window.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`)
-    .replace(/-/g, '')
-    .slice(0, 32);
-  writeStoredValue('weibo-draw-client-id', generated);
-  cachedClientId = generated;
-  return cachedClientId;
-}
-function isStaticHostedPage() {
-  return /\.github\.io$/i.test(location.hostname) || location.protocol === 'file:';
-}
-
-function apiError(message, status) {
-  const error = new Error(message);
-  const code = Number(status);
-  if (Number.isFinite(code)) error.status = code;
-  return error;
-}
-
-async function readApiResponse(response, label = '服务') {
-  const lifecycle = apiResponseLifecycles.get(response);
-  let text;
-  try {
-    text = await readResponseTextWithin(response, {
-      timeoutMs: API_FETCH_TIMEOUT_MS,
-      maxBytes: API_RESPONSE_MAX_BYTES,
-      signal: lifecycle?.signal,
-    });
-  } catch (error) {
-    if (lifecycle?.timedOut() || isResponseBodyTimeout(error)) {
-      throw new Error(`${label}响应超时，请稍后重试。`);
-    }
-    throw error;
-  } finally {
-    lifecycle?.cleanup();
-    apiResponseLifecycles.delete(response);
-  }
-  if (!text.trim()) {
-    throw new Error(`${label}暂时不可用（HTTP ${response.status}），请检查后端连接后重试。`);
-  }
-  try {
-    return JSON.parse(text);
-  } catch {
-    throw new Error(`${label}返回格式异常（HTTP ${response.status}），请稍后重试。`);
-  }
-}
-
 function download(name, content, type = 'text/csv;charset=utf-8') {
   const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
@@ -339,27 +178,6 @@ function canvasBlob(canvas, type = 'image/png') {
     }, type);
   });
 }
-const COLORS = ['#4f9fff', '#54c6a8', '#e6ad61', '#8f93f5', '#9bd7ff', '#ee8fa1'];
-const PRIZE_NAMES = ['一等奖', '二等奖', '三等奖', '幸运奖'];
-function defaultPrize(index = 0, count = 1) {
-  return {
-    name: PRIZE_NAMES[index] || `奖项${index + 1}`,
-    count,
-    color: COLORS[index % COLORS.length],
-  };
-}
-const DEFAULT_PRIZES = [defaultPrize(0, 1)];
-
-const MOTION_OPTIONS = [
-  { value: 'full', label: '完整' },
-  { value: 'system', label: '跟随系统' },
-  { value: 'reduced', label: '减少' },
-];
-
-function initialMotionPreference() {
-  const stored = readStoredValue('weibo-draw-motion');
-  return MOTION_OPTIONS.some((option) => option.value === stored) ? stored : 'full';
-}
 
 function canUseLocalStorage() {
   const key = 'weibo-draw-storage-check';
@@ -377,44 +195,11 @@ function canUseLocalStorage() {
   }
 }
 
-function shouldReduceMotion(preference) {
-  if (preference === 'full') return false;
-  if (preference === 'reduced') return true;
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-}
-
 function shortLoadedTime(value) {
   const date = value ? new Date(value) : null;
   if (!date || Number.isNaN(date.getTime())) return '';
   return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
-
-function historyDateParts(value) {
-  const date = new Date(value || '');
-  if (Number.isNaN(date.getTime())) return { month: '--', day: '--', time: '暂无', compact: '--' };
-  const parts = Object.fromEntries(
-    historyDateFormatter.formatToParts(date).map((part) => [part.type, part.value]),
-  );
-  return {
-    month: parts.month || '--',
-    day: parts.day || '--',
-    time: `${parts.hour || '--'}:${parts.minute || '--'}`,
-    compact: `${parts.month || '--'}.${parts.day || '--'}`,
-  };
-}
-
-function formattedCandidateTime(value) {
-  const date = new Date(value || '');
-  if (Number.isNaN(date.getTime())) return '';
-  return candidateTimeFormatter.format(date).replaceAll('/', '-');
-}
-
-const GUIDE_STEPS = [
-  ['1', '载入候选', '粘贴微博正文链接、mid 或 bid。应用优先使用服务器登录态，不可用时再尝试备用 Cookie。'],
-  ['2', '核对名单', '确认候选人数和筛选结果。你也可以手动填写名单，或导入 CSV、TXT、TSV 和 JSON 文件。'],
-  ['3', '确认抽奖设置', '检查奖项顺序、中奖人数和筛选规则。中奖总人数不能超过可抽人数。'],
-  ['4', '核对并开奖', '在开奖确认页核对候选、奖项和历史次数，再开始抽取。完成后可保存结果图或复制公示文案。'],
-];
 
 let legalDocumentsPromise = null;
 function loadLegalDocuments() {
@@ -425,2265 +210,6 @@ function loadLegalDocuments() {
       throw error;
     });
   return legalDocumentsPromise;
-}
-
-const I = {
-  users: <Users className="icon-18" strokeWidth={1.5} />,
-  listChecks: <ListChecks className="icon-18" strokeWidth={1.65} />,
-  book: <BookOpen className="icon-18" strokeWidth={1.7} />,
-  chevron: <ChevronRight className="icon-16" strokeWidth={1.8} />,
-  alert: <AlertCircle className="icon-18" strokeWidth={1.9} />,
-  check: <CheckCircle2 className="icon-18" strokeWidth={1.9} />,
-  file: <FileText className="icon-18" strokeWidth={1.7} />,
-  link: <Link2 className="icon-18" strokeWidth={1.8} />,
-  gift: <Gift className="icon-18" strokeWidth={1.5} />,
-  badgeCheck: <BadgeCheck className="icon-18" strokeWidth={1.65} />,
-  clock: <Clock className="icon-18" strokeWidth={1.5} />,
-  history: <History className="icon-18" strokeWidth={1.65} />,
-  refresh: <RefreshCw className="icon-16" strokeWidth={1.8} />,
-  shuffle: <Shuffle className="icon-20" strokeWidth={2} />,
-  trash: <Trash2 className="icon-16" strokeWidth={1.8} />,
-  settings: <Settings className="icon-18" strokeWidth={1.5} />,
-  close: <X className="icon-16" strokeWidth={2} />,
-  plus: <Plus className="icon-16" strokeWidth={2} />,
-  minus: <Minus className="icon-16" strokeWidth={2} />,
-  shield: <ShieldCheck className="icon-16" strokeWidth={1.7} />,
-  download: <Download className="icon-16" strokeWidth={1.8} />,
-  more: <Ellipsis className="icon-19" strokeWidth={1.8} />,
-  info: <Info className="icon-18" strokeWidth={1.8} />,
-  feedback: <MessageSquareHeart className="icon-18" strokeWidth={1.65} />,
-  send: <Send className="icon-16" strokeWidth={1.8} />,
-  copy: <ClipboardCopy className="icon-16" strokeWidth={1.8} />,
-  archive: <ArchiveRestore className="icon-18" strokeWidth={1.65} />,
-  play: <Play className="icon-18" strokeWidth={1.7} />,
-  zap: <Zap className="icon-18" strokeWidth={1.7} />,
-};
-const DRAW_ACTION_ICONS = {
-  load: I.link,
-  filter: I.listChecks,
-  draw: I.shuffle,
-  setup: I.gift,
-};
-
-function ErrorNoticeDialog({ notice, onClose }) {
-  const dialogRef = useRef(null);
-  const actionRef = useRef(null);
-  const onCloseRef = useRef(onClose);
-  const previousFocusRef = useRef(null);
-  const previousNoticeIdRef = useRef(null);
-  const isTopDialog = useDialogStack(Boolean(notice), 100);
-  onCloseRef.current = onClose;
-  if (previousNoticeIdRef.current !== notice.id) {
-    previousNoticeIdRef.current = notice.id;
-    previousFocusRef.current = document.activeElement;
-  }
-
-  function dismiss() {
-    onCloseRef.current();
-    window.setTimeout(() => {
-      const fallback = [...document.querySelectorAll(
-        '.receipt-backdrop .receipt-close, .flow-sheet-backdrop .flow-sheet-close',
-      )].find((element) => element.getClientRects().length && !element.closest('.is-closing'));
-      fallback?.focus?.({ preventScroll: true });
-    }, 0);
-  }
-
-  useEffect(() => {
-    actionRef.current?.focus({ preventScroll: true });
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    const handleKeyDown = (event) => {
-      if (!isTopDialog()) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        dismiss();
-      }
-      trapDialogFocus(event, dialogRef.current);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = previousOverflow;
-      const previousFocus = previousFocusRef.current;
-      const previousIsUsable = previousFocus
-        && document.contains(previousFocus)
-        && !previousFocus.closest('[inert]');
-      if (previousIsUsable) {
-        previousFocus.focus?.({ preventScroll: true });
-        return;
-      }
-      window.setTimeout(() => {
-        const fallback = [...document.querySelectorAll(
-          '.receipt-backdrop:not([inert]) .receipt-close, .flow-sheet-backdrop:not([inert]) .flow-sheet-close',
-        )].find((element) => element.getClientRects().length);
-        fallback?.focus?.({ preventScroll: true });
-      }, 0);
-    };
-  }, [isTopDialog, notice.id]);
-
-  return (
-    <div className="v3-alert-backdrop" role="presentation" onClick={dismiss}>
-      <section ref={dialogRef} className="v3-alert-dialog" role="alertdialog" aria-modal="true" aria-labelledby={`notice-${notice.id}`} aria-describedby={`notice-message-${notice.id}`} onClick={(event) => event.stopPropagation()}>
-        <span className="v3-alert-icon">{I.alert}</span>
-        <h2 id={`notice-${notice.id}`}>{notice.title}</h2>
-        <p id={`notice-message-${notice.id}`}>{notice.message}</p>
-        <button ref={actionRef} type="button" onClick={dismiss}>知道了</button>
-      </section>
-    </div>
-  );
-}
-
-function CandidateLoadProgress({ progress, isLoading, onCancel }) {
-  const percent = Math.round(Math.max(0, Math.min(100, Number(progress?.percent) || 0)));
-  const message = progress?.message || '正在处理';
-  const [announcement, setAnnouncement] = useState('');
-
-  useEffect(() => {
-    if (!progress) return undefined;
-    const timer = window.setTimeout(() => {
-      setAnnouncement(`${message}，${percent}%`);
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [message, percent, Boolean(progress)]);
-
-  if (!progress) return null;
-  return (
-    <div className="v3-progress">
-      <div className="v3-progress-copy">
-        <span>{message}</span>
-        <strong>{percent}%</strong>
-      </div>
-      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">{announcement}</span>
-      {isLoading && (
-        <button type="button" onClick={onCancel}>取消载入</button>
-      )}
-      <div
-        className="v3-progress-track"
-        role="progressbar"
-        aria-label="候选载入进度"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-        aria-valuetext={`${message}，${percent}%`}
-      >
-        <i style={{ '--progress-scale': percent / 100 }} />
-      </div>
-    </div>
-  );
-}
-
-function NoticeToast({ notice, onClose }) {
-  const [isClosing, setIsClosing] = useState(false);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-
-  useEffect(() => {
-    setIsClosing(false);
-    if (!notice || notice.tone === 'error') return undefined;
-    const dismissTimer = window.setTimeout(() => setIsClosing(true), 2800);
-    const closeTimer = window.setTimeout(() => onCloseRef.current?.(), 2980);
-    return () => {
-      window.clearTimeout(dismissTimer);
-      window.clearTimeout(closeTimer);
-    };
-  }, [notice?.id]);
-
-  if (!notice) return null;
-  if (notice.tone === 'error') return <ErrorNoticeDialog notice={notice} onClose={onClose} />;
-  const icon = notice.tone === 'success' ? I.check : I.alert;
-  return (
-    <div
-      className={`flow-notice flow-notice-${notice.tone || 'neutral'} ${isClosing ? 'is-closing' : ''}`}
-      role="status"
-      aria-live="polite"
-      aria-atomic="true"
-    >
-      <span className="flow-notice-icon">{icon}</span>
-      <div>
-        <strong>{notice.title}</strong>
-        <p>{notice.message}</p>
-      </div>
-      <button type="button" aria-label="关闭提示" onClick={onClose}>{I.close}</button>
-    </div>
-  );
-}
-
-function ConfirmActionDialog({ action, motionPreference, onClose, onConfirm }) {
-  const dialogRef = useRef(null);
-  const cancelRef = useRef(null);
-  const timerRef = useRef(null);
-  const closingRef = useRef(false);
-  const [isClosing, setIsClosing] = useState(false);
-  const isTopDialog = useDialogStack(Boolean(action));
-
-  function close(afterClose) {
-    if (closingRef.current) return;
-    closingRef.current = true;
-    setIsClosing(true);
-    timerRef.current = window.setTimeout(() => {
-      onClose();
-      afterClose?.();
-    }, shouldReduceMotion(motionPreference) ? 1 : 160);
-  }
-
-  useEffect(() => {
-    const previousFocus = document.activeElement;
-    cancelRef.current?.focus({ preventScroll: true });
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    const handleKeyDown = (event) => {
-      if (!isTopDialog()) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        close();
-      }
-      trapDialogFocus(event, dialogRef.current);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      document.body.style.overflow = previousOverflow;
-      window.clearTimeout(timerRef.current);
-      const previousIsUsable = previousFocus
-        && previousFocus.isConnected
-        && previousFocus.getClientRects?.().length
-        && !previousFocus.closest?.('[inert]');
-      if (previousIsUsable) {
-        previousFocus.focus({ preventScroll: true });
-      } else {
-        document.querySelector('.root-navbar button')?.focus({ preventScroll: true });
-      }
-    };
-  }, [isTopDialog]);
-
-  return (
-    <div className={`v3-alert-backdrop ${isClosing ? 'is-closing' : ''}`} role="presentation" onClick={() => close()}>
-      <section ref={dialogRef} className="v3-alert-dialog v3-confirm-action-dialog" role="alertdialog" aria-modal="true" aria-labelledby={`confirm-${action.kind}`} aria-describedby={`confirm-message-${action.kind}`} onClick={(event) => event.stopPropagation()}>
-        <span className="v3-alert-icon">{I.trash}</span>
-        <h2 id={`confirm-${action.kind}`}>{action.title}</h2>
-        <p id={`confirm-message-${action.kind}`}>{action.message}</p>
-        <div className="v3-confirm-action-buttons">
-          <button ref={cancelRef} type="button" onClick={() => close()}>取消</button>
-          <button className="is-destructive" type="button" onClick={() => close(onConfirm)}>{action.confirmLabel || '清空'}</button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function handleSheetBodyKeyDown(event) {
-  const body = event.currentTarget;
-  if (
-    event.target !== body
-    || event.altKey
-    || event.ctrlKey
-    || event.metaKey
-  ) {
-    return;
-  }
-
-  const maxScrollTop = body.scrollHeight - body.clientHeight;
-  if (maxScrollTop <= 0) return;
-
-  const pageStep = Math.max(1, Math.round(body.clientHeight * 0.85));
-  let nextScrollTop;
-  if (event.key === 'PageDown') nextScrollTop = body.scrollTop + pageStep;
-  else if (event.key === 'PageUp') nextScrollTop = body.scrollTop - pageStep;
-  else if (event.key === 'Home') nextScrollTop = 0;
-  else if (event.key === 'End') nextScrollTop = maxScrollTop;
-  else return;
-
-  event.preventDefault();
-  body.scrollTop = Math.max(0, Math.min(maxScrollTop, nextScrollTop));
-}
-
-function SheetFrame({
-  title,
-  subtitle,
-  icon,
-  onClose,
-  children,
-  footer = null,
-  className = '',
-  initialFocusRef = null,
-  returnFocusId = '',
-}) {
-  const backdropRef = useRef(null);
-  const dialogRef = useRef(null);
-  const bodyRef = useRef(null);
-  const closeButtonRef = useRef(null);
-  const closeTimerRef = useRef(null);
-  const requestCloseRef = useRef(null);
-  const closingRef = useRef(false);
-  const [isClosing, setIsClosing] = useState(false);
-  const [bodyScrollable, setBodyScrollable] = useState(false);
-  const isTopDialog = useDialogStack(true);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
-
-  function requestClose(afterClose, { immediate = false } = {}) {
-    if (closingRef.current) return;
-    closingRef.current = true;
-    if (immediate) {
-      onCloseRef.current?.();
-      afterClose?.();
-      return;
-    }
-    setIsClosing(true);
-    const shellMotion = dialogRef.current?.closest('.app-shell')?.dataset.motion;
-    const reduceMotion = shellMotion === 'reduced'
-      || (shellMotion !== 'full' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches);
-    closeTimerRef.current = window.setTimeout(() => {
-      onCloseRef.current?.();
-      afterClose?.();
-    }, reduceMotion ? 1 : 190);
-  }
-  requestCloseRef.current = requestClose;
-  const sheetDrag = useSheetDrag({
-    sheetRef: dialogRef,
-    backdropRef,
-    onDismiss: () => requestCloseRef.current?.(undefined, { immediate: true }),
-  });
-
-  useEffect(() => {
-    const previousFocus = document.activeElement;
-    const previousOverflow = document.body.style.overflow;
-    const scrollContainer = document.querySelector('.root-view.is-active .root-scroll');
-    const previousScrollTop = scrollContainer?.scrollTop;
-    const restorePageScroll = () => {
-      if (scrollContainer?.isConnected && Number.isFinite(previousScrollTop)) {
-        scrollContainer.scrollTop = previousScrollTop;
-      }
-    };
-    document.body.style.overflow = 'hidden';
-    const initialFocus = initialFocusRef?.current;
-    const focusTarget = initialFocus?.getClientRects().length ? initialFocus : closeButtonRef.current;
-    focusTarget?.focus({ preventScroll: true });
-    const handleKeyDown = (event) => {
-      if (!isTopDialog()) return;
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        requestCloseRef.current?.();
-      }
-      trapDialogFocus(event, dialogRef.current);
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener('keydown', handleKeyDown);
-      window.clearTimeout(closeTimerRef.current);
-      restorePageScroll();
-      window.requestAnimationFrame(() => {
-        const preferredFocus = returnFocusId ? document.getElementById(returnFocusId) : null;
-        if (preferredFocus?.isConnected
-          && preferredFocus.getClientRects().length
-          && !preferredFocus.closest?.('[inert]')) {
-          preferredFocus.focus({ preventScroll: true });
-          restorePageScroll();
-          return;
-        }
-        const wasInteractive = previousFocus?.matches?.(
-          'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])',
-        );
-        if (wasInteractive
-          && previousFocus.isConnected
-          && previousFocus.getClientRects().length
-          && !previousFocus.closest?.('[inert]')) {
-          previousFocus.focus({ preventScroll: true });
-          restorePageScroll();
-          return;
-        }
-      });
-    };
-  }, [initialFocusRef, isTopDialog, returnFocusId]);
-
-  useLayoutEffect(() => {
-    const body = bodyRef.current;
-    if (!body) return undefined;
-    const syncScrollable = () => {
-      setBodyScrollable(body.scrollHeight > body.clientHeight + 1);
-    };
-    syncScrollable();
-    const resizeObserver = new ResizeObserver(syncScrollable);
-    resizeObserver.observe(body);
-    const mutationObserver = new MutationObserver(syncScrollable);
-    mutationObserver.observe(body, { childList: true, characterData: true, subtree: true });
-    return () => {
-      resizeObserver.disconnect();
-      mutationObserver.disconnect();
-    };
-  }, []);
-
-  return (
-    <div ref={backdropRef} className={`flow-sheet-backdrop ${isClosing ? 'is-closing' : ''}`} onClick={() => requestClose()}>
-      <div ref={dialogRef} className={`flow-sheet ${className}`} role="dialog" aria-modal="true" aria-label={title} onClick={(event) => event.stopPropagation()}>
-        <div className="flow-sheet-grabber" aria-hidden="true" {...sheetDrag} />
-        <div className="flow-sheet-head">
-          <div className="flow-sheet-title">
-            <span>{icon}</span>
-            <div>
-              <h2>{title}</h2>
-              {subtitle && <p>{subtitle}</p>}
-            </div>
-          </div>
-          <button ref={closeButtonRef} type="button" aria-label={`关闭${title}`} onClick={() => requestClose()} className="flow-sheet-close">{I.close}</button>
-        </div>
-        <div
-          ref={bodyRef}
-          className="flow-sheet-body"
-          role={bodyScrollable ? 'region' : undefined}
-          aria-label={bodyScrollable ? `${title}内容` : undefined}
-          tabIndex={bodyScrollable ? 0 : undefined}
-          onKeyDown={handleSheetBodyKeyDown}
-        >
-          {typeof children === 'function' ? children(requestClose) : children}
-        </div>
-        {footer ? (
-          <div className="flow-sheet-footer">
-            {typeof footer === 'function' ? footer(requestClose) : footer}
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function FilterEditorSheet({ controller, onClose }) {
-  const [draft, setDraft] = useState(() => ({
-    keyword: controller.keyword,
-    mentionMin: controller.mentionMin,
-    blocklist: controller.blocklist,
-    uniqueByUser: controller.uniqueByUser,
-    excludePrevious: controller.excludePrevious,
-  }));
-
-  const updateDraft = (patch) => setDraft((current) => ({ ...current, ...patch }));
-  const setPreset = (keyword, mentionMin) => updateDraft({ keyword, mentionMin });
-
-  return (
-    <SheetFrame
-      title="筛选规则"
-      subtitle="调整本轮可抽候选"
-      icon={I.listChecks}
-      onClose={onClose}
-      className="v3-editor-sheet"
-      footer={(close) => (
-        <button
-          type="button"
-          className="flow-sheet-primary v3-primary-action"
-          onClick={() => {
-            if (controller.applyFilterDraft(draft)) close();
-          }}
-        >
-          应用筛选
-        </button>
-      )}
-    >
-      {() => (
-        <>
-          <div className="v3-filter-presets">
-            <button
-              type="button"
-              className={!draft.keyword && Number(draft.mentionMin) === 0 ? 'is-active' : ''}
-              aria-pressed={!draft.keyword && Number(draft.mentionMin) === 0}
-              onClick={() => setPreset('', 0)}
-            >
-              不限内容
-            </button>
-            <button
-              type="button"
-              className={draft.keyword === '抽奖' && Number(draft.mentionMin) === 0 ? 'is-active' : ''}
-              aria-pressed={draft.keyword === '抽奖' && Number(draft.mentionMin) === 0}
-              onClick={() => setPreset('抽奖', 0)}
-            >
-              含“抽奖”
-            </button>
-            <button
-              type="button"
-              className={!draft.keyword && Number(draft.mentionMin) === 1 ? 'is-active' : ''}
-              aria-pressed={!draft.keyword && Number(draft.mentionMin) === 1}
-              onClick={() => setPreset('', 1)}
-            >
-              至少 @1
-            </button>
-            <button
-              type="button"
-              className={!draft.keyword && Number(draft.mentionMin) === 2 ? 'is-active' : ''}
-              aria-pressed={!draft.keyword && Number(draft.mentionMin) === 2}
-              onClick={() => setPreset('', 2)}
-            >
-              至少 @2
-            </button>
-          </div>
-          <div className="v3-form-group">
-            <label><span>转发关键词</span><input name="filterKeyword" autoComplete="off" value={draft.keyword} onChange={(event) => updateDraft({ keyword: event.target.value })} placeholder="留空表示不限…" /></label>
-            <label><span>至少 @ 人数</span><input name="filterMentionMinimum" type="number" min="0" max="10" inputMode="numeric" value={draft.mentionMin} onChange={(event) => updateDraft({ mentionMin: event.target.value })} /></label>
-            <label><span>排除名单</span><textarea name="filterBlocklist" autoComplete="off" value={draft.blocklist} onChange={(event) => updateDraft({ blocklist: event.target.value })} placeholder="每行一个 UID 或昵称…" /></label>
-          </div>
-          <div className="v3-toggle-list">
-            <label><span><strong>候选去重</strong><small>同一用户只保留一次</small></span><input type="checkbox" checked={draft.uniqueByUser} onChange={(event) => updateDraft({ uniqueByUser: event.target.checked })} /></label>
-            <label><span><strong>排除已中奖用户</strong><small>仅限当前浏览器的当前任务</small></span><input type="checkbox" checked={draft.excludePrevious} onChange={(event) => updateDraft({ excludePrevious: event.target.checked })} /></label>
-          </div>
-        </>
-      )}
-    </SheetFrame>
-  );
-}
-
-function DrawConfirmSheet({ controller: c, onClose, onConfirm, onPractice, onRefresh }) {
-  const rawPreviousCount = c.previousDrawCount;
-  const parsedPreviousCount = Number(rawPreviousCount);
-  const countKnown = rawPreviousCount !== null
-    && rawPreviousCount !== undefined
-    && rawPreviousCount !== ''
-    && Number.isInteger(parsedPreviousCount)
-    && parsedPreviousCount >= 0;
-  const previousCount = countKnown ? parsedPreviousCount : null;
-  const nextCount = countKnown ? previousCount + 1 : null;
-  const candidateSummary = c.candidateSummary;
-
-  return (
-    <SheetFrame
-      title="开奖前确认"
-      subtitle="确认无误后再开始抽取"
-      icon={I.shield}
-      onClose={onClose}
-      className="v3-draw-confirm-sheet"
-      footer={(close) => (
-        <>
-          <button type="button" className="flow-sheet-primary v3-primary-action v3-confirm-draw" onClick={() => onConfirm(close)}>
-            {I.shuffle}
-            <span>确认并开始抽奖</span>
-          </button>
-          <button type="button" className="v3-confirm-practice" onClick={() => onPractice(close)}>
-            <span>{I.play}</span>
-            <span>
-              <strong>本地演练</strong>
-              <small>播放完整流程，不保存记录</small>
-            </span>
-            {I.chevron}
-          </button>
-          <div className="v3-confirm-secondary-actions">
-            {c.source !== 'manual' && (
-              <button type="button" onClick={() => close(onRefresh)}>
-                {I.refresh}
-                更新候选
-              </button>
-            )}
-            <button type="button" onClick={() => close(() => c.setShowPrizeEditor(true))}>
-              {I.gift}
-              修改奖项
-            </button>
-          </div>
-        </>
-      )}
-    >
-      {() => (
-        <>
-          <div className={`v3-confirm-hero ${previousCount > 0 ? 'is-repeat' : ''} ${previousCount === null ? 'is-unknown' : ''}`}>
-            <span>{previousCount > 0 ? I.history : previousCount === null ? I.info : I.gift}</span>
-            <div>
-              <small>{previousCount === null ? '历史次数暂未核实' : previousCount > 0 ? `此前已完成 ${previousCount} 次` : '暂无历史开奖记录'}</small>
-              <strong>{c.nextDrawText}</strong>
-              <p>{previousCount === null ? '本次完成后会以服务器保存结果为准' : '只有成功保存的结果才会计入次数'}</p>
-            </div>
-          </div>
-
-          {(c.candidateLoadError || c.candidateWarningText) && (
-            <div className="v3-confirm-warning" role="note">
-              {I.alert}
-              <span>
-                <strong>{c.candidateLoadError ? '候选载入未完成' : '请核对候选范围'}</strong>
-                <small>{c.candidateLoadError || c.candidateWarningText}</small>
-              </span>
-            </div>
-          )}
-
-          <section className="v3-confirm-preview" aria-label="筛选结果预览">
-            <header>
-              <span>{I.listChecks}</span>
-              <div>
-                <strong>筛选结果预览</strong>
-                <small>按当前名单和规则计算</small>
-              </div>
-              <em>{candidateSummary.excluded ? '请核对' : '范围清晰'}</em>
-            </header>
-            <div className="v3-confirm-preview-metrics">
-              <div><strong>{candidateSummary.total.toLocaleString()}</strong><small>候选总数</small></div>
-              <div><strong>{candidateSummary.eligible.toLocaleString()}</strong><small>可抽人数</small></div>
-              <div><strong>{candidateSummary.excluded.toLocaleString()}</strong><small>已排除</small></div>
-            </div>
-            <p>
-              <span>主要排除原因</span>
-              <strong>{candidateSummary.reasonText || '暂无排除候选'}</strong>
-            </p>
-          </section>
-
-          <dl className="v3-confirm-facts">
-            <div><dt>可抽候选</dt><dd>{c.eligible.length.toLocaleString()} 人</dd></div>
-            <div><dt>中奖名额</dt><dd>{c.totalSlots} 人</dd></div>
-            <div className={c.candidateNeedsRefresh ? 'is-stale' : ''}>
-              <dt>名单截止</dt>
-              <dd>{c.candidateCutoffLabel}</dd>
-            </div>
-            <div><dt>筛选规则</dt><dd>{c.filterSummary}</dd></div>
-          </dl>
-
-          <div className="v3-confirm-prizes" aria-label="本轮奖项">
-            {c.normalizedPrizes.map((prize, index) => (
-              <div key={`${prize.name}-${index}`}>
-                <span style={{ '--prize-color': prize.color }}>{index + 1}</span>
-                <strong title={prize.name}>{prize.name}</strong>
-                <small>{prize.count} 名</small>
-              </div>
-            ))}
-          </div>
-
-          <p className="v3-repeat-note">
-            {c.source === 'manual' ? I.info : previousCount > 0 ? I.info : previousCount === null ? I.alert : I.clock}
-            {c.source === 'manual'
-              ? '手动名单不会查询链接历史，请确认当前名单和奖项后再开始。'
-              : !c.cooldownPersistent
-              ? '本机存储不可用；当前页面内成功开奖后一分钟内不能重复开奖，刷新或关闭页面后限制可能失效。'
-              : previousCount === null
-              ? '历史次数暂未核实，本次完成后会显示服务器返回的实际次数。'
-              : previousCount > 0
-              ? `本次完成后显示为第 ${nextCount} 次；同一浏览器一分钟内不能重复开奖。`
-              : '同一浏览器内，本链接成功开奖后一分钟内不能重复开奖。'}
-          </p>
-
-        </>
-      )}
-    </SheetFrame>
-  );
-}
-
-function GuideSheet({ onClose }) {
-  return (
-    <SheetFrame
-      title="使用教程"
-      subtitle="从载入候选到保存结果"
-      icon={I.book}
-      onClose={onClose}
-      className="flow-guide-sheet"
-      footer={(close) => (
-        <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">知道了</button>
-      )}
-    >
-      {() => (
-        <>
-          <div className="flow-guide-list">
-            {GUIDE_STEPS.map(([step, title, detail]) => (
-              <div key={step} className="flow-guide-row">
-                <span>{step}</span>
-                <div>
-                  <strong>{title}</strong>
-                  <p>{detail}</p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </SheetFrame>
-  );
-}
-
-function CandidateDetailSheet({ entry, apiBase, onClose, onCopy }) {
-  const [copiedField, setCopiedField] = useState('');
-  const copiedTimerRef = useRef(null);
-
-  useEffect(() => {
-    setCopiedField('');
-    window.clearTimeout(copiedTimerRef.current);
-    return () => window.clearTimeout(copiedTimerRef.current);
-  }, [entry]);
-
-  if (!entry?.candidate) return null;
-  const { candidate } = entry;
-  const name = candidate.screenName || candidate.uid || '候选用户';
-  const sourceText = friendlyProviderText(candidate.source) || '候选名单';
-  const createdAt = formattedCandidateTime(candidate.createdAt);
-
-  async function copyField(value, field, successMessage) {
-    const copied = await onCopy(value, successMessage);
-    if (!copied) return;
-    setCopiedField(field);
-    window.clearTimeout(copiedTimerRef.current);
-    copiedTimerRef.current = window.setTimeout(() => setCopiedField(''), 1600);
-  }
-
-  return (
-    <SheetFrame
-      title="候选详情"
-      subtitle={entry.eligible ? '符合当前筛选规则' : entry.reasonLabel}
-      icon={I.users}
-      onClose={onClose}
-      className="candidate-detail-sheet"
-      footer={(close) => (
-        <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">完成</button>
-      )}
-    >
-      {() => (
-        <>
-          <div className="candidate-detail-identity">
-            <CandidateAvatar candidate={candidate} className="candidate-detail-avatar" apiBase={apiBase} priority />
-            <div>
-              <span className={entry.eligible ? 'is-eligible' : 'is-excluded'}>
-                {entry.eligible ? '可参与本轮抽奖' : entry.reasonLabel}
-              </span>
-              <strong>{name}</strong>
-              <small>{candidate.uid ? `UID ${candidate.uid}` : sourceText}</small>
-            </div>
-          </div>
-
-          <dl className="candidate-detail-facts">
-            <div><dt>候选状态</dt><dd>{entry.eligible ? '可抽' : '已排除'}</dd></div>
-            {!entry.eligible && <div><dt>排除原因</dt><dd>{entry.reasonDetail}</dd></div>}
-            <div><dt>数据来源</dt><dd>{sourceText}</dd></div>
-            {createdAt && <div><dt>转发时间</dt><dd>{createdAt}</dd></div>}
-          </dl>
-
-          {candidate.text && (
-            <section className="candidate-detail-text">
-              <h3>转发内容</h3>
-              <p>{candidate.text}</p>
-            </section>
-          )}
-
-          <div className="candidate-detail-actions">
-            <button type="button" aria-label="复制昵称" onClick={() => copyField(name, 'name', '昵称已复制。')}>
-              {I.copy} {copiedField === 'name' ? '已复制' : '复制昵称'}
-            </button>
-            {candidate.uid && (
-              <button type="button" aria-label="复制 UID" onClick={() => copyField(String(candidate.uid), 'uid', 'UID 已复制。')}>
-                {I.copy} {copiedField === 'uid' ? '已复制' : '复制 UID'}
-              </button>
-            )}
-          </div>
-        </>
-      )}
-    </SheetFrame>
-  );
-}
-
-function FeedbackSheet({ initialCategory = FEEDBACK_CATEGORIES[0].value, onClose, onSubmit }) {
-  const [category, setCategory] = useState(initialCategory);
-  const [content, setContent] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [sent, setSent] = useState(null);
-  const [error, setError] = useState('');
-  const textareaRef = useRef(null);
-  const submittingRef = useRef(false);
-
-  const focusComposer = window.matchMedia('(hover: hover) and (pointer: fine)').matches;
-
-  async function submit(event) {
-    event.preventDefault();
-    if (submittingRef.current) return;
-    setError('');
-    try {
-      const payload = normalizeFeedbackSubmission({ category, content });
-      submittingRef.current = true;
-      setSubmitting(true);
-      const receipt = await onSubmit(payload);
-      setSent(receipt || {});
-    } catch (submitError) {
-      setError(submitError.message || '反馈暂时未能送达，请稍后再试');
-    } finally {
-      submittingRef.current = false;
-      setSubmitting(false);
-    }
-  }
-
-  function moveCategoryFocus(event, index) {
-    const directions = {
-      ArrowDown: 1,
-      ArrowRight: 1,
-      ArrowUp: -1,
-      ArrowLeft: -1,
-    };
-    let nextIndex;
-    if (event.key === 'Home') nextIndex = 0;
-    else if (event.key === 'End') nextIndex = FEEDBACK_CATEGORIES.length - 1;
-    else if (directions[event.key]) {
-      nextIndex = (index + directions[event.key] + FEEDBACK_CATEGORIES.length) % FEEDBACK_CATEGORIES.length;
-    } else return;
-    event.preventDefault();
-    setCategory(FEEDBACK_CATEGORIES[nextIndex].value);
-    event.currentTarget.parentElement?.children[nextIndex]?.focus();
-  }
-
-  return (
-    <SheetFrame
-      title="意见反馈"
-      subtitle="你的建议会由运营者直接查看"
-      icon={I.feedback}
-      onClose={onClose}
-      className="flow-feedback-sheet"
-      initialFocusRef={focusComposer ? textareaRef : null}
-      footer={(close) => (sent ? (
-        <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
-      ) : (
-        <button type="submit" form="feedback-form" className="flow-sheet-primary v3-primary-action feedback-submit" disabled={submitting || content.trim().length < 2}>
-          {submitting ? I.refresh : I.send}
-          <span>{submitting ? '正在提交' : '提交反馈'}</span>
-        </button>
-      ))}
-    >
-      {() => sent ? (
-        <div className="feedback-success" role="status" aria-live="polite" aria-atomic="true">
-          <span>{I.check}</span>
-          <h3>谢谢你的反馈</h3>
-          <p>内容已经送达，运营者会在后台查看。</p>
-          {sent.id && <code>反馈编号 {sent.id}</code>}
-        </div>
-      ) : (
-        <form className="feedback-form" id="feedback-form" onSubmit={submit}>
-          <fieldset className="feedback-category">
-            <legend id="feedback-category-label">反馈类型</legend>
-            <div role="radiogroup" aria-labelledby="feedback-category-label">
-              {FEEDBACK_CATEGORIES.map((item, index) => (
-                <button
-                  key={item.value}
-                  type="button"
-                  role="radio"
-                  className={category === item.value ? 'is-active' : ''}
-                  aria-checked={category === item.value}
-                  tabIndex={category === item.value ? 0 : -1}
-                  onClick={() => setCategory(item.value)}
-                  onKeyDown={(event) => moveCategoryFocus(event, index)}
-                >
-                  <strong>{item.label}</strong>
-                  <small>{item.hint}</small>
-                </button>
-              ))}
-            </div>
-          </fieldset>
-
-          <label className="feedback-editor">
-            <span>反馈内容</span>
-            <textarea
-              ref={textareaRef}
-              name="feedbackContent"
-              autoComplete="off"
-              value={content}
-              maxLength={FEEDBACK_MAX_LENGTH}
-              placeholder={category === 'privacy' ? '请填写过程哈希或反馈编号，以及需要处理的数据…' : '请描述你的建议或遇到的问题…'}
-              onChange={(event) => {
-                setContent(event.target.value);
-                if (error) setError('');
-              }}
-              aria-describedby={`feedback-hint${error ? ' feedback-error' : ''}`}
-            />
-            <span className="feedback-count">{content.length} / {FEEDBACK_MAX_LENGTH}</span>
-          </label>
-
-          <p className="feedback-privacy" id="feedback-hint">
-            {I.shield} {category === 'privacy' ? '无需填写联系方式；请勿填写 Cookie、密码、身份证号等敏感信息' : '无需填写联系方式；请勿填写 Cookie、密码等敏感信息'}
-          </p>
-          {error && <p className="feedback-error" id="feedback-error" role="alert" aria-live="assertive">{error}</p>}
-        </form>
-      )}
-    </SheetFrame>
-  );
-}
-
-function UpdateEntry({ entry }) {
-  return (
-    <article className="flow-update-entry">
-      <header>
-        <div><strong>版本 {entry.version}</strong><small>{entry.date}</small></div>
-        <span>{entry.label}</span>
-      </header>
-      <h3>{entry.title}</h3>
-      {entry.summary && <p>{entry.summary}</p>}
-      {entry.items.length > 0 && <ul>{entry.items.map((item) => <li key={item}>{item}</li>)}</ul>}
-    </article>
-  );
-}
-
-function LegalSheet({ document, onClose, onOpenPrivacyRequest, onOpenUpdates }) {
-  const [showUpdateHistory, setShowUpdateHistory] = useState(false);
-  const documentKey = document?.key || '';
-  useEffect(() => { setShowUpdateHistory(false); }, [documentKey]);
-  if (!document) return null;
-  return (
-    <SheetFrame
-      key={document.key || document.title}
-      title={document.title}
-      subtitle={document.subtitle}
-      icon={document.key === 'updates' ? I.history : I.file}
-      onClose={onClose}
-      className="flow-legal-sheet"
-      footer={(close) => (
-        <button type="button" onClick={() => close()} className="flow-sheet-primary v3-primary-action">完成</button>
-      )}
-    >
-      {(close) => (
-        <>
-          {document.key === 'updates' && document.updates?.[0]?.date && <p className="flow-legal-date">更新日期：{document.updates[0].date}</p>}
-          {document.updates ? (
-            <>
-              <div className="flow-update-list">
-                {document.updates.slice(0, 1).map((entry) => <UpdateEntry entry={entry} key={entry.version} />)}
-              </div>
-              {document.updates.length > 1 && (
-                <>
-                  <button
-                    type="button"
-                    className="flow-update-history-toggle"
-                    aria-expanded={showUpdateHistory}
-                    onClick={() => setShowUpdateHistory((value) => !value)}
-                  >
-                    <span>{showUpdateHistory ? '收起历史版本' : `查看历史版本（${document.updates.length - 1} 个）`}</span>
-                    {I.chevron}
-                  </button>
-                  {showUpdateHistory && (
-                    <div className="flow-update-list flow-update-history">
-                      {document.updates.slice(1).map((entry) => <UpdateEntry entry={entry} key={entry.version} />)}
-                    </div>
-                  )}
-                </>
-              )}
-            </>
-          ) : (
-            <>
-              <div className="flow-legal-sections">
-                {document.sections.map(([title, detail]) => (
-                  <section key={title}>
-                    <h3>{title}</h3>
-                    <p>{detail}</p>
-                  </section>
-                ))}
-              </div>
-              {document.key === 'about' && (
-                <button type="button" className="flow-legal-update-link list-row" onClick={() => close(onOpenUpdates)}>
-                  <span className="row-icon mint">{I.history}</span>
-                  <span className="row-copy"><strong>更新日志</strong><small>查看 {APP_VERSION} 与历史正式版本</small></span>
-                  {I.chevron}
-                </button>
-              )}
-              {document.noticeHref && (
-                <a className="flow-legal-update-link list-row" href={document.noticeHref} target="_blank" rel="noreferrer">
-                  <span className="row-icon mint">{I.file}</span>
-                  <span className="row-copy"><strong>完整许可清单</strong><small>查看第三方版权声明与许可文本</small></span>
-                  {I.chevron}
-                </a>
-              )}
-              {document.key === 'privacy' && (
-                <button type="button" className="flow-legal-update-link list-row" onClick={() => close(onOpenPrivacyRequest)}>
-                  <span className="row-icon lilac">{I.feedback}</span>
-                  <span className="row-copy"><strong>提交隐私与数据请求</strong><small>查询或申请删除服务器记录</small></span>
-                  {I.chevron}
-                </button>
-              )}
-            </>
-          )}
-        </>
-      )}
-    </SheetFrame>
-  );
-}
-
-function SectionTitle({ title, action, onAction }) {
-  return (
-    <header className="section-header">
-      <h2>{title}</h2>
-      {action && <button type="button" onClick={onAction}>{action}</button>}
-    </header>
-  );
-}
-
-function AppListRow({ id, icon, tone = 'blue', title, detail, value, onClick }) {
-  return (
-    <button id={id} className="list-row" type="button" onClick={onClick}>
-      <span className={`row-icon ${tone}`}>{icon}</span>
-      <span className="row-copy">
-        <strong>{title}</strong>
-        {detail && <small>{detail}</small>}
-      </span>
-      {value && <span className="row-value">{value}</span>}
-      {I.chevron}
-    </button>
-  );
-}
-
-function createRollingStore() {
-  let snapshot = { candidate: null };
-  const listeners = new Set();
-  return {
-    subscribe(listener) {
-      listeners.add(listener);
-      return () => listeners.delete(listener);
-    },
-    getSnapshot() {
-      return snapshot;
-    },
-    set(candidate) {
-      if (snapshot.candidate === candidate) return;
-      snapshot = { candidate };
-      for (const listener of listeners) listener();
-    },
-  };
-}
-const rollingStore = createRollingStore();
-
-function compactCandidateUid(candidate) {
-  const uid = String(candidate?.uid || '');
-  if (!uid) return friendlyProviderText(candidate?.source) || '微博候选';
-  return uid.length > 8 ? `UID ${uid.slice(0, 4)}••••${uid.slice(-2)}` : `UID ${uid}`;
-}
-
-function DrawStageCard({ controller: c, drawState }) {
-  const rolling = useSyncExternalStore(rollingStore.subscribe, rollingStore.getSnapshot);
-  const stageCandidate = c.isDrawing
-    ? rolling.candidate || c.eligible[0] || c.candidates[0]
-    : c.eligible[0] || c.candidates[0];
-  const stageName = stageCandidate?.screenName || stageCandidate?.uid || '候选用户';
-  return (
-    <article className="candidate-pass pass-main lens-center" data-deck-card>
-      <header>
-        <span>{c.isDrawing ? c.phase === '正在同步开奖记录' ? '正在同步结果' : '正在抽取候选' : '候选'}</span>
-        {I.shield}
-      </header>
-      <div className="pass-identity">
-        <CandidateAvatar candidate={stageCandidate} className="pass-avatar" apiBase={c.apiBase} priority={c.isDrawing} />
-        <span key={c.isDrawing ? candidateIdentity(stageCandidate) || stageName : `${drawState}-${c.eligible.length}`}>
-          <small>{c.isDrawing ? c.phase || '正在抽取' : '候选已载入'}</small>
-          <strong>{c.isDrawing ? stageName : c.eligible.length.toLocaleString()}</strong>
-          <em>{c.isDrawing ? compactCandidateUid(stageCandidate) : '名候选'}</em>
-        </span>
-      </div>
-      <footer>
-        <span><small>奖项</small><strong>{c.normalizedPrizes.length} 个</strong></span>
-        <span><small>名额</small><strong>{c.totalSlots} 名</strong></span>
-        <span><small>状态</small><strong>{c.isDrawing ? '抽取中' : !c.candidateSourceReady ? '待载入' : c.eligible.length ? c.drawSetupConfirmed ? '可开奖' : '待确认' : '需调整'}</strong></span>
-      </footer>
-    </article>
-  );
-}
-
-function RollingName({ fallback = '候选用户' }) {
-  const rolling = useSyncExternalStore(rollingStore.subscribe, rollingStore.getSnapshot);
-  return rolling.candidate?.screenName || rolling.candidate?.uid || fallback;
-}
-
-function AppleNavigationV3({ controller: c }) {
-  const drawState = c.isDrawing ? 'running' : c.hasResults ? 'finished' : 'ready';
-  const [mountedTabs, setMountedTabs] = useState(() => new Set([c.activeTab]));
-  const [chromeState, setChromeState] = useState('expanded');
-  const [pageDirection, setPageDirection] = useState(1);
-  const [candidateLimit, setCandidateLimit] = useState(CANDIDATE_PAGE_SIZE);
-  const [selectedCandidateEntry, setSelectedCandidateEntry] = useState(null);
-  const [settingsDisclosures, setSettingsDisclosures] = useState({ cookie: false, backend: false });
-  const drawDeckRef = useRef(null);
-  const drawSceneRef = useRef(null);
-  const deckAnimationsRef = useRef([]);
-  const previousDrawStateRef = useRef(drawState);
-  const deferredCandidateQuery = useDeferredValue(c.candidateQuery);
-
-  useEffect(() => {
-    const reducedMotion = shouldReduceMotion(c.motionPreference);
-    const deck = drawDeckRef.current;
-    const previousState = previousDrawStateRef.current;
-    const currentTransforms = drawState === 'finished' && previousState === 'running' && deck
-      ? [...deck.querySelectorAll('[data-deck-card]')].map((card) => getComputedStyle(card).transform)
-      : [];
-    cancelDrawDeckMotion(deckAnimationsRef.current);
-    deckAnimationsRef.current = [];
-
-    if (drawState === 'running') {
-      deckAnimationsRef.current = startDrawDeckMotion(deck, { reducedMotion });
-    } else if (drawState === 'finished' && previousState === 'running') {
-      deckAnimationsRef.current = settleDrawDeckMotion(deck, {
-        reducedMotion,
-        readTransform: (_, index) => currentTransforms[index] || 'none',
-      });
-    }
-    previousDrawStateRef.current = drawState;
-  }, [drawState, c.motionPreference]);
-
-  useEffect(() => () => {
-    cancelDrawDeckMotion(deckAnimationsRef.current);
-  }, []);
-
-  useEffect(() => {
-    setMountedTabs((current) => (current.has(c.activeTab) ? current : new Set(current).add(c.activeTab)));
-  }, [c.activeTab]);
-
-  useEffect(() => {
-    const scrollRoot = document.querySelector(`[data-root-view="${c.activeTab}"] .root-scroll`);
-    if (!scrollRoot) {
-      setChromeState('expanded');
-      return undefined;
-    }
-
-    let lastScrollTop = scrollRoot.scrollTop;
-    let animationFrame = 0;
-    const updateChrome = () => {
-      animationFrame = 0;
-      const nextScrollTop = scrollRoot.scrollTop;
-      const delta = nextScrollTop - lastScrollTop;
-      lastScrollTop = nextScrollTop;
-      if (nextScrollTop <= 24 || delta < -6) {
-        setChromeState((current) => (current === 'expanded' ? current : 'expanded'));
-      } else if (nextScrollTop > 72 && delta > 6) {
-        setChromeState((current) => (current === 'compact' ? current : 'compact'));
-      }
-    };
-    const handleScroll = () => {
-      if (!animationFrame) animationFrame = window.requestAnimationFrame(updateChrome);
-    };
-
-    setChromeState('expanded');
-    scrollRoot.addEventListener('scroll', handleScroll, { passive: true });
-    return () => {
-      scrollRoot.removeEventListener('scroll', handleScroll);
-      window.cancelAnimationFrame(animationFrame);
-    };
-  }, [c.activeTab]);
-
-  const tabIndex = { home: 0, candidates: 1, history: 2, more: 3 }[c.activeTab] ?? 0;
-  const tabOrder = ['home', 'candidates', 'history', 'more'];
-  const candidateSegmentIndex = { eligible: 0, all: 1, excluded: 2 }[c.candidateSegment] ?? 0;
-  const motionSegmentIndex = Math.max(0, MOTION_OPTIONS.findIndex((option) => option.value === c.motionPreference));
-  const candidateGroups = useMemo(() => {
-    const evaluationByCandidate = new Map(
-      c.candidateEvaluations.map((entry) => [entry.candidate, entry]),
-    );
-    const excludedCandidates = c.candidateEvaluations
-      .filter((entry) => !entry.eligible)
-      .map((entry) => entry.candidate);
-    const segmentCandidates = c.candidateSegment === 'all'
-      ? c.candidates
-      : c.candidateSegment === 'excluded'
-        ? excludedCandidates
-        : c.eligible;
-    return { evaluationByCandidate, excludedCandidates, segmentCandidates };
-  }, [c.candidateSegment, c.candidates, c.candidateEvaluations, c.eligible]);
-  const candidateView = useMemo(() => {
-    const query = deferredCandidateQuery.trim().toLowerCase();
-    const { segmentCandidates } = candidateGroups;
-    const matchingCandidates = segmentCandidates.filter((candidate) => !query || [
-      candidate.screenName,
-      candidate.uid,
-      candidate.text,
-    ].some((value) => String(value || '').toLowerCase().includes(query)));
-    return { ...candidateGroups, matchingCandidates, query };
-  }, [candidateGroups, deferredCandidateQuery]);
-  const { evaluationByCandidate, excludedCandidates, matchingCandidates, query } = candidateView;
-  const browsableCandidateCount = Math.min(matchingCandidates.length, CANDIDATE_RENDER_LIMIT);
-  const visibleCandidates = matchingCandidates.slice(0, Math.min(candidateLimit, browsableCandidateCount));
-  const remainingCandidates = Math.max(0, browsableCandidateCount - visibleCandidates.length);
-  const searchOnlyCandidates = Math.max(0, matchingCandidates.length - browsableCandidateCount);
-
-  useLayoutEffect(() => {
-    setCandidateLimit(CANDIDATE_PAGE_SIZE);
-  }, [c.candidateSegment, c.candidates, deferredCandidateQuery]);
-  const deferredHistoryQuery = useDeferredValue(c.historyQuery);
-  const historySearch = String(deferredHistoryQuery || '').trim().toLowerCase();
-  const historySearchIndex = useMemo(() => c.drawHistory.map((item) => ({
-    item,
-    text: [
-      item.statusUrl,
-      item.statusId,
-      item.drawNumber,
-      ...(item.results || []).flatMap((group) => [
-        group.prize?.name,
-        ...(group.winners || []).flatMap((winner) => [winner.screenName, winner.uid]),
-      ]),
-    ].map((value) => String(value || '').toLowerCase()).join('\n'),
-  })), [c.drawHistory]);
-  const filteredHistory = useMemo(() => {
-    if (!historySearch) return c.drawHistory;
-    return historySearchIndex
-      .filter((entry) => entry.text.includes(historySearch))
-      .map((entry) => entry.item);
-  }, [c.drawHistory, historySearch, historySearchIndex]);
-  const visibleHistory = c.historyExpanded ? filteredHistory : filteredHistory.slice(0, 3);
-  const totalHistoricWinners = c.drawHistory.reduce((sum, item) => sum + Number(item.total || 0), 0);
-  const latestHistory = c.drawHistory.slice(0, 2);
-  const sourceDetail = {
-    mobile: '当前可见的微博转发',
-    manual: '粘贴、填写或文件导入',
-    official: '微博官方接口',
-  }[c.source];
-  const primaryResult = c.results.find((item) => item.winners?.length);
-  const primaryWinner = primaryResult?.winners?.[0];
-  const stackOpen = Boolean(
-    c.showGuide
-    || c.showFeedback
-    || c.legalDocument
-    || c.confirmAction
-    || c.showDrawConfirm
-    || c.showSourceEditor
-    || c.showPrizeEditor
-    || c.showFilters
-    || c.showSettings
-    || c.selectedReceipt
-    || selectedCandidateEntry,
-  );
-  const contentInert = stackOpen || c.notice?.tone === 'error';
-  const layerSignature = [
-    c.notice?.tone === 'error' ? `notice:${c.notice.id}` : '',
-    c.showGuide ? 'guide' : '',
-    c.showFeedback ? 'feedback' : '',
-    c.legalDocument ? 'legal' : '',
-    c.confirmAction ? 'confirm' : '',
-    c.showDrawConfirm ? 'draw-confirm' : '',
-    c.showSourceEditor ? 'source' : '',
-    c.showPrizeEditor ? 'prize' : '',
-    c.showFilters ? 'filters' : '',
-    c.showSettings ? 'settings' : '',
-    c.selectedReceipt ? 'receipt' : '',
-    selectedCandidateEntry ? 'candidate' : '',
-  ].filter(Boolean).join('|');
-  useLayoutEffect(() => {
-    const pageRegions = [...document.querySelectorAll('.root-navbar, .root-pages, .root-tabbar')];
-    const layers = [...document.querySelectorAll('.v3-alert-backdrop, .flow-sheet-backdrop, .receipt-backdrop')];
-    const topLayer = layers.reduce((currentTop, layer) => {
-      if (!currentTop) return layer;
-      const currentZIndex = Number.parseInt(window.getComputedStyle(currentTop).zIndex, 10) || 0;
-      const layerZIndex = Number.parseInt(window.getComputedStyle(layer).zIndex, 10) || 0;
-      return layerZIndex >= currentZIndex ? layer : currentTop;
-    }, null);
-    pageRegions.forEach((region) => {
-      if (contentInert) region.setAttribute('inert', '');
-      else region.removeAttribute('inert');
-    });
-    layers.forEach((layer) => {
-      if (layer !== topLayer) layer.setAttribute('inert', '');
-      else layer.removeAttribute('inert');
-    });
-    return () => {
-      pageRegions.forEach((region) => region.removeAttribute('inert'));
-      layers.forEach((layer) => layer.removeAttribute('inert'));
-    };
-  }, [contentInert, layerSignature]);
-  const intakeState = getIntakeState({
-    loading: c.isLoading,
-    loadError: c.candidateLoadError,
-    hasCandidates: c.hasCandidates,
-    drawState,
-    loadCompleted: c.candidateLoadCompleted,
-    statusUrl: c.statusUrl,
-  });
-  const intakePercent = Math.max(0, Math.min(100, Math.round(c.progress?.percent || 0)));
-  const visibleWinners = c.results
-    .flatMap((item) => item.winners.map((winner) => ({
-      candidate: winner,
-      prizeName: item.prize.name,
-    })))
-    .slice(0, 4);
-  const resultReceipt = c.currentReceipt || c.drawHistory[0] || null;
-  const resolvedDrawAction = getDrawActionState({
-    loadError: c.candidateLoadError,
-    hasCandidates: c.hasCandidates,
-    sourceReady: c.candidateSourceReady,
-    eligibleCount: c.eligible.length,
-    setupConfirmed: c.drawSetupConfirmed,
-    nextDrawLabel: c.nextDrawText,
-    totalSlots: c.totalSlots,
-    prizeCount: c.normalizedPrizes.length,
-  });
-  const drawAction = {
-    ...resolvedDrawAction,
-    icon: DRAW_ACTION_ICONS[resolvedDrawAction.kind],
-  };
-
-  useEffect(() => {
-    if (!c.showSettings) return undefined;
-    if (c.settingsTarget === 'cookie' || c.settingsTarget === 'backend') {
-      setSettingsDisclosures((current) => ({ ...current, [c.settingsTarget]: true }));
-    }
-    if (!c.settingsTarget || c.settingsTarget === 'overview') return undefined;
-    const timer = window.setTimeout(() => {
-      document.querySelector(`[data-settings-section="${c.settingsTarget}"]`)?.scrollIntoView({
-        block: 'start',
-        behavior: shouldReduceMotion(c.motionPreference) ? 'auto' : 'smooth',
-      });
-    }, 360);
-    return () => window.clearTimeout(timer);
-  }, [c.motionPreference, c.settingsTarget, c.showSettings]);
-
-  const switchTab = (tab, { focus = false } = {}) => {
-    if (tab !== c.activeTab) {
-      const currentIndex = tabOrder.indexOf(c.activeTab);
-      const nextIndex = tabOrder.indexOf(tab);
-      setPageDirection(nextIndex >= currentIndex ? 1 : -1);
-      setChromeState('expanded');
-    }
-    setMountedTabs((current) => (current.has(tab) ? current : new Set(current).add(tab)));
-    c.setActiveTab(tab);
-    window.requestAnimationFrame(() => {
-      if (!c.isBusy) {
-        document.querySelector(`[data-root-view="${tab}"] .root-scroll`)?.scrollTo({
-          top: 0,
-          behavior: 'auto',
-        });
-      }
-      if (focus) {
-        document.querySelector(`.root-tabbar [data-tab-target="${tab}"]`)?.focus({
-          preventScroll: true,
-        });
-      }
-    });
-  };
-
-  const handleTabListKeyDown = (event) => {
-    const currentIndex = tabOrder.indexOf(c.activeTab);
-    let nextTab = null;
-    if (event.key === 'ArrowRight') nextTab = tabOrder[(currentIndex + 1 + tabOrder.length) % tabOrder.length];
-    else if (event.key === 'ArrowLeft') nextTab = tabOrder[(currentIndex - 1 + tabOrder.length) % tabOrder.length];
-    else if (event.key === 'Home') nextTab = tabOrder[0];
-    else if (event.key === 'End') nextTab = tabOrder.at(-1);
-    if (!nextTab) return;
-    event.preventDefault();
-    switchTab(nextTab, { focus: true });
-  };
-
-  const confirmDraw = (close) => {
-    drawSceneRef.current?.scrollIntoView({
-      behavior: 'auto',
-      block: 'nearest',
-    });
-    c.confirmAndDraw({ close });
-  };
-  const practiceDraw = (close) => {
-    drawSceneRef.current?.scrollIntoView({
-      behavior: 'auto',
-      block: 'nearest',
-    });
-    c.confirmAndDraw({ practice: true, close });
-  };
-
-  return (
-    <div
-      className={`app-shell v3-app-shell ${stackOpen ? 'stack-open' : ''}`}
-      data-draw-state={drawState}
-      data-intake-state={intakeState}
-      data-motion={c.motionPreference}
-      data-setup={c.drawSetupConfirmed ? 'confirmed' : 'unconfirmed'}
-      data-chrome={chromeState}
-      data-root-tab={c.activeTab === 'home' ? 'draw' : c.activeTab}
-      style={{
-        '--page-direction': String(pageDirection),
-        '--page-enter-x': `${pageDirection * 12}px`,
-      }}
-    >
-      <a className="skip-link" href="#main-content" inert={contentInert ? '' : undefined}>跳到主要内容</a>
-      <header className="root-navbar glass" inert={contentInert ? '' : undefined}>
-        <button className="brand-button" type="button" onClick={() => switchTab('home')}>
-          <img src={publicAsset('avatar-96.webp')} alt="" width="48" height="48" />
-          <span>
-            <strong>微博转发抽奖</strong>
-            <small>by.sameko</small>
-          </span>
-        </button>
-        <div className="navbar-actions">
-          <button className={c.showGuide ? 'is-presenting' : ''} type="button" onClick={() => c.setShowGuide(true)} aria-label="使用教程" aria-expanded={c.showGuide}>
-            {I.book}
-          </button>
-          <button className={c.showSettings ? 'is-presenting' : ''} type="button" onClick={() => c.openSettings()} aria-label="设置" aria-expanded={c.showSettings}>
-            {I.settings}
-          </button>
-        </div>
-      </header>
-
-      <NoticeToast notice={c.notice} onClose={c.dismissNotice} />
-      <div
-        className="sr-only"
-        role="status"
-        aria-live={c.notice ? 'off' : c.statusTone === 'error' ? 'assertive' : 'polite'}
-        aria-atomic="true"
-        data-app-status={c.statusTone}
-      >
-        {c.status}
-      </div>
-      {c.confirmAction && (
-        <ConfirmActionDialog
-          action={c.confirmAction}
-          motionPreference={c.motionPreference}
-          onClose={() => c.setConfirmAction(null)}
-          onConfirm={() => c.applySettingsAction(c.confirmAction.kind)}
-        />
-      )}
-
-      <main id="main-content" className="root-pages" tabIndex={-1} inert={contentInert ? '' : undefined}>
-        <section id="root-view-home" role="tabpanel" aria-label="抽奖" className={`root-view ${c.activeTab === 'home' ? 'is-active' : ''}`} data-root-view="home" hidden={c.activeTab !== 'home'}>
-          {mountedTabs.has('home') && <div className="root-scroll">
-            <h1 className="sr-only">微博转发抽奖</h1>
-            <section className={`draw-studio ${!c.hasCandidates ? 'is-empty' : ''}`} aria-label="抽奖控制台">
-              <header className="studio-header">
-                <div>
-                  <span className={`title-status ${c.isLoading || c.isDrawing ? 'is-busy' : ''}`}>
-                    <i />
-                     {c.isLoading
-                       ? '正在载入候选'
-                       : c.candidateLoadError
-                       ? c.hasCandidates ? '上次名单待复核' : '候选载入失败'
-                       : c.isDrawing
-                      ? c.phase === '正在同步开奖记录' ? '正在同步结果' : '正在抽取'
-                        : c.hasResults
-                          ? '本轮开奖已完成'
-                          : c.hasCandidates
-                            ? c.candidateWarningText
-                              ? '请核对候选范围'
-                              : !c.candidateSourceReady
-                              ? '请载入当前来源'
-                              : c.drawSetupConfirmed ? '已准备开奖' : '请确认奖项'
-                            : c.candidateLoadCompleted ? '未找到可见候选' : '等待载入候选'}
-                  </span>
-                  <strong>
-                     {c.hasCandidates
-                       ? c.candidateLoadError
-                         ? '刷新未完成，当前名单不能直接开奖'
-                         : `${c.eligible.length.toLocaleString()} 名候选 · ${c.normalizedPrizes.length} 个奖项 · ${c.totalSlots} 个名额`
-                       : c.candidateLoadError ? '请重新载入候选名单' : c.candidateLoadCompleted ? '可以更新名单或改用手动导入' : '粘贴微博链接即可载入'}
-                  </strong>
-                </div>
-                <button className={c.showFilters ? 'is-presenting' : ''} type="button" onClick={() => c.setShowFilters(true)} aria-expanded={c.showFilters}>
-                  {I.listChecks}
-                  筛选
-                </button>
-              </header>
-
-              {!c.hasCandidates ? (
-                <>
-                   <div className={`draw-scene v3-intake-scene ${c.statusUrl.trim() ? 'has-link' : ''} ${c.candidateLoadError ? 'has-error' : ''}`}>
-                    <div className="v3-intake-deck-frame">
-                      <div className="candidate-deck v3-intake-deck">
-                        <article className="candidate-pass pass-under pass-coral" aria-hidden="true"><span /><i /></article>
-                        <article className="candidate-pass pass-under pass-blue" aria-hidden="true"><span /><i /></article>
-                        <article className="candidate-pass pass-main">
-                          <header>
-                            <span>候选</span>
-                            {I.shield}
-                          </header>
-                          <div className="pass-identity">
-                            <span className="pass-avatar v3-intake-symbol">
-                              {I.link}
-                            </span>
-                           <span aria-hidden="true">
-                               <small>{c.isLoading ? '正在载入候选' : c.candidateLoadError ? '载入未完成' : c.candidateLoadCompleted ? '候选检查已完成' : '微博转发名单'}</small>
-                               <strong>{c.isLoading ? `${intakePercent}%` : c.candidateLoadError ? '请重新载入' : c.candidateLoadCompleted ? '未找到候选' : c.statusUrl.trim() ? '链接已识别' : '等待链接'}</strong>
-                               <em>{c.isLoading ? c.progress?.message || '正在读取当前可见转发' : c.candidateLoadError || (c.candidateLoadCompleted ? '当前登录态没有返回可见转发' : c.statusUrl.trim() ? '可以载入候选名单' : '载入后会显示符合条件的候选')}</em>
-                            </span>
-                          </div>
-                          <footer>
-                            <span><small>来源</small><strong>微博转发</strong></span>
-                            <span><small>载入</small><strong>{c.isLoading ? '进行中' : '链接识别'}</strong></span>
-                            <span><small>状态</small><strong>{c.isLoading ? '请稍候' : c.candidateLoadError ? '需重试' : c.candidateLoadCompleted ? '无可见记录' : c.statusUrl.trim() ? '可载入' : '待载入'}</strong></span>
-                          </footer>
-                        </article>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="v3-intake-controls">
-                    <div className="v3-link-field">
-                      <label className="sr-only" htmlFor="weibo-status-url">微博链接、mid 或 bid</label>
-                      <input
-                        id="weibo-status-url"
-                        ref={c.homeStatusInputRef}
-                        value={c.statusUrl}
-                        onChange={(event) => c.updateStatusInput(event.target.value)}
-                        name="weiboStatusUrl"
-                        autoComplete="off"
-                        inputMode="url"
-                        placeholder="粘贴微博正文链接、mid 或 bid…"
-                      />
-                      {c.statusUrl.trim() && (
-                        <button
-                          type="button"
-                          aria-label="清空微博链接"
-                          onClick={() => {
-                            c.updateStatusInput('');
-                            c.homeStatusInputRef.current?.focus();
-                          }}
-                        >
-                          {I.close}
-                        </button>
-                      )}
-                    </div>
-                    <button
-                      className="primary-button v3-load-button v3-primary-action"
-                      type="button"
-                      onClick={c.pasteAndLoadCandidates}
-                      disabled={c.isLoading}
-                    >
-                      <span className="draw-button-icon">{c.isLoading ? I.refresh : I.link}</span>
-                      <span>
-                         <strong>{c.isLoading ? '正在载入候选' : c.candidateLoadError && c.statusUrl.trim() ? '重新载入候选' : c.statusUrl.trim() ? '载入候选' : '粘贴链接并载入'}</strong>
-                        <small>优先使用服务器登录态</small>
-                      </span>
-                      {I.chevron}
-                    </button>
-                    <button className="v3-text-action" type="button" onClick={() => c.selectCandidateSource('manual')} disabled={c.isLoading}>
-                      或手动导入候选名单
-                      {I.chevron}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="draw-scene" ref={drawSceneRef}>
-                    <div className="candidate-deck" ref={drawDeckRef}>
-                      <article className="candidate-pass pass-under pass-coral" data-deck-card aria-hidden="true"><span /><i /></article>
-                      <article className="candidate-pass pass-under pass-blue" data-deck-card aria-hidden="true"><span /><i /></article>
-                      <DrawStageCard controller={c} drawState={drawState} />
-                      <article className="candidate-pass winner-core" aria-hidden={!c.hasResults}>
-                        <header>
-                          <span>中奖结果</span>
-                          {I.badgeCheck}
-                        </header>
-                        <div className="pass-identity">
-                          <CandidateAvatar candidate={primaryWinner} className="pass-avatar" apiBase={c.apiBase} priority />
-                          <span>
-                            <small>{primaryResult?.prize?.name || '幸运奖'}</small>
-                            <strong>{primaryWinner?.screenName || primaryWinner?.uid || '幸运用户'}</strong>
-                            <em>{compactCandidateUid(primaryWinner)}</em>
-                          </span>
-                        </div>
-                        <footer>
-                          <span><small>奖项</small><strong>{primaryResult?.prize?.name || '幸运奖'}</strong></span>
-                          <span><small>结果</small><strong>已记录</strong></span>
-                        </footer>
-                      </article>
-                    </div>
-                    <div className="scene-caption" aria-hidden="true">
-                      <span><i /><b>{c.isDrawing ? '抽取中' : c.hasResults ? '已完成' : !c.candidateSourceReady ? '待载入' : c.drawSetupConfirmed ? '待开始' : '待确认'}</b></span>
-                      <small>微博抽奖</small>
-                    </div>
-                    <div className="result-rail" aria-label="中奖结果" aria-hidden={!c.hasResults}>
-                      {c.hasResults && (
-                        <>
-                          <header>
-                            <div>
-                              <span>开奖结果</span>
-                              <strong>{c.resultTotal} 名幸运用户</strong>
-                            </div>
-                            <button type="button" onClick={() => c.setSelectedReceipt(resultReceipt)}>查看结果</button>
-                          </header>
-                          <div className="winner-list">
-                            {visibleWinners.map(({ candidate, prizeName }, index) => (
-                              <button
-                                type="button"
-                                key={candidate.id || candidate.uid || candidate.screenName || index}
-                          onClick={() => c.showStatus(compactCandidateUid(candidate), 'success', {
-                                  popup: true,
-                                  title: candidate.screenName || candidate.uid || '获奖用户',
-                                })}
-                              >
-                                <CandidateAvatar candidate={candidate} className={`avatar ${['pink', 'blue', 'lilac', 'mint'][index % 4]}`} apiBase={c.apiBase} decorative />
-                                <strong>{candidate.screenName || candidate.uid || `获奖用户 ${index + 1}`}</strong>
-                                <small>{prizeName}</small>
-                              </button>
-                            ))}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <div className="draw-specs" aria-label="开奖准备情况">
-                    <button
-                      type="button"
-                      className={c.showSourceEditor ? 'is-presenting' : ''}
-                      data-state={c.candidateSourceReady ? 'complete' : 'pending'}
-                      aria-expanded={c.showSourceEditor}
-                      aria-label={`候选：${c.eligible.length.toLocaleString()} 人，${c.candidateSourceReady ? '已载入' : '待载入'}`}
-                      onClick={() => c.setShowSourceEditor(true)}
-                    >
-                      <span className="spec-icon blue">{I.users}</span>
-                      <span><small>候选</small><strong>{c.eligible.length.toLocaleString()}</strong></span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`${c.drawSetupConfirmed ? 'is-confirmed' : ''} ${c.showPrizeEditor ? 'is-presenting' : ''}`.trim()}
-                      data-state={c.drawSetupConfirmed ? 'complete' : 'pending'}
-                      aria-expanded={c.showPrizeEditor}
-                      aria-label={`奖项：${c.normalizedPrizes.length} 个，${c.drawSetupConfirmed ? '已确认' : '待确认'}`}
-                      onClick={() => c.setShowPrizeEditor(true)}
-                    >
-                      <span className="spec-icon coral">{I.gift}</span>
-                       <span><small>奖项</small><strong>{c.normalizedPrizes.length} 个</strong></span>
-                    </button>
-                    <button type="button" className={c.showFilters ? 'is-presenting' : ''} data-state="complete" aria-expanded={c.showFilters} aria-label={`筛选规则：${c.filterEnabledText}`} onClick={() => c.setShowFilters(true)}>
-                      <span className="spec-icon mint">{I.badgeCheck}</span>
-                      <span><small>规则</small><strong>{c.filterEnabledText}</strong></span>
-                    </button>
-                  </div>
-                  <div className="v3-draw-count">
-                    {I.shield}
-                    <span>
-                      <strong>{c.drawCountText}</strong>
-                      {c.drawCountStatus === 'error'
-                        ? <small><button type="button" className="v3-draw-count-retry" onClick={c.retryDrawCount}>点击重试</button></small>
-                        : <small>仅统计成功保存的结果</small>}
-                    </span>
-                  </div>
-                  <div className="draw-control">
-                    <div className="draw-control-state draw-ready">
-                      <button
-                        className="primary-button v3-primary-action"
-                        type="button"
-                        onClick={() => c.requestDraw()}
-                        disabled={c.isDrawing || c.isLoading}
-                      >
-                        <span className="draw-button-icon">{drawAction.icon}</span>
-                        <span>
-                          <strong>{drawAction.title}</strong>
-                          <small>{drawAction.detail}</small>
-                        </span>
-                        {I.chevron}
-                      </button>
-                    </div>
-                    <div className="draw-control-state draw-running">
-                      <span className="progress-indicator" />
-                      <span>
-                         <small>{c.phase || '正在抽取候选'}</small>
-                        <strong><RollingName fallback={c.eligible[0]?.screenName || c.eligible[0]?.uid || '候选用户'} /></strong>
-                      </span>
-                      <button type="button" onClick={c.cancelDraw} aria-label="停止本次开奖">
-                        {I.close} 停止
-                      </button>
-                    </div>
-                    <div className="draw-control-state draw-finished">
-                      <div>
-                        <span className="complete-icon">{I.check}</span>
-                        <span><small>开奖完成</small><strong>{c.drawCountText}</strong></span>
-                      </div>
-                      <div className="result-buttons">
-                        <button type="button" aria-label="设置并再次抽奖" title="设置并再次抽奖" onClick={() => c.requestDraw()}>{I.shuffle}</button>
-                        <button id="draw-result-trigger" type="button" aria-label="查看开奖结果" title="查看开奖结果" onClick={() => c.setSelectedReceipt(resultReceipt)}>{I.clock}</button>
-                      </div>
-                    </div>
-                  </div>
-                </>
-               )}
-
-               {c.candidateLoadError && c.hasCandidates && (
-                 <div className="v3-candidate-warning v3-candidate-warning-error" role="note">
-                   {I.alert}
-                   <div><strong>候选名单未更新</strong><small>{c.candidateLoadError} 上次名单仍保留，仅供查看；重新载入后才能开奖。</small></div>
-                 </div>
-               )}
-
-               <CandidateLoadProgress progress={c.progress} isLoading={c.isLoading} onCancel={c.cancelCandidateLoad} />
-            </section>
-
-            <section className="content-section home-settings-section">
-              <SectionTitle title="抽奖设置" />
-              <div className="grouped-list">
-                <AppListRow
-                  id="candidate-source-row"
-                  icon={I.link}
-                  title="候选来源"
-                  detail={sourceDetail}
-                  value={c.hasCandidates ? `${c.loadedCandidateCount.toLocaleString()} 人` : '待载入'}
-                  onClick={() => c.setShowSourceEditor(true)}
-                />
-                <AppListRow
-                  icon={I.gift}
-                  tone="coral"
-                  title="奖项设置"
-                  detail={`${c.normalizedPrizes.length} 个奖项，共 ${c.totalSlots} 个名额`}
-                  onClick={() => c.setShowPrizeEditor(true)}
-                />
-                <AppListRow
-                  icon={I.listChecks}
-                  tone="mint"
-                  title="筛选规则"
-                  detail={c.filterSummary}
-                  onClick={() => c.setShowFilters(true)}
-                />
-              </div>
-            </section>
-
-            <section className="content-section home-history-section">
-              <SectionTitle
-                title="开奖记录"
-                action={c.drawHistory.length ? '查看全部' : ''}
-                onAction={() => switchTab('history', { focus: true })}
-              />
-              {latestHistory.length ? (
-                <div className="compact-records">
-                  {latestHistory.map((item, index) => (
-                    <button
-                      type="button"
-                      key={`${item.time}-${index}`}
-                      onClick={() => c.setSelectedReceipt(item)}
-                    >
-                      <span className={`record-mark ${index ? 'blue' : 'pink'}`}>{index ? I.clock : I.gift}</span>
-                      <span><strong>{item.results?.[0]?.prize?.name || '微博转发抽奖'}</strong><small>{item.total} 名获奖用户</small></span>
-                      <time>{historyDateParts(item.time).compact}</time>
-                    </button>
-                  ))}
-                </div>
-              ) : (
-                <div className="v3-section-empty">
-                  <span>{I.clock}</span>
-                  <div><strong>暂无开奖记录</strong><small>完成开奖后将在这里显示</small></div>
-                </div>
-              )}
-            </section>
-            <div className="bottom-space" />
-          </div>}
-        </section>
-
-        <section id="root-view-candidates" role="tabpanel" aria-label="名单" className={`root-view ${c.activeTab === 'candidates' ? 'is-active' : ''}`} data-root-view="candidates" hidden={c.activeTab !== 'candidates'}>
-          {mountedTabs.has('candidates') && <div className="root-scroll">
-            <header className="large-title">
-              <span className={`title-status ${c.candidateLoadError || c.candidateWarningText ? 'warning' : c.hasCandidates ? '' : 'neutral'}`}><i /> {c.candidateLoadError ? '候选名单未更新' : c.candidateWarningText ? '名单范围需核对' : c.hasCandidates ? '名单已载入' : c.candidateLoadCompleted ? '候选检查已完成' : '尚未载入候选'}</span>
-              <h1>候选名单</h1>
-              <p>{c.hasCandidates ? c.candidateLoadError ? `刷新未完成：${c.candidateLoadError}` : `${c.eligible.length.toLocaleString()} 人符合当前筛选规则 · ${c.candidateFreshnessText}` : c.candidateLoadError ? c.candidateLoadError : c.candidateLoadCompleted ? '当前来源没有返回可见候选，可更新名单或改用手动导入' : '从微博载入，也可手动填写或导入文件'}</p>
-            </header>
-
-            <section className="content-section v3-source-section">
-              <SectionTitle title="载入名单" action={c.hasCandidates && c.source !== 'manual' ? '刷新' : ''} onAction={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: true })} />
-              <CandidateSourceForm controller={c} variant="page" />
-
-              <CandidateLoadProgress progress={c.progress} isLoading={c.isLoading} onCancel={c.cancelCandidateLoad} />
-            </section>
-
-            {(c.candidateLoadError || c.candidateWarningText) && (
-              <div className={`v3-candidate-warning ${c.candidateLoadError ? 'v3-candidate-warning-error' : ''}`.trim()} role="note">
-                {I.alert}
-                <div>
-                  <strong>{c.candidateLoadError ? '候选名单未更新' : '名单范围需要核对'}</strong>
-                  <small>{c.candidateLoadError || c.candidateWarningText}</small>
-                </div>
-              </div>
-            )}
-
-            {c.hasCandidates && (
-              <>
-                <div className="search-field">
-                  {I.users}
-                  <input
-                    type="search"
-                    value={c.candidateQuery}
-                    onChange={(event) => c.setCandidateQuery(event.target.value)}
-                    placeholder="搜索昵称或 UID"
-                    aria-label="搜索候选"
-                    name="candidateSearch"
-                    autoComplete="off"
-                    spellCheck="false"
-                  />
-                  <button type="button" onClick={() => c.setShowFilters(true)} aria-label="筛选候选">{I.listChecks}</button>
-                </div>
-                <div className="segmented-control" role="group" aria-label="候选范围" style={{ '--segment-index': candidateSegmentIndex }}>
-                  <span className="segmented-highlight" aria-hidden="true" />
-                  <button type="button" className={c.candidateSegment === 'eligible' ? 'is-active' : ''} aria-pressed={c.candidateSegment === 'eligible'} onClick={() => c.setCandidateSegment('eligible')}>可抽 {c.eligible.length}</button>
-                  <button type="button" className={c.candidateSegment === 'all' ? 'is-active' : ''} aria-pressed={c.candidateSegment === 'all'} onClick={() => c.setCandidateSegment('all')}>全部 {c.candidates.length}</button>
-                  <button type="button" className={c.candidateSegment === 'excluded' ? 'is-active' : ''} aria-pressed={c.candidateSegment === 'excluded'} onClick={() => c.setCandidateSegment('excluded')}>已排除 {excludedCandidates.length}</button>
-                </div>
-              </>
-            )}
-
-            <section className="content-section candidate-section">
-              <SectionTitle
-                title={query ? `搜索结果 · ${matchingCandidates.length.toLocaleString()}` : '候选用户'}
-                action={c.hasCandidates ? '导出当前' : ''}
-                onAction={() => c.exportCandidates(matchingCandidates, evaluationByCandidate, {
-                  segment: c.candidateSegment,
-                  query,
-                })}
-              />
-              {visibleCandidates.length ? (
-                <div className="people-list">
-                  {visibleCandidates.map((candidate, index) => {
-                    const entry = evaluationByCandidate.get(candidate) || {
-                      candidate,
-                      eligible: true,
-                      reasonLabel: '',
-                    };
-                    return (
-                      <button
-                        type="button"
-                        key={candidate.id || candidate.uid || candidate.screenName || index}
-                        onClick={() => setSelectedCandidateEntry(entry)}
-                      >
-                        <CandidateAvatar candidate={candidate} className="candidate-avatar-list" apiBase={c.apiBase} decorative />
-                        <span>
-                          <strong>{candidate.screenName || candidate.uid || `候选用户 ${index + 1}`}</strong>
-                          <small>{candidate.uid ? `UID ${candidate.uid}` : friendlyProviderText(candidate.source) || '候选名单'}</small>
-                        </span>
-                        <span className={entry.eligible ? 'status-badge' : 'status-badge is-excluded'}>
-                          {entry.eligible ? '可抽' : entry.reasonLabel}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="v3-section-empty v3-candidate-empty">
-                  <span>{I.users}</span>
-                  <div>
-                    <strong>{c.hasCandidates ? '没有匹配的候选用户' : c.candidateLoadError ? '候选载入未完成' : c.candidateLoadCompleted ? '没有找到可见候选' : '候选名单为空'}</strong>
-                    <small>{c.hasCandidates ? '调整搜索或筛选条件后再查看' : c.candidateLoadError ? '请重新载入候选名单后再继续' : c.candidateLoadCompleted ? '可以更新当前来源，或切换为手动名单' : '载入名单后，候选用户会显示在这里'}</small>
-                    {!c.hasCandidates && (
-                      <button className="v3-empty-action" type="button" onClick={() => c.selectCandidateSource('manual')}>
-                        手动导入名单 {I.chevron}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-              {remainingCandidates > 0 && (
-                <div className="candidate-load-more">
-                  <span>已显示 {visibleCandidates.length.toLocaleString()} / {matchingCandidates.length.toLocaleString()} · 开奖使用完整名单</span>
-                  <button
-                    type="button"
-                    onClick={() => setCandidateLimit((current) => current + CANDIDATE_PAGE_SIZE)}
-                  >
-                    继续显示 {Math.min(CANDIDATE_PAGE_SIZE, remainingCandidates).toLocaleString()} 人
-                  </button>
-                </div>
-              )}
-              {!remainingCandidates && searchOnlyCandidates > 0 && (
-                <div className="candidate-load-more" role="note">
-                  <span>已显示前 {CANDIDATE_RENDER_LIMIT.toLocaleString()} 人，搜索或导出可查看完整名单；开奖仍使用完整可抽名单</span>
-                </div>
-              )}
-            </section>
-            <div className="bottom-space" />
-          </div>}
-        </section>
-
-        <section id="root-view-history" role="tabpanel" aria-label="记录" className={`root-view ${c.activeTab === 'history' ? 'is-active' : ''}`} data-root-view="history" hidden={c.activeTab !== 'history'}>
-          {mountedTabs.has('history') && <div className="root-scroll">
-            <header className="large-title">
-              <span className="title-status neutral"><i /> {c.historyStorageAvailable ? '本机保存的开奖结果' : '当前页面的开奖结果'}</span>
-              <h1>开奖记录</h1>
-              <p>{c.drawHistory.length ? `共 ${c.drawHistory.length} 次开奖，${totalHistoricWinners} 名获奖用户${c.drawHistory.length >= DRAW_HISTORY_LIMIT ? ` · 保留最近 ${DRAW_HISTORY_LIMIT} 条` : ''}` : c.historyStorageAvailable ? '完成开奖后，记录会保存在当前浏览器' : '本机存储不可用，完成开奖后仅在当前页面显示'}</p>
-            </header>
-
-            <section className="history-summary">
-              <div><span>总开奖</span><strong>{c.drawHistory.length}</strong><small>次</small></div>
-              <div><span>获奖用户</span><strong>{totalHistoricWinners}</strong><small>人</small></div>
-              <div><span>最近开奖</span><strong>{historyDateParts(c.drawHistory[0]?.time).compact}</strong><small>{historyDateParts(c.drawHistory[0]?.time).time}</small></div>
-            </section>
-
-            <section className="content-section">
-              <SectionTitle title={historySearch ? `搜索记录 · ${filteredHistory.length}` : '全部记录'} />
-              {c.drawHistory.length > 2 && (
-                <div className="search-field history-search-field">
-                  {I.clock}
-                  <input
-                    type="search"
-                    value={c.historyQuery}
-                    onChange={(event) => c.setHistoryQuery(event.target.value)}
-                    placeholder="搜索奖项、昵称或微博链接"
-                    aria-label="搜索开奖记录"
-                    name="historySearch"
-                    autoComplete="off"
-                  />
-                  {historySearch && (
-                    <button type="button" aria-label="清除记录搜索" onClick={() => c.setHistoryQuery('')}>{I.close}</button>
-                  )}
-                </div>
-              )}
-              {visibleHistory.length ? (
-                <>
-                  <div className="history-list">
-                    {visibleHistory.map((item, index) => {
-                      const date = historyDateParts(item.time);
-                      return (
-                        <button
-                          type="button"
-                          key={`${item.time}-${index}`}
-                          onClick={() => c.setSelectedReceipt(item)}
-                        >
-                          <span className={`date-block ${index % 3 === 1 ? 'blue' : index % 3 === 2 ? 'mint' : ''}`}>
-                            <strong>{date.day}</strong><small>{date.month} 月</small>
-                          </span>
-                          <span><strong>{item.results?.[0]?.prize?.name || '微博转发抽奖'}</strong><small>{item.results?.length || 1} 个奖项 · {item.total} 名获奖用户</small></span>
-                          {I.chevron}
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {filteredHistory.length > 3 && (
-                    <button className="show-more-button" type="button" onClick={() => c.setHistoryExpanded((value) => !value)}>
-                      {c.historyExpanded ? '收起较早记录' : `展开全部 ${filteredHistory.length} 条`}
-                    </button>
-                  )}
-                </>
-              ) : (
-                <div className="v3-section-empty v3-history-empty">
-                  <span>{I.clock}</span>
-                  <div>
-                    <strong>{historySearch ? '没有匹配的记录' : '暂无开奖记录'}</strong>
-                    <small>{historySearch ? '换个奖项、昵称或链接关键词试试' : '完成一次抽奖后再来查看'}</small>
-                    {!historySearch && (
-                      <button className="v3-empty-action" type="button" onClick={() => switchTab('home', { focus: true })}>
-                        去抽奖 {I.chevron}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </section>
-            <div className="bottom-space" />
-          </div>}
-        </section>
-
-        <section id="root-view-more" role="tabpanel" aria-label="更多" className={`root-view ${c.activeTab === 'more' ? 'is-active' : ''}`} data-root-view="more" hidden={c.activeTab !== 'more'}>
-          {mountedTabs.has('more') && <div className="root-scroll">
-            <header className="large-title more-title">
-              <h1>更多</h1>
-              <p>连接设置、数据管理与使用说明</p>
-            </header>
-
-            <button className="app-summary" type="button" onClick={() => c.openLegalDocument('about')}>
-              <img src={publicAsset('avatar-96.webp')} alt="" width="72" height="72" />
-              <span><strong>微博转发抽奖</strong><small>版本 {APP_VERSION} · by.sameko</small></span>
-              <em>关于</em>
-              {I.chevron}
-            </button>
-
-            <section className="content-section">
-              <SectionTitle title="数据与连接" />
-              <div className="grouped-list">
-                <AppListRow icon={I.clock} tone="coral" title="本机记录" detail={c.historyStorageAvailable ? `保存在当前浏览器的最近 ${DRAW_HISTORY_LIMIT} 条开奖记录` : '本机存储不可用，仅保留当前页面记录'} value={`${c.drawHistory.length} 条`} onClick={() => switchTab('history', { focus: true })} />
-                <AppListRow icon={I.badgeCheck} title="备用 Cookie" detail="服务器登录态失效时临时顶替" value={c.mobileCookie.trim() ? '已填写' : '未填写'} onClick={() => c.openSettings('cookie')} />
-                <AppListRow icon={I.refresh} tone="mint" title="后端连接" detail="候选载入、记录保存与头像服务" value={c.serviceStatusText} onClick={() => c.openSettings('backend')} />
-              </div>
-            </section>
-
-            <section className="content-section">
-              <SectionTitle title="偏好与帮助" />
-              <div className="grouped-list">
-                <AppListRow icon={I.settings} tone="gray" title="数据设置" detail="导出备份、清理记录与界面动效" onClick={() => c.openSettings('records')} />
-                <AppListRow icon={I.book} tone="coral" title="使用教程" detail="从载入候选到保存结果" onClick={() => c.setShowGuide(true)} />
-                <AppListRow icon={I.feedback} tone="mint" title="意见反馈" detail="提交建议或报告使用问题" onClick={() => c.openFeedback()} />
-              </div>
-            </section>
-
-            <section className="content-section">
-              <SectionTitle title="法律与许可" />
-              <div className="grouped-list">
-                <AppListRow icon={I.shield} title="隐私政策" detail="处理的信息、保存期限与你的权利" onClick={() => c.openLegalDocument('privacy')} />
-                <AppListRow icon={I.listChecks} tone="mint" title="使用规则" detail="功能边界、平台规则与禁止用途" onClick={() => c.openLegalDocument('terms')} />
-                <AppListRow icon={I.alert} tone="coral" title="免责声明" detail="服务边界与责任划分" onClick={() => c.openLegalDocument('disclaimer')} />
-                <AppListRow icon={I.info} tone="lilac" title="版权说明" detail="内容归属与素材授权" onClick={() => c.openLegalDocument('copyright')} />
-                <AppListRow icon={I.file} tone="gray" title="第三方许可" detail="开源组件清单与许可文本" onClick={() => c.openLegalDocument('licenses')} />
-              </div>
-            </section>
-            <div className="bottom-space" />
-          </div>}
-        </section>
-      </main>
-
-      <nav className="root-tabbar glass" role="tablist" inert={contentInert ? '' : undefined} aria-label="主要导航" aria-orientation="horizontal" onKeyDown={handleTabListKeyDown} style={{ '--tab-index': tabIndex }}>
-        <span className="tab-highlight" />
-        <button data-tab-target="home" role="tab" tabIndex={c.activeTab === 'home' ? 0 : -1} aria-selected={c.activeTab === 'home'} className={c.activeTab === 'home' ? 'is-active' : ''} type="button" aria-controls="root-view-home" onClick={() => switchTab('home')}>
-          {I.gift}<span>抽奖</span>
-        </button>
-        <button data-tab-target="candidates" role="tab" tabIndex={c.activeTab === 'candidates' ? 0 : -1} aria-selected={c.activeTab === 'candidates'} className={c.activeTab === 'candidates' ? 'is-active' : ''} type="button" aria-controls="root-view-candidates" onClick={() => switchTab('candidates')}>
-          {I.users}<span>名单</span>
-        </button>
-        <button data-tab-target="history" role="tab" tabIndex={c.activeTab === 'history' ? 0 : -1} aria-selected={c.activeTab === 'history'} className={c.activeTab === 'history' ? 'is-active' : ''} type="button" aria-controls="root-view-history" onClick={() => switchTab('history')}>
-          {I.clock}<span>记录</span>
-        </button>
-        <button data-tab-target="more" role="tab" tabIndex={c.activeTab === 'more' ? 0 : -1} aria-selected={c.activeTab === 'more'} className={c.activeTab === 'more' ? 'is-active' : ''} type="button" aria-controls="root-view-more" onClick={() => switchTab('more')}>
-          {I.more}<span>更多</span>
-        </button>
-      </nav>
-
-      {c.showGuide && <GuideSheet onClose={() => c.setShowGuide(false)} />}
-      {c.showFeedback && <FeedbackSheet key={c.feedbackInitialCategory} initialCategory={c.feedbackInitialCategory} onClose={() => c.setShowFeedback(false)} onSubmit={c.submitFeedback} />}
-      {c.legalDocument && <LegalSheet document={c.legalDocument} onClose={() => c.setLegalDocument(null)} onOpenPrivacyRequest={() => c.openFeedback('privacy')} onOpenUpdates={() => c.openLegalDocument('updates')} />}
-      {c.showDrawConfirm && (
-        <DrawConfirmSheet
-          controller={c}
-          onClose={() => c.setShowDrawConfirm(false)}
-          onConfirm={confirmDraw}
-          onPractice={practiceDraw}
-          onRefresh={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: true })}
-        />
-      )}
-
-      {c.showSourceEditor && (
-        <SheetFrame
-          title="候选来源"
-          subtitle={sourceDetail}
-          icon={I.link}
-          onClose={() => c.setShowSourceEditor(false)}
-          className="v3-editor-sheet v3-source-sheet"
-          returnFocusId="candidate-source-row"
-          footer={(close) => (
-            <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
-          )}
-        >
-          {() => <CandidateSourceForm controller={c} variant="sheet" />}
-        </SheetFrame>
-      )}
-
-      {c.showPrizeEditor && (
-        <SheetFrame
-          title="奖项设置"
-          subtitle={`${c.normalizedPrizes.length} 个奖项 · ${c.totalSlots} 个名额`}
-          icon={I.gift}
-          onClose={() => c.setShowPrizeEditor(false)}
-          className="v3-editor-sheet"
-          initialFocusRef={c.firstPrizeNameRef}
-          footer={(close) => (
-            <button
-              type="button"
-              className="flow-sheet-primary v3-primary-action v3-prize-confirm-button"
-              onClick={() => {
-                if (c.confirmDrawSetup()) close(() => c.setShowDrawConfirm(true));
-              }}
-              disabled={!c.hasCandidates || !c.candidateSourceReady}
-            >
-              {I.check}
-              <span>{!c.hasCandidates ? '载入候选后确认' : c.candidateSourceReady ? '确认奖项设置' : '载入当前来源后确认'}</span>
-            </button>
-          )}
-        >
-          {() => (
-            <>
-          <div className="v3-sheet-toolbar">
-            <span>按顺序依次抽取</span>
-            <button
-              type="button"
-              onClick={c.addPrize}
-              disabled={c.prizes.length >= MAX_DRAW_RESULT_GROUPS}
-              title={c.prizes.length >= MAX_DRAW_RESULT_GROUPS ? `最多 ${MAX_DRAW_RESULT_GROUPS} 个奖项` : undefined}
-            >{I.plus} 添加奖项</button>
-          </div>
-          <div className="v3-prize-list">
-            {c.prizes.map((prize, index) => (
-              <section className="v3-prize-item" key={index}>
-                <span className="v3-prize-number" style={{ '--prize-color': prize.color || COLORS[index % COLORS.length] }}>{index + 1}</span>
-                <div>
-                  <label>
-                    <span>奖项名称</span>
-                    <input
-                      ref={index === 0 ? c.firstPrizeNameRef : null}
-                      value={prize.name}
-                      onChange={(event) => c.updatePrize(index, { name: event.target.value })}
-                      name={`prizeName-${index}`}
-                      placeholder="例如：一等奖 / 幸运奖"
-                    />
-                  </label>
-                  <div className="v3-prize-footer">
-                    <span>中奖人数</span>
-                    <div className="v3-stepper">
-                      <button
-                        type="button"
-                        aria-label={`减少第 ${index + 1} 个奖项名额`}
-                        onClick={() => c.updatePrizeCount(index, Number(prize.count || 1) - 1)}
-                        disabled={Number(prize.count || 1) <= 1}
-                      >
-                        {I.minus}
-                      </button>
-                      <input
-                        type="number"
-                        min="1"
-                        max={MAX_DRAW_WINNERS}
-                        inputMode="numeric"
-                        value={prize.count}
-                        onChange={(event) => c.updatePrizeCount(index, event.target.value)}
-                        onBlur={() => c.commitPrizeCount(index)}
-                        aria-label={`第 ${index + 1} 个奖项中奖人数`}
-                      />
-                      <button
-                        type="button"
-                        aria-label={`增加第 ${index + 1} 个奖项名额`}
-                        onClick={() => c.updatePrizeCount(index, Number(prize.count || 1) + 1)}
-                        disabled={Number(prize.count || 1) >= MAX_DRAW_WINNERS}
-                      >
-                        {I.plus}
-                      </button>
-                    </div>
-                    <button
-                      className="v3-delete-prize"
-                      type="button"
-                      aria-label={`删除第 ${index + 1} 个奖项`}
-                      onClick={() => c.removePrize(index)}
-                      disabled={c.prizes.length <= 1}
-                    >
-                      {I.trash}
-                    </button>
-                  </div>
-                </div>
-              </section>
-            ))}
-          </div>
-          <div className="v3-prize-confirm-summary">
-            <span>{I.users}<small>可抽候选</small><strong>{c.eligible.length.toLocaleString()} 人</strong></span>
-            <span>{I.gift}<small>中奖名额</small><strong>{c.totalSlots} 人</strong></span>
-          </div>
-            </>
-          )}
-        </SheetFrame>
-      )}
-
-      {c.showFilters && (
-        <FilterEditorSheet controller={c} onClose={() => c.setShowFilters(false)} />
-      )}
-
-      {c.showSettings && (
-        <SheetFrame
-          title="设置"
-          subtitle="显示、数据与后端连接"
-          icon={I.settings}
-          onClose={() => c.setShowSettings(false)}
-          className="v3-editor-sheet"
-          footer={(close) => (
-            <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
-          )}
-        >
-          {(close) => (
-            <>
-          <div className="flow-app-summary">
-            <img src={publicAsset('avatar-96.webp')} alt="" width="72" height="72" />
-            <div><strong>微博转发抽奖</strong><p>版本 {APP_VERSION} · by.sameko</p></div>
-            <span>{c.accountStatusText}</span>
-          </div>
-          <h3 className="flow-settings-caption">动效</h3>
-          <div className="flow-motion-setting">
-            <div className="flow-motion-heading">
-              <span>{I.zap}</span>
-              <div>
-                <strong>界面动效</strong>
-                <small>{c.motionPreference === 'full' ? '播放完整页面、弹窗与开奖动效' : c.motionPreference === 'reduced' ? '保留状态反馈，减少大幅位移' : '遵循设备的动态效果设置'}</small>
-              </div>
-            </div>
-            <div className="segmented-control motion-segmented" role="group" aria-label="开奖动效强度" style={{ '--segment-index': motionSegmentIndex }}>
-              <span className="segmented-highlight" aria-hidden="true" />
-              {MOTION_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={c.motionPreference === option.value ? 'is-active' : ''}
-                  aria-pressed={c.motionPreference === option.value}
-                  onClick={() => c.setMotionPreference(option.value)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          </div>
-          <h3 className="flow-settings-caption" data-settings-section="records">记录与数据</h3>
-          <div className="flow-settings-list">
-            <button type="button" onClick={c.exportHistoryBackup} disabled={!c.drawHistory.length}>
-              <span>{I.download}</span><div><strong>导出开奖记录</strong><small>备份当前浏览器最近 {DRAW_HISTORY_LIMIT} 条记录</small></div><em className="flow-settings-action-label is-neutral">导出</em>
-            </button>
-            <button type="button" onClick={() => c.historyImportInputRef.current?.click()}>
-              <span>{I.archive}</span><div><strong>恢复开奖记录</strong><small>合并本应用导出的记录备份，不覆盖现有记录</small></div><em className="flow-settings-action-label is-neutral">选择文件</em>
-            </button>
-            <input ref={c.historyImportInputRef} type="file" accept="application/json,.json" hidden onChange={c.importHistoryBackup} />
-            <button type="button" onClick={() => close(() => c.setConfirmAction({
-              kind: 'current-draw',
-              title: '清空当前抽奖？',
-              message: '当前候选和尚未保存的结果会被移除，服务器开奖记录不受影响。',
-            }))}>
-              <span>{I.trash}</span><div><strong>清空当前抽奖</strong><small>移除当前候选与结果，不影响服务器记录</small></div><em className="flow-settings-action-label">清空</em>
-            </button>
-            <button type="button" onClick={() => { c.setMobileCookie(''); c.showStatus('已清空备用 Cookie。', 'success', { popup: true, title: '已清空' }); }}>
-              <span>{I.shield}</span><div><strong>清除备用 Cookie</strong><small>不会修改服务器登录态</small></div><em className="flow-settings-action-label">清除</em>
-            </button>
-            <button type="button" onClick={() => close(() => c.setConfirmAction({
-              kind: 'local-history',
-              title: '清空本机抽奖数据？',
-              message: '当前浏览器中的开奖记录、旧版记录、异常恢复副本和防重复状态会被移除；服务器记录、界面偏好与后端地址不会删除。',
-            }))}>
-              <span>{I.clock}</span><div><strong>清空本机抽奖数据</strong><small>移除记录、恢复副本与防重复状态</small></div><em className="flow-settings-action-label">清空</em>
-            </button>
-          </div>
-          <details
-            className="flow-connection-details"
-            data-settings-section="cookie"
-            open={settingsDisclosures.cookie}
-            onToggle={(event) => setSettingsDisclosures((current) => ({ ...current, cookie: event.currentTarget.open }))}
-          >
-            <summary><span><strong>备用 Cookie</strong><small>{c.accountStatusText}</small></span>{I.chevron}</summary>
-            <div className="flow-settings-form">
-              <label className="flow-field-block">
-                <span>仅在服务器登录态不可用时尝试</span>
-                <textarea
-                  value={c.mobileCookie}
-                  onChange={(event) => c.setMobileCookie(event.target.value)}
-                  name="settingsMobileCookie"
-                  autoComplete="off"
-                  spellCheck="false"
-                  placeholder="粘贴本人有权使用的微博 Cookie…"
-                />
-              </label>
-              <p className="v3-credential-notice">仅在当前任务中处理，任务结束后清除，不写入服务器 Cookie 池。</p>
-            </div>
-          </details>
-          <details
-            className="flow-connection-details"
-            data-settings-section="backend"
-            open={settingsDisclosures.backend}
-            onToggle={(event) => setSettingsDisclosures((current) => ({ ...current, backend: event.currentTarget.open }))}
-          >
-            <summary><span><strong>后端连接</strong><small>{c.serviceStatusText}</small></span>{I.chevron}</summary>
-            <div className="flow-settings-form">
-              {c.backendAddressEditorOpen ? (
-                <label className="flow-field-block"><span>自定义后端地址</span><input name="backendAddress" autoComplete="off" inputMode="url" spellCheck="false" value={c.apiBaseInput} onChange={(event) => c.setApiBaseInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') c.saveBackendAddress(); }} placeholder="例如 http://127.0.0.1:4173" /></label>
-              ) : (
-                <div className="flow-field-block">
-                  <span>后端地址</span>
-                  <p className="flow-field-hint">已使用预置服务地址，默认不在页面上显示。需要连接本机或自建服务时再手动填写。</p>
-                </div>
-              )}
-              <label className="flow-field-block"><span>访问密钥（按部署要求）</span><input name="backendAccessKey" autoComplete="off" spellCheck="false" value={c.apiKey} onChange={(event) => c.setApiKey(event.target.value)} type="password" placeholder={c.apiAuthRequired ? '该后端要求密钥，请填写…' : '公开模式不用填写…'} /></label>
-              {c.apiAuthRequired && !c.apiKey.trim() && (
-                <p className="flow-field-hint">当前后端开启了访问密钥校验，未填写时候选载入和记录保存都会返回 401。</p>
-              )}
-              <div className="flow-settings-actions">
-                {c.backendAddressEditorOpen ? (
-                  <>
-                    <button type="button" onClick={c.saveBackendAddress}>保存并使用</button>
-                    <button type="button" onClick={c.usePresetBackend}>使用预置地址</button>
-                  </>
-                ) : (
-                  <>
-                    <button type="button" onClick={c.testApiConnection}>测试连接</button>
-                    <button type="button" onClick={c.openBackendAddressEditor}>手动填写地址</button>
-                  </>
-                )}
-              </div>
-            </div>
-          </details>
-            </>
-          )}
-        </SheetFrame>
-      )}
-
-      <DrawResultSheet
-        key={c.selectedReceipt?.drawnAt || 'no-result'}
-        receipt={c.selectedReceipt}
-        apiBase={c.apiBase}
-        isCapturing={c.isCapturing}
-        isSyncing={c.syncingReceiptIds.has(c.selectedReceipt?.id)}
-        historyStorageAvailable={c.historyStorageAvailable}
-        returnFocusId="draw-result-trigger"
-        onClose={() => c.setSelectedReceipt(null)}
-        onSaveImage={() => c.createShareImage(c.selectedReceipt)}
-        onCopyPost={(template) => c.copyReceiptPost(c.selectedReceipt, template)}
-        onCopyFairness={() => c.copyReceiptFairness(c.selectedReceipt)}
-        onCopyWinners={() => c.copyReceiptWinners(c.selectedReceipt)}
-        onExportWinners={() => c.exportReceiptWinners(c.selectedReceipt)}
-        onRetrySave={() => c.retrySaveReceipt(c.selectedReceipt)}
-      />
-      <CandidateDetailSheet
-        entry={selectedCandidateEntry}
-        apiBase={c.apiBase}
-        onClose={() => setSelectedCandidateEntry(null)}
-        onCopy={c.copyToClipboard}
-      />
-    </div>
-  );
 }
 
 function App() {
@@ -2708,9 +234,6 @@ function App() {
   const [candidateLoadError, setCandidateLoadError] = useState('');
   const [currentStatusId, setCurrentStatusId] = useState('');
   const [currentStatusUrl, setCurrentStatusUrl] = useState('');
-  const [drawCount, setDrawCount] = useState(null);
-  const [drawCountStatus, setDrawCountStatus] = useState('idle');
-  const [cookieInfo, setCookieInfo] = useState({ hasCookie: false, cookieCount: 0, lastValidAt: '' });
   const [status, setStatus] = useState('等待载入候选。');
   const [statusTone, setStatusTone] = useState('neutral');
   const [progress, setProgress] = useState(null);
@@ -2750,10 +273,8 @@ function App() {
   const [apiBaseInput, setApiBaseInput] = useState(initialApiBaseInput);
   const [backendAddressEditorOpen, setBackendAddressEditorOpen] = useState(() => Boolean(initialApiBaseInput()));
   const [apiKey, setApiKey] = useState(initialApiKey);
-  const [apiHealth, setApiHealth] = useState('checking');
-  const [apiHealthDetail, setApiHealthDetail] = useState('');
-  const [apiAuthRequired, setApiAuthRequired] = useState(false);
-  const [cookieHealth, setCookieHealth] = useState('checking');
+  const { drawCount, drawCountStatus, refreshDrawCount, acceptDrawCount } = useDrawCount({ source, statusUrl, apiBase, apiKey });
+  const { apiHealth, apiHealthDetail, apiAuthRequired, cookieHealth, cookieInfo, loadCookieStatus, checkConnection } = useBackendStatus({ apiBase, apiKey, onNotice: showStatus });
   const firstPrizeNameRef = useRef(null);
   const homeStatusInputRef = useRef(null);
   const candidateStatusInputRef = useRef(null);
@@ -2779,9 +300,6 @@ function App() {
   const pendingCandidateLoadRef = useRef(null);
   const pendingSourceChangeRef = useRef('');
   const progressClearTimerRef = useRef(null);
-  const drawCountRequestRef = useRef(0);
-  const cookieStatusRequestRef = useRef(0);
-  const apiHealthRequestRef = useRef(0);
   const historyStorageNoticeRef = useRef('');
   const historyStorageErrorRef = useRef(false);
 
@@ -2917,14 +435,16 @@ function App() {
 
   useEffect(() => {
     const hasUnsavedManualList = source === 'manual' && sourceInputDirty && manualInput.trim();
-    if (!isLoading && !isDrawing && !hasUnsavedManualList) return undefined;
+    const hasMemoryOnlyResults = !historyStorageAvailable
+      && drawHistory.some((receipt) => receipt.recordState === 'local');
+    if (!isLoading && !isDrawing && !hasUnsavedManualList && !hasMemoryOnlyResults) return undefined;
     const warnBeforeLeaving = (event) => {
       event.preventDefault();
       event.returnValue = '';
     };
     window.addEventListener('beforeunload', warnBeforeLeaving);
     return () => window.removeEventListener('beforeunload', warnBeforeLeaving);
-  }, [isDrawing, isLoading, manualInput, source, sourceInputDirty]);
+  }, [isDrawing, isLoading, manualInput, source, sourceInputDirty, historyStorageAvailable, drawHistory]);
 
   const normalizedPrizes = useMemo(() => prizes
     .map((prize, index) => ({
@@ -2955,6 +475,7 @@ function App() {
     () => candidateEvaluations.filter((entry) => entry.eligible).map((entry) => entry.candidate),
     [candidateEvaluations],
   );
+  const eligibleUserCount = useMemo(() => countEligibleUsers(eligible), [eligible]);
   const candidateSummary = useMemo(
     () => summarizeCandidateEligibility(candidateEvaluations),
     [candidateEvaluations],
@@ -2993,48 +514,8 @@ function App() {
     })).persistent;
   }, [cooldownStorageAvailable, currentStatusId, currentStatusUrl, source, statusUrl]);
 
-  async function apiFetch(path, options = {}, baseOverride = apiBase) {
-    const requestBase = baseOverride;
-    if (!requestBase && isStaticHostedPage()) {
-      throw new Error('当前是静态前端，请先在设置里确认后端接口地址。');
-    }
-    if (requestBase && !isTrustedApiBase(requestBase)) {
-      throw new Error('后端接口地址不在可信列表里，请使用当前公开后端或本地地址。');
-    }
-    const headers = new Headers(options.headers || {});
-    if (apiKey.trim()) headers.set('x-api-key', apiKey.trim());
-    headers.set('x-client-id', requestClientId());
-    const controller = new AbortController();
-    let timedOut = false;
-    const relayAbort = () => controller.abort(options.signal?.reason);
-    if (options.signal) {
-      if (options.signal.aborted) relayAbort();
-      else options.signal.addEventListener('abort', relayAbort, { once: true });
-    }
-    const timeout = window.setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, API_FETCH_TIMEOUT_MS);
-    const requestPath = requestBase
-      ? `${requestBase}${path.startsWith('/') ? path : `/${path}`}`
-      : path;
-    const cleanup = () => {
-      window.clearTimeout(timeout);
-      options.signal?.removeEventListener('abort', relayAbort);
-    };
-    try {
-      const response = await fetch(requestPath, { ...options, headers, signal: controller.signal });
-      apiResponseLifecycles.set(response, {
-        signal: controller.signal,
-        timedOut: () => timedOut,
-        cleanup,
-      });
-      return response;
-    } catch (error) {
-      cleanup();
-      if (timedOut) throw new Error('服务响应超时，请稍后重试。');
-      throw error;
-    }
+  function apiFetch(path, options = {}, baseOverride = apiBase) {
+    return requestApi(path, options, { apiBase: baseOverride, apiKey });
   }
   function showStatus(message, tone = 'neutral', options = {}) {
     setStatus(message);
@@ -3127,8 +608,7 @@ function App() {
     setCandidateLoadError('');
     setCurrentStatusId('');
     setCurrentStatusUrl('');
-    setDrawCount(null);
-    setDrawCountStatus('idle');
+    acceptDrawCount(null, { idle: true });
     clearResult();
     return true;
   }
@@ -3179,7 +659,6 @@ function App() {
   }
   function updateApiBase(value) {
     const cleaned = cleanApiBase(value);
-    if (cleaned !== apiBase) apiHealthRequestRef.current += 1;
     setApiBaseInput(cleaned);
     setApiBase(cleaned);
   }
@@ -3187,7 +666,6 @@ function App() {
     const raw = String(value || '').trim();
     const cleaned = cleanApiBase(raw || presetApiBase());
     if (!cleaned) {
-      if (apiBase) apiHealthRequestRef.current += 1;
       setApiBaseInput('');
       setApiBase('');
       return '';
@@ -3196,7 +674,6 @@ function App() {
       showStatus('后端接口地址不在可信列表里，请使用预置服务或本机地址。', 'error', { title: '地址不可用' });
       return null;
     }
-    if (cleaned !== apiBase) apiHealthRequestRef.current += 1;
     setApiBaseInput(isPresetApiBase(cleaned) ? '' : cleaned);
     setApiBase(cleaned);
     return cleaned;
@@ -3254,8 +731,7 @@ function App() {
       setLoadedSource('');
       setCurrentStatusId('');
       setCurrentStatusUrl('');
-      setDrawCount(null);
-      setDrawCountStatus('idle');
+      acceptDrawCount(null, { idle: true });
     }
   }
 
@@ -3462,8 +938,8 @@ function App() {
       showStatus('当前没有可抽候选，请先载入名单或调整筛选规则。', 'error');
       return false;
     }
-    if (totalSlots > eligible.length) {
-      showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${eligible.length}。`, 'error');
+    if (totalSlots > eligibleUserCount) {
+      showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${eligibleUserCount}。`, 'error');
       return false;
     }
     if (totalSlots > MAX_DRAW_WINNERS) {
@@ -3586,130 +1062,11 @@ function App() {
     clearResult('奖项已更新，请重新开奖。');
   }
 
-  async function loadCookieStatus(check = false) {
-    const requestId = ++cookieStatusRequestRef.current;
-    if (!mountedRef.current) return;
-    const requestBase = apiBase;
-    setCookieHealth('checking');
-    try {
-      const response = await apiFetch(
-        `/api/weibo/cookie-status${check ? '?check=1' : ''}`,
-        {},
-        requestBase,
-      );
-      const json = await readApiResponse(response, 'Cookie 状态服务');
-      if (!json.ok) throw new Error(json.error || '服务器 Cookie 状态读取失败');
-      if (!mountedRef.current || requestId !== cookieStatusRequestRef.current) return;
-      setCookieInfo(json);
-      setCookieHealth('ok');
-      if (check) {
-        const verifiedCount = Number(json.verifiedAccountCount || 0);
-        if (json.checkSkipped) {
-          showStatus('服务器 Cookie 校验受管理密钥保护，普通访客只能查看保存状态。');
-        } else {
-          showStatus(verifiedCount > 0
-            ? `${verifiedCount} 个服务器登录态通过最近校验，失效项已自动移除。`
-            : json.hasCookie
-              ? '服务器已保存登录态，但目前没有通过最近校验的账号。'
-              : '暂无服务器登录态，可以展开并填写备用 Cookie。');
-        }
-      }
-    } catch (error) {
-      if (!mountedRef.current || requestId !== cookieStatusRequestRef.current) return;
-      setCookieHealth('error');
-      if (check) showStatus(error.message, 'error');
-    }
-  }
-
-  async function refreshApiHealth() {
-    const requestId = ++apiHealthRequestRef.current;
-    if (!mountedRef.current) return;
-    const requestBase = apiBase;
-    setApiHealth('checking');
-    try {
-      const response = await apiFetch('/api/health', {}, requestBase);
-      const json = await readApiResponse(response, '后端服务');
-      if (!json.ok) throw new Error(json.error || '后端没有返回 ok');
-      if (mountedRef.current && requestId === apiHealthRequestRef.current) {
-        setApiHealth('ok');
-        setApiAuthRequired(json.authRequired === true);
-        setApiHealthDetail(json.authRequired === true ? '该后端要求访问密钥' : '');
-      }
-    } catch (error) {
-      if (mountedRef.current && requestId === apiHealthRequestRef.current) {
-        setApiHealth('error');
-        setApiHealthDetail(error?.message || '后端没有返回可识别的错误');
-      }
-    }
-  }
-
   async function testApiConnection() {
     const targetBase = backendAddressEditorOpen ? commitApiBase() : apiBase;
-    if (targetBase === null) return;
-    const requestId = ++apiHealthRequestRef.current;
-    cookieStatusRequestRef.current += 1;
-    setApiHealth('checking');
-    try {
-      const response = await apiFetch('/api/health', {}, targetBase);
-      const json = await readApiResponse(response, '后端服务');
-      if (!json.ok) throw new Error(json.error || '后端没有返回 ok');
-      if (requestId !== apiHealthRequestRef.current) return;
-      setApiHealth('ok');
-      setApiAuthRequired(json.authRequired === true);
-      setApiHealthDetail(json.authRequired === true ? '该后端要求访问密钥' : '');
-      showStatus(
-        json.authRequired === true
-          ? '后端连接成功，但它要求访问密钥。'
-          : '后端连接成功。',
-        'success',
-        { popup: true, title: '连接正常' },
-      );
-    } catch (error) {
-      if (requestId !== apiHealthRequestRef.current) return;
-      setApiHealth('error');
-      setApiHealthDetail(error.message);
-      showStatus(`后端连接失败：${error.message}`, 'error');
-    }
+    if (targetBase !== null) await checkConnection(targetBase, { notify: true });
   }
 
-  async function refreshDrawCount(value = statusUrl) {
-    const requestId = ++drawCountRequestRef.current;
-    if (!mountedRef.current) return;
-    if (source === 'manual' || !value.trim()) {
-      setDrawCount(null);
-      setDrawCountStatus('idle');
-      return;
-    }
-    setDrawCountStatus('loading');
-    try {
-      const response = await apiFetch(`/api/weibo/draw-count?statusUrl=${encodeURIComponent(value)}`);
-      const json = await readApiResponse(response, '开奖记录服务');
-      if (!json.ok) throw new Error(json.error || '抽奖次数查询失败');
-      if (!mountedRef.current || requestId !== drawCountRequestRef.current) return;
-      const nextCount = Number(json.drawCount);
-      if (Number.isFinite(nextCount) && nextCount >= 0) {
-        setDrawCount(Math.floor(nextCount));
-        setDrawCountStatus('ready');
-      } else {
-        setDrawCount(null);
-        setDrawCountStatus('unknown');
-      }
-    } catch {
-      if (!mountedRef.current || requestId !== drawCountRequestRef.current) return;
-      setDrawCount(null);
-      setDrawCountStatus('error');
-    }
-  }
-
-  useEffect(() => {
-    if (!cleanApiBase(apiBase) && isStaticHostedPage()) {
-      setApiHealth('error');
-      setCookieHealth('error');
-      return;
-    }
-    refreshApiHealth().catch(() => {});
-    loadCookieStatus(false).catch(() => {});
-  }, [apiBase]);
   useEffect(() => {
     const cleaned = cleanApiBase(apiBase);
     const custom = cleaned && isTrustedApiBase(cleaned) && !isPresetApiBase(cleaned) ? cleaned : '';
@@ -3747,16 +1104,6 @@ function App() {
     window.addEventListener('storage', syncDrawHistory);
     return () => window.removeEventListener('storage', syncDrawHistory);
   }, [currentStatusId]);
-  useEffect(() => {
-    if (source === 'manual' || !isWeiboStatusReference(statusUrl)) {
-      drawCountRequestRef.current += 1;
-      setDrawCount(null);
-      setDrawCountStatus('idle');
-      return undefined;
-    }
-    const timer = setTimeout(() => refreshDrawCount(statusUrl), 700);
-    return () => clearTimeout(timer);
-  }, [statusUrl, source, apiBase]);
   useEffect(() => {
     if (!pendingReceipt || isDrawing || selectedReceipt) return undefined;
     const reducedMotion = shouldReduceMotion(motionPreference);
@@ -3928,8 +1275,7 @@ function App() {
         setCandidates(parsed);
         setCurrentStatusId('');
         setCurrentStatusUrl('');
-        setDrawCount(null);
-        setDrawCountStatus('idle');
+        acceptDrawCount(null, { idle: true });
         setSourceMeta(manualMeta);
         setLoadedSource('manual');
         setSourceInputDirty(false);
@@ -3960,20 +1306,14 @@ function App() {
       }, operation);
       if (!isCurrentCandidateLoad(loadRevision, operation)) return null;
       if (!json.ok) throw new Error(json.error || '微博数据拉取失败');
-      const loadedCandidates = json.candidates || [];
+      validateRepostResult(json);
+      const loadedCandidates = json.candidates;
       const loadedStatusId = json.statusId || '';
       const freshHistory = winnerIdsForStatus(drawHistoryRef.current, loadedStatusId);
       setCandidates(loadedCandidates);
       setCurrentStatusId(loadedStatusId);
       setCurrentStatusUrl(json.statusUrl || effectiveStatusUrl);
-      const loadedDrawCount = Number(json.drawCount);
-      if (Number.isFinite(loadedDrawCount) && loadedDrawCount >= 0) {
-        setDrawCount(Math.floor(loadedDrawCount));
-        setDrawCountStatus('ready');
-      } else {
-        setDrawCount(null);
-        setDrawCountStatus('unknown');
-      }
+      acceptDrawCount(json.drawCount, { source: effectiveSource, statusUrl: effectiveStatusUrl });
       setSourceMeta({ ...json.meta, statusId: json.statusId, statusUrl: json.statusUrl });
       setLoadedSource(effectiveSource);
       setSourceInputDirty(false);
@@ -4052,8 +1392,8 @@ function App() {
     const drawEligible = eligible;
     const drawContext = { statusId: currentStatusId, statusUrl: currentStatusUrl, sourceMeta };
     const taskRevision = taskRevisionRef.current;
-    if (totalSlots > drawEligible.length) {
-      showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${drawEligible.length}。`, 'error');
+    if (totalSlots > eligibleUserCount) {
+      showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${eligibleUserCount}。`, 'error');
       return;
     }
     if (!window.isSecureContext || !window.crypto?.subtle) {
@@ -4100,7 +1440,7 @@ function App() {
       const seed = randomSeedHex();
       const candidateDigest = await digestCandidates(drawEligible);
       throwIfAborted(signal);
-      const pool = await seededShuffle(drawEligible, `${seed}:${candidateDigest}`);
+      const pool = uniqueWinnerPool(await seededShuffle(drawEligible, `${seed}:${candidateDigest}`));
       throwIfAborted(signal);
       const rollingPool = [];
       const rollingSeen = new Set();
@@ -4299,8 +1639,7 @@ function App() {
         if (json.statusId) setCurrentStatusId(json.statusId);
         if (json.statusUrl) setCurrentStatusUrl(json.statusUrl);
         if (json.drawCount !== null && json.drawCount !== undefined) {
-          setDrawCount(json.drawCount);
-          setDrawCountStatus('ready');
+          acceptDrawCount(json.drawCount);
         }
       }
       if (!opts.silent) showStatus(`开奖记录已保存：${json.file}`, 'success');
@@ -4363,8 +1702,7 @@ function App() {
         if (saved.statusUrl) setCurrentStatusUrl(saved.statusUrl);
         showStatus(`已抽出 ${updated.total} 位中奖用户，开奖记录已同步。`, 'success');
         if (saved.drawCount !== null && saved.drawCount !== undefined) {
-          setDrawCount(saved.drawCount);
-          setDrawCountStatus('ready');
+          acceptDrawCount(saved.drawCount);
         }
       }
       return updated;
@@ -4473,7 +1811,7 @@ function App() {
       `weibo-candidates-${segmentName}${searchSuffix}-${Date.now()}.csv`,
       `\uFEFF${toCsv(exportedRows, ['index', 'uid', 'screenName', 'text', 'createdAt', 'source', 'status', 'exclusionReason'])}`,
     );
-    showStatus(`已导出当前视图中的 ${rows.length.toLocaleString()} 位候选。`, 'success', {
+    showStatus(`已导出当前视图中的 ${rows.length.toLocaleString()} 条候选。`, 'success', {
       popup: true,
       title: '名单已导出',
     });
@@ -4670,6 +2008,7 @@ function App() {
         auditHash: receipt.auditHash,
         candidateDigest: receipt.candidateDigest,
         candidateCount: receipt.candidateCount,
+        candidateCountKnown: !receipt.sourceMeta?.legacyCountsIncomplete,
         eligibleCount: receipt.eligibleCount,
         winnerCount: receipt.total,
         drawCount: receipt.drawNumber
@@ -4864,7 +2203,7 @@ function App() {
     : apiHealth === 'ok'
       ? '连接正常'
       : apiHealth === 'error'
-        ? `连接异常${apiHealthDetail ? `：${apiHealthDetail}` : ''}`
+        ? '连接异常'
         : '正在检查';
   const loadedCandidateCount = candidates.length;
   const resultTotal = winners.length;
@@ -4891,7 +2230,7 @@ function App() {
   });
   const currentReceipt = hasResults ? currentReceiptSnapshot() : null;
   return (
-    <AppleNavigationV3
+    <AppWorkspace
       controller={{
         source,
         statusUrl,
@@ -4902,6 +2241,7 @@ function App() {
         candidateEvaluations,
         candidateSummary,
         eligible,
+        eligibleUserCount,
         prizes,
         normalizedPrizes,
         keyword,
@@ -4942,6 +2282,9 @@ function App() {
         backendAddressEditorOpen,
         apiKey,
         apiAuthRequired,
+        apiHealth,
+        apiHealthDetail,
+        cookieHealth,
         totalSlots,
         hasCandidates,
         hasResults,

@@ -5,7 +5,7 @@ export const FEEDBACK_CATEGORIES = Object.freeze([
   { value: 'suggestion', label: '功能建议', hint: '希望增加或调整的功能' },
   { value: 'problem', label: '遇到问题', hint: '无法完成或结果异常' },
   { value: 'experience', label: '使用体验', hint: '流程、文字或界面感受' },
-  { value: 'privacy', label: '隐私与数据', hint: '查询或申请删除服务器记录' },
+  { value: 'privacy', label: '隐私与数据', hint: '反馈数据问题；处理结果请通过邮箱跟进' },
   { value: 'other', label: '其他', hint: '其他想告诉运营者的内容' },
 ]);
 

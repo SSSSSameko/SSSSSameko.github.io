@@ -87,8 +87,6 @@ try {
       drawSpecs: read('.draw-specs'),
       specButton: read('.draw-specs button'),
       tabbarShine: read('.root-tabbar', 'backgroundColor', '::before'),
-      primarySurface: read('.v3-load-button', 'backgroundImage'),
-      primaryText: read('.v3-load-button strong', 'color'),
       darkThemeColor: document.querySelector('meta[name="theme-color"][media*="dark"]')?.content || '',
     };
   });
@@ -108,15 +106,12 @@ try {
   assert.ok(brandRgb.length === 3 && Math.min(...brandRgb) > 180, `brand text should be light, got ${state.brand}`);
   const tabbarShineValues = state.tabbarShine.match(/\d+(?:\.\d+)?/g)?.map(Number) || [];
   assert.ok((tabbarShineValues[3] ?? 1) <= 0.12, `tabbar shine should stay subtle in dark mode, got ${state.tabbarShine}`);
-  const primarySurfaceRgb = [...state.primarySurface.matchAll(/rgba?\(\s*(\d+)\D+(\d+)\D+(\d+)/g)]
-    .map((match) => match.slice(1, 4).map(Number));
-  assert.ok(
-    primarySurfaceRgb.length >= 2 && primarySurfaceRgb.slice(0, 2).every((rgb) => Math.max(...rgb) < 120),
-    `primary action should use a dark surface, got ${state.primarySurface}`,
-  );
-  const primaryTextRgb = state.primaryText.match(/\d+(?:\.\d+)?/g)?.slice(0, 3).map(Number) || [];
-  assert.ok(primaryTextRgb.length === 3 && Math.min(...primaryTextRgb) > 180, `primary action text should be light, got ${state.primaryText}`);
-  assert.equal(state.darkThemeColor.toLowerCase(), '#0b0d12');
+  assert.equal(state.darkThemeColor.toLowerCase(), '#101011');
+
+  // The primary action may use a light accent with dark text in a dark theme.
+  // Check legibility rather than prescribing a specific gradient or text color.
+  await assertContrast('.v3-load-button', '.v3-load-button strong');
+  await assertContrast('.v3-load-button', '.v3-load-button small');
 
   await assertContrast('.root-tabbar button:not(.is-active)');
 
@@ -143,6 +138,16 @@ try {
   await page.getByRole('button', { name: /数据设置/ }).click();
   await page.getByRole('dialog', { name: '设置' }).waitFor({ state: 'visible' });
   await assertContrast('.flow-settings-action-label');
+  await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+  await page.getByRole('tab', { name: '名单', exact: true }).click();
+  await page.getByRole('button', { name: '手动名单', exact: true }).click();
+  await page.getByRole('textbox', { name: '手动候选名单' }).fill('深色测试候选一\n深色测试候选二');
+  await page.getByRole('button', { name: '替换名单', exact: true }).click();
+  await page.getByRole('tab', { name: '抽奖', exact: true }).click();
+  await page.waitForTimeout(450);
+  await assertContrast('.draw-specs > button', '.draw-specs > button strong');
+  await assertContrast('.draw-specs > button', '.draw-specs > button small');
+  await assertContrast('.v3-draw-count', '.v3-draw-count strong');
 
   await context.close();
 } finally {

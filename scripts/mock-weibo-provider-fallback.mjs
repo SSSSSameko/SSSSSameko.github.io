@@ -180,6 +180,44 @@ function aggregateTotalMismatch(url) {
   if (url.pathname === '/api/statuses/repostTimeline') {
     return mobileTimeline([candidate('aggregate-mobile', 'aggregate-mobile-user', '局部完整候选')], 1);
   }
+  if (url.hostname === 'weibo.cn' && url.pathname.startsWith('/repost/')) return legacyEmpty();
+  return null;
+}
+
+function interruptedPagination(url) {
+  const statusId = statusIdFromUrl(url);
+  const page = Number(url.searchParams.get('page') || 1);
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 20);
+  if (url.pathname === '/ajax/statuses/repostTimeline') {
+    if (statusId !== '980001') return desktopTimeline([], 20);
+    return page === 1
+      ? desktopTimeline([candidate('interrupted-desktop')], 20, 2)
+      : json({ ok: 0, msg: '分页暂不可用' }, 500);
+  }
+  if (url.pathname === '/api/statuses/repostTimeline') {
+    if (statusId === '980003') return json({ ok: 0, msg: '还没有人转发过' });
+    if (statusId === '980008') return json({ ok: 0, msg: '还没有人转发过' }, 500);
+    if (statusId === '980001') return mobileTimeline([], 20);
+    if (page > 1 && statusId === '980006') return json({ ok: 0, msg: '访问频繁' }, 429);
+    if (page > 1 && statusId === '980007') return json({ ok: 0, msg: '请先登录' }, 401);
+    return page === 1
+      ? mobileTimeline([candidate('interrupted-mobile')], 20, 2)
+      : json({ ok: 0, msg: '分页暂不可用' }, 500);
+  }
+  if (url.hostname === 'weibo.cn' && url.pathname.startsWith('/repost/')) {
+    if (statusId !== '980004') return legacyEmpty();
+    if (page > 1) return html('暂不可用', 500);
+    return html('<input name="mp" value="2"><div class="c" id="M_interrupted-legacy"><a href="/u/710003">旧版候选</a>: 转发 <a href="/attitude/interrupted-legacy">赞[1]</a></div>');
+  }
+  return null;
+}
+
+function originalTotalWithFailedDesktop(url) {
+  const statusId = statusIdFromUrl(url);
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 20);
+  if (url.pathname === '/ajax/statuses/repostTimeline') return json({ ok: 0, msg: '桌面接口暂不可用' }, 500);
+  if (url.pathname === '/api/statuses/repostTimeline') return mobileTimeline([candidate('smaller-mobile-total')], 1);
+  if (url.hostname === 'weibo.cn' && url.pathname.startsWith('/repost/')) return legacyEmpty();
   return null;
 }
 
@@ -389,11 +427,112 @@ function allScenarios(url, headers) {
     960001: headMeta,
     970001: unknownDesktop,
     970002: unknownDesktop,
+    980001: interruptedPagination,
+    980002: interruptedPagination,
+    980003: interruptedPagination,
+    980004: interruptedPagination,
+    980005: originalTotalWithFailedDesktop,
+    980006: interruptedPagination,
+    980007: interruptedPagination,
+    980008: interruptedPagination,
   };
   return handlersByStatus[statusId]?.(url, headers) || null;
 }
 
+function responseBoundaries(url, headers) {
+  const statusId = statusIdFromUrl(url);
+  const page = Number(url.searchParams.get('page') || 1);
+  if (statusId === '990105' || statusId === '990106') {
+    if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, 1);
+    if (cookieLabel(headers.get('cookie') || '') === 'bad') {
+      return statusId === '990105'
+        ? html('<html><title>微博登录</title><form action="https://passport.weibo.cn/signin/login"><input type="password"></form></html>')
+        : new Response(null, { status: 302, headers: { location: 'https://passport.weibo.com/sso/signin?return=example' } });
+    }
+    if (url.pathname === '/ajax/statuses/repostTimeline') return desktopTimeline([candidate('auth-recovered')], 1);
+  }
+  const nearTotal = ['990103', '990109'].includes(statusId);
+  const total = nearTotal ? 100 : statusId === '990104' ? 0 : 20;
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(statusId, total);
+  if (url.pathname === '/ajax/statuses/repostTimeline') {
+    if (statusId === '990104') return json({ ok: 1, data: { unexpected: [] } });
+    if (statusId === '990107') return json({ ok: '0', message: '访问频繁，请稍后再试' });
+    if (page === 1) return desktopTimeline(largeCandidates(statusId, nearTotal ? 90 : 1), total, 2);
+    if (statusId === '990101') return html('<html><title>Temporary upstream failure</title></html>');
+    if (statusId === '990102') {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"data":['));
+          controller.error(new TypeError('terminated'));
+        },
+      }), { headers: { 'content-type': 'application/json' } });
+    }
+    if (statusId === '990110') return json({ ok: 1, data: {} });
+    if (statusId === '990111') return new Response('', { headers: { 'content-length': '999999999' } });
+    if (statusId === '990112') return new Response('x'.repeat(65537));
+    return json({ ok: 0, msg: '分页暂不可用' }, 500);
+  }
+  if (url.pathname === '/api/statuses/repostTimeline') {
+    return mobileTimeline(statusId === '990109' ? largeCandidates('backup', 10) : [], total);
+  }
+  if (url.hostname === 'weibo.cn' && url.pathname.startsWith('/repost/')) return legacyEmpty();
+  return null;
+}
+
+function fallbackPolicyScenario(url) {
+  const id = statusIdFromUrl(url);
+  const page = Number(url.searchParams.get('page') || 1);
+  const cases = {
+    991001: [29,24], 991002: [50,40], 991003: [18,12], 991004: [200,160],
+    991005: [200,159], 991006: [199,160], 991007: [200,160], 991008: [200,160],
+    991009: [29,24], 991010: [20,1], 991011: [200,1], 991012: [164,0], 991013: [20,1],
+  };
+  const [total,count] = cases[id] || [];
+  if (total === undefined) return null;
+  const entries = ['991010','991013'].includes(id)
+    ? [candidate('5000000123456789', '900001', '同一用户')]
+    : largeCandidates(`policy-${id}`,count);
+  if (url.pathname === '/ajax/statuses/show') return statusInfo(id,total);
+  if (url.pathname === '/ajax/statuses/repostTimeline') {
+    if (id === '991007' && page > 1) return json({ ok:0,msg:'分页暂不可用' },500);
+    return desktopTimeline(entries,total,id === '991007' ? 2 : id === '991008' ? 100 : 1);
+  }
+  if (url.pathname === '/api/statuses/repostTimeline') {
+    if (id === '991011') return mobileTimeline(largeCandidates(`policy-${id}`,200),total);
+    if (id === '991009') return mobileTimeline([...entries.slice(1),candidate('actually-new')],total);
+    if (id === '991012') return json({ ok:0,msg:'还没有人转发过' });
+    return mobileTimeline(entries,total);
+  }
+  if (url.hostname === 'weibo.cn' && url.pathname.startsWith('/repost/')) {
+    if (id === '991010') return html('<input name="mp" value="1">' + ['O000cevgF','O000cevgG'].map(bid => `<div class="c" id="M_${bid}"><a href="/u/900001">同一用户</a>:转发 <a href="/attitude/${bid}">赞[0]</a></div>`).join(''));
+    if (id === '991013') return html('<input name="mp" value="1"><div class="c"><a href="/u/900001">同一用户</a>:转发 赞[0]</div>');
+    return legacyEmpty();
+  }
+  return null;
+}
+
+function officialBoundaries(url) {
+  if (url.pathname !== '/2/statuses/repost_timeline.json') return null;
+  const id = statusIdFromUrl(url);
+  const page = Number(url.searchParams.get('page') || 1);
+  if (id === '992001') return json({ reposts: largeCandidates(id, 4), total_number: 5 });
+  if (id === '992002') return json({
+    reposts: page === 1 ? largeCandidates(id, 200) : [candidate('unknown-tail')],
+    total_number: null,
+  });
+  if (['992003', '992006', '992007'].includes(id)) {
+    if (page === 1) return json({ reposts: largeCandidates(id, 200), total_number: 250 });
+    return json({ error: 'fixture upstream failure' }, id === '992006' ? 401 : id === '992007' ? 429 : 502);
+  }
+  if (id === '992004') return json({ reposts: [{ user: { idstr: 'uncertain-user' } }], total_number: 1 });
+  if (id === '992005') return json({ reposts: largeCandidates(id, 200), total_number: 200 });
+  return null;
+}
+
 const handlers = {
+  'official-boundaries': officialBoundaries,
+  'fallback-policy': fallbackPolicyScenario,
+  'response-boundaries': responseBoundaries,
   'partial-mobile': partialMobile,
   'near-total-desktop': nearTotalDesktop,
   'cookie-rotation': cookieRotation,
@@ -421,7 +560,7 @@ globalThis.fetch = async (input, options = {}) => {
     throw new Error(`离线测试禁止外部请求：${url}`);
   }
 
-  if (options.redirect !== 'error') {
+  if (!['error', 'manual'].includes(options.redirect)) {
     throw new Error(`微博请求没有禁用重定向：${url}`);
   }
   const headers = requestHeaders(input, options);

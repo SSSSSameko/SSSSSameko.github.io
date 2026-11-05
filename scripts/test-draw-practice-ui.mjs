@@ -21,18 +21,22 @@ try {
   page.on('pageerror', (error) => errors.push(error.message));
 
   await gotoUiPage(page, baseUrl);
+  const currentStep = page.locator('.workspace-steps [aria-current="step"]');
+  assert.match(await currentStep.innerText(), /载入名单/);
   await page.locator('.root-tabbar button').filter({ hasText: '名单' }).click();
   await page.getByRole('button', { name: '手动名单', exact: true }).click();
   await page.getByRole('textbox', { name: '手动候选名单' }).fill('小柚子\n森森\n月岛\n圆圆');
   await page.getByRole('button', { name: '替换名单', exact: true }).click();
 
   await page.locator('.root-tabbar button').filter({ hasText: '抽奖' }).click();
+  assert.match(await currentStep.innerText(), /确认奖项/);
   await page.getByRole('button', { name: /设置奖项并确认/ }).click();
   const prizeSheet = page.getByRole('dialog', { name: '奖项设置' });
   await prizeSheet.getByRole('button', { name: '确认奖项设置' }).click();
 
   const confirmSheet = page.getByRole('dialog', { name: '开奖前确认' });
   await confirmSheet.waitFor({ state: 'visible' });
+  assert.match(await currentStep.innerText(), /开始抽奖/);
   assert.equal(await confirmSheet.locator('.v3-confirm-preview').isVisible(), true);
   assert.equal(await confirmSheet.getByText('4', { exact: true }).count() > 0, true);
   assert.equal(await confirmSheet.getByText('可抽人数', { exact: true }).isVisible(), true);
@@ -43,6 +47,8 @@ try {
 
   const resultSheet = page.getByRole('dialog', { name: '本地演练结果' });
   await resultSheet.waitFor({ state: 'visible' });
+  assert.equal(await currentStep.count(), 0, '抽奖完成后不应仍显示待执行的当前步骤');
+  assert.equal(await page.locator('.workspace-steps .is-complete').count(), 3);
   assert.equal(await resultSheet.getByText('本地演练 · 不计入开奖次数', { exact: true }).isVisible(), true);
   assert.equal(await resultSheet.getByText('仅用于核对动画与设置，不保存记录，也不计入本链接开奖次数。', { exact: true }).isVisible(), true);
   const copyFormat = resultSheet.getByRole('group', { name: '公示文案格式' });

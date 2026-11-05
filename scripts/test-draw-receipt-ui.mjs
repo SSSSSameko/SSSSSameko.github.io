@@ -97,7 +97,9 @@ try {
       assert.ok(
         shell
           && shell.width >= 900
-          && shell.width <= 1180,
+          && shell.width <= 1380
+          && shell.x >= 24
+          && shell.x + shell.width <= item.viewport.width - 24,
         JSON.stringify({ shell }),
       );
       assert.ok(shell.height > 600);

@@ -78,6 +78,16 @@ try {
   await dialog.waitFor({ state: 'visible' });
   await page.waitForTimeout(420);
   assert.equal(await page.locator('.app-shell.stack-open').count(), 1);
+  const material = await dialog.evaluate(element => ({
+    blur: getComputedStyle(element).backdropFilter,
+    scrim: getComputedStyle(element.parentElement).backdropFilter,
+    scrimAlpha: Number(getComputedStyle(element.parentElement).backgroundColor.match(/[\d.]+/g)?.[3]),
+    duration: getComputedStyle(element).transitionDuration,
+  }));
+  assert.match(material.blur, /blur\(24px\)/, '弹层应使用稳定的玻璃模糊');
+  assert.match(material.scrim, /blur\(8px\)/, '遮罩应轻柔模糊背景');
+  assert.ok(material.scrimAlpha > 0 && material.scrimAlpha < 0.16, '浅色遮罩应保留页面的明亮底色');
+  assert.match(material.duration, /0\.36s/, '弹层进场应使用统一时长');
 
   const box = await grabber.boundingBox();
   assert.ok(box);
@@ -93,6 +103,13 @@ try {
     Number.parseFloat(sheet.style.getPropertyValue('--sheet-drag-y'))
   ));
   assert.ok(dragged > 20);
+  await page.waitForFunction((restAlpha) => Number(
+    getComputedStyle(document.querySelector('.flow-sheet-backdrop')).backgroundColor.match(/[\d.]+/g)?.[3],
+  ) < restAlpha, material.scrimAlpha);
+  const draggedAlpha = await page.locator('.flow-sheet-backdrop').evaluate(element => (
+    Number(getComputedStyle(element).backgroundColor.match(/[\d.]+/g)?.[3])
+  ));
+  assert.ok(draggedAlpha > 0 && draggedAlpha < material.scrimAlpha, '拖动时遮罩应比静止状态更淡');
   await page.waitForTimeout(120);
   await page.mouse.up();
   await page.waitForTimeout(380);

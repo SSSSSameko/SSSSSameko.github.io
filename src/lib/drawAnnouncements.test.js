@@ -60,7 +60,7 @@ test('record announcement includes the recorded random method', () => {
   const text = buildAnnouncementText(receipt, 'record');
   assert.match(text, /开奖次数：本链接第 3 次开奖/);
   assert.match(text, /开奖时间：/);
-  assert.match(text, /候选范围：载入 20 人 · 可抽 18 人/);
+  assert.match(text, /候选范围：载入 20 条候选 · 可抽 18 条/);
   assert.match(text, /随机规则：SHA-256 · Fisher–Yates/);
 });
 
@@ -71,4 +71,14 @@ test('practice announcement is explicit about not counting the draw', () => {
     drawNumber: null,
   }, 'grouped');
   assert.match(text, /本地演练 · 不计入开奖次数/);
+});
+
+test('record announcement does not invent a total for legacy receipts', () => {
+  const text = buildAnnouncementText({
+    ...receipt,
+    candidateCount: 0,
+    sourceMeta: { legacyCountsIncomplete: true },
+  }, 'record');
+  assert.match(text, /可抽 18 条 · 旧版记录未保存候选总数/);
+  assert.doesNotMatch(text, /载入 0/);
 });

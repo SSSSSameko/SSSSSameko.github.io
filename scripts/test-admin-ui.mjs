@@ -9,242 +9,7 @@ const baseUrl = process.env.ADMIN_UI_URL || 'http://127.0.0.1:4173/admin';
 const outputDir = new URL('../output/ui-checks/', import.meta.url);
 const releaseInfo = readReleaseInfo(fileURLToPath(new URL('../', import.meta.url)));
 
-const draws = Array.from({ length: 18 }, (_, index) => {
-  const number = index + 1;
-  const winner = { uid: `1000${number}`, screenName: `中奖用户 ${number}`, text: `测试转发 ${number}` };
-  return {
-    file: `draw-preview-${number}.json`,
-    source: '微博转发',
-    statusId: `P${number}`,
-    statusUrl: `https://weibo.com/123/P${number}`,
-    drawnAt: new Date(Date.now() - index * 3_600_000).toISOString(),
-    savedAt: new Date().toISOString(),
-    winnerCount: 1,
-    winners: [winner],
-    totalCount: 128 + index,
-    eligibleCount: 120 + index,
-    auditHash: `${number}`.padStart(64, '0'),
-    results: [{ prize: { name: '一等奖', count: 1 }, winners: [winner] }],
-  };
-});
-
-draws[0].statusUrl = 'javascript:alert(1)';
-draws[0].winners[0].screenName = '<img src=x onerror="window.__adminXss=1">';
-
-const samples = Array.from({ length: 24 }, (_, index) => ({
-  cgroupCurrentMb: 210 + index * 4,
-  cgroupAnonMb: 120 + index * 2,
-}));
-
-const summary = {
-  ok: true,
-  adminEnabled: true,
-  version: releaseInfo.version,
-  releaseDate: releaseInfo.date,
-  releaseTitle: releaseInfo.title,
-  savedDrawCount: 18,
-  cumulativeDrawCount: 1288,
-  winnerCount: 18,
-  cumulativeWinnerCount: 3512,
-  cumulativeStatsSource: 'sequence-ledger-and-retained-files',
-  cumulativeStatsUpdatedAt: '2026-09-13T04:00:00.000Z',
-  recentAttempts: [],
-  cookie: {
-    accountCount: 2,
-    cookieCount: 3,
-    hasCookie: true,
-    tryableAccountCount: 2,
-    verifiedAccountCount: 1,
-    pendingAccountCount: 1,
-    checkFailedAccountCount: 1,
-    quarantinedAccountCount: 0,
-  },
-  queue: {
-    active: 1,
-    queued: 0,
-    maxActive: 2,
-    maxQueued: 8,
-    retained: 3,
-    maxRetained: 24,
-    subscribers: 5,
-    maxSubscribersPerTask: 12,
-    sameStatusLocks: 0,
-    sharedTasks: 1,
-    recentSnapshots: 1,
-    snapshotTtlMs: 15_000,
-    maxSnapshots: 2,
-    deliveries: { fresh: 8, sharedRunning: 3, recentSnapshot: 2 },
-  },
-  weiboLogin: { status: 'idle', history: [] },
-  system: {
-    now: new Date().toISOString(),
-    startedAt: new Date(Date.now() - 86_400_000).toISOString(),
-    uptimeText: '1 天',
-    nodeVersion: 'v24.0.0',
-    platform: 'win32/x64',
-    pid: 1234,
-    hostname: 'preview',
-    cpus: 2,
-    loadAverage: [0.12, 0.2, 0.18],
-    memory: {
-      rssMb: 92,
-      heapUsedMb: 42,
-      heapTotalMb: 84,
-      hostTotalMb: 2048,
-      hostAvailableMb: 1320,
-      hostUsedMb: 728,
-      hostUsedPercent: 35.5,
-      hostCachedMb: 340,
-      hostSlabMb: 86,
-      hostSlabReclaimableMb: 52,
-      hostSlabUnreclaimableMb: 34,
-      cgroupAvailable: true,
-      cgroupCurrentMb: 300,
-      cgroupPeakMb: 420,
-      cgroupAnonMb: 166,
-      cgroupReclaimableMb: 72,
-      trend: { status: 'stable', perHourMb: 1.5 },
-      samples,
-    },
-    browser: {
-      processCount: 0,
-      profileCacheCleanup: {
-        lastRunAt: new Date(Date.now() - 7_200_000).toISOString(),
-        removedCount: 4,
-      },
-    },
-    runtime: {
-      eventLoopP99Ms: 18,
-      eventLoopMeanMs: 7,
-      rateLimitBuckets: 3,
-      adminLoginBuckets: 1,
-      revokedAdminSessions: 2,
-      requests: {
-        total: 240,
-        clientErrors: 2,
-        serverErrors: 1,
-        applicationErrors: 1,
-        routeMisses: 1,
-        probeRequests: 0,
-        probeErrors: 0,
-        slowestMs: 86,
-        lastErrorAt: new Date().toISOString(),
-      },
-      http: {
-        statusCounts: [{ status: 404, count: 2 }, { status: 503, count: 1 }],
-        routeErrors: [{ status: 404, method: 'GET', path: '/api/missing', count: 2 }],
-        recentErrors: [{
-          at: new Date().toISOString(),
-          requestId: 'request-12345678',
-          method: 'GET',
-          path: '/api/weibo/reposts/jobs/test',
-          status: 503,
-          elapsedMs: 86,
-          upstream: { host: 'weibo.com', path: '/ajax/statuses/repostTimeline', status: 429 },
-        }],
-      },
-      diagnostics: {
-        total: 12,
-        dropped: 0,
-        byLevel: [
-          { level: 'warning', label: '警告', count: 3 },
-          { level: 'error', label: '错误', count: 2 },
-        ],
-        byCategory: [
-          {
-            category: 'weibo',
-            label: '微博抓取',
-            level: 'error',
-            count: 2,
-            lastAt: new Date().toISOString(),
-            message: '桌面端抓取失败',
-          },
-          {
-            category: 'security',
-            label: '安全防护',
-            level: 'warning',
-            count: 3,
-            lastAt: new Date().toISOString(),
-            message: '扫描探测：GET /.env → 404',
-          },
-        ],
-        buckets: [{
-          category: 'security',
-          level: 'warning',
-          code: 'scanner-probe',
-          action: 'GET /.env',
-          count: 3,
-          firstAt: new Date().toISOString(),
-          lastAt: new Date().toISOString(),
-        }],
-        signals: [{
-          key: 'scanner-scan',
-          title: '疑似漏洞扫描',
-          level: 'warning',
-          count: 12,
-          firstAt: new Date().toISOString(),
-          lastAt: new Date().toISOString(),
-          detail: '10 分钟内 12 次扫描探测',
-        }],
-        recent: [],
-        signalWindowText: '10 分钟',
-        signalThreshold: 8,
-        edge: {
-          enabled: true,
-          available: true,
-          path: 'sameko-access.log',
-          scannerCount: 21,
-          errorCount: 23,
-          readAt: new Date().toISOString(),
-          truncated: false,
-          scanners: [{ method: 'GET', path: '/.env', count: 7 }],
-          topSources: [],
-        },
-      },
-    },
-    service: {
-      version: releaseInfo.version,
-      memoryHighMb: 700,
-      memoryMaxMb: 850,
-      nextRecycleAt: new Date(Date.now() + 43_200_000).toISOString(),
-      recycleIntervalText: '12 小时',
-    },
-    disk: { available: true, usedPercent: 38, usedMb: 3800, availableMb: 6200 },
-    config: {
-      browserDiskCacheBytes: 64 * 1024 * 1024,
-      browserMediaCacheBytes: 16 * 1024 * 1024,
-    },
-    events: [{
-      category: 'reposts',
-      action: 'provider-error',
-      status: 'error',
-      message: '桌面端抓取失败',
-      at: new Date().toISOString(),
-      details: {
-        statusId: '1234567890',
-        upstream: { host: 'weibo.com', path: '/ajax/statuses/repostTimeline', status: 429 },
-      },
-    }],
-    storage: [],
-  },
-};
-
-const feedback = [
-  {
-    id: 'feedback-1',
-    category: 'problem',
-    content: '<img src=x onerror="window.__feedbackXss=1">\n点击载入后没有反应。',
-    createdAt: new Date().toISOString(),
-    source: 'a1b2c3d4e5',
-  },
-  {
-    id: 'feedback-2',
-    category: 'suggestion',
-    content: '希望增加开奖前的名单确认。',
-    createdAt: new Date(Date.now() - 3_600_000).toISOString(),
-    source: 'f6e7d8c9b0',
-  },
-];
+import { draws, summary, feedback, crawlMeta } from './fixtures/admin-preview.mjs';
 
 await mkdir(outputDir, { recursive: true });
 const browser = await launchUiBrowser();
@@ -362,6 +127,8 @@ try {
     assert.equal(await logoutPage.locator('#dashboard:not(.hidden)').isVisible(), true);
     await logoutPage.locator('#logoutBtn').click();
     await logoutPage.locator('#loginPanel:not(.hidden)').waitFor();
+    assert.equal(await logoutPage.locator('#crawlList').textContent(), '');
+    assert.equal(await logoutPage.locator('#systemEventPanel').textContent(), '');
     await logoutPage.locator('#toast.show').getByText('已退出后台', { exact: true }).waitFor();
     await logoutPage.waitForTimeout(250);
     assert.equal(summaryRequests, summaryBaseline);
@@ -373,8 +140,43 @@ try {
     await logoutContext.close();
   }
 
+  {
+    const exportContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const exportPage = await exportContext.newPage();
+    let detailCalls = 0;
+    let downloads = 0;
+    exportPage.on('download', () => { downloads += 1; });
+    await exportPage.route('**/api/admin/**', async (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === '/api/admin/session') return route.fulfill({ json: { username: 'preview', csrfToken: 'preview' } });
+      if (pathname === '/api/admin/summary') return route.fulfill({ json: summary });
+      if (pathname === '/api/admin/draws') return route.fulfill({ json: { ok: true, items: draws.slice(0, 1) } });
+      if (pathname === '/api/admin/feedback') return route.fulfill({ json: { ok: true, items: [] } });
+      if (pathname.startsWith('/api/admin/draws/')) {
+        detailCalls += 1;
+        return route.fulfill({ status: 429, headers: { 'retry-after': '1' }, json: { ok: false, error: '请求过于频繁' } });
+      }
+      return route.fulfill({ json: { ok: true } });
+    });
+    await gotoUiPage(exportPage, baseUrl);
+    await exportPage.getByRole('tab', { name: '记录', exact: true }).click();
+    await exportPage.locator('.record-row').waitFor();
+    await exportPage.getByRole('button', { name: '导出已载入记录' }).click();
+    await exportPage.locator('#exportStatus').getByText(/秒后继续/).waitFor();
+    await exportPage.locator('#logoutBtn').click();
+    await exportPage.locator('#loginPanel:not(.hidden)').waitFor();
+    await exportPage.waitForTimeout(1200);
+    assert.equal(detailCalls, 1, '退出后不得继续导出重试');
+    assert.equal(downloads, 0, '退出后不得触发下载');
+    assert.equal(await exportPage.locator('#exportStatus').innerText(), '');
+    assert.equal(await exportPage.locator('#adminAlert').isVisible(), false);
+    await exportContext.close();
+  }
+
   const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await context.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.addInitScript(() => {
     const nativeFetch = window.fetch.bind(window);
     window.__drawRequestAborts = [];
@@ -561,6 +363,35 @@ try {
   await page.screenshot({ path: fileURLToPath(new URL('admin-feedback-desktop.png', outputDir)) });
 
   await page.getByRole('tab', { name: '系统', exact: true }).click();
+  assert.equal(await page.locator('#systemPanel').isVisible(), false);
+  await page.locator('#eventSearch').fill(crawlMeta.crawlId);
+  assert.equal(await page.locator('#systemEventPanel > .event-row').count(), 3);
+  await page.locator('#eventLevel').selectOption('warning');
+  assert.equal(await page.locator('#systemEventPanel > .event-row').count(), 1);
+  await page.locator('#systemEventPanel summary').click();
+  await page.locator('#refreshBtn').click();
+  await page.waitForFunction(() => !document.querySelector('#refreshBtn').disabled);
+  assert.equal(await page.locator('#eventSearch').inputValue(), crawlMeta.crawlId);
+  assert.equal(await page.locator('#systemEventPanel details').getAttribute('open') !== null, true);
+  await page.locator('#autoRefreshBtn').click();
+  assert.equal(await page.locator('#autoRefreshBtn').getAttribute('aria-pressed'), 'false');
+  await page.locator('#autoRefreshBtn').click();
+  await page.locator('#clearEventFilters').click();
+  await page.getByRole('tab', { name: '抓取过程', exact: true }).click();
+  assert.equal(await page.locator('.crawl-card').count(), 2);
+  await page.locator('#crawlSearch').fill('preview-crawl-001');
+  await page.locator('.crawl-card > summary').click();
+  assert.match(await page.locator('#crawlList').innerText(), /大名单缺口在容差内/);
+  assert.match(await page.locator('#crawlList').innerText(), /真实新增\n0/);
+  assert.match(await page.locator('#crawlList').innerText(), /20 · 10.0%/);
+  await page.screenshot({ path: fileURLToPath(new URL('admin-crawls-desktop.png', outputDir)), fullPage: true });
+  await page.locator('#crawlSearch').fill('preview-crawl-002');
+  await page.locator('.crawl-card > summary').click();
+  assert.match(await page.locator('#crawlList').innerText(), /缺少最终结果/);
+  assert.match(await page.locator('#crawlList').innerText(), /未记录/);
+  assert.equal(await page.locator('#crawlList img').count(), 0);
+  await page.locator('#crawlSearch').fill('');
+  await page.getByRole('tab', { name: '服务资源', exact: true }).click();
   assert.equal(
     await page.locator('#appVersion').getByText(`Sameko Control · v${releaseInfo.version}`, { exact: true }).isVisible(),
     true,
@@ -570,9 +401,11 @@ try {
   const systemText = await page.locator('#systemPanel').innerText();
   assert.match(systemText, /累计开奖\n1,288 次/);
   assert.match(systemText, /当前保留 18 条 · 累计中奖 3,512 人次 · 历史序号与保留记录 · 更新于/);
+  await page.getByRole('tab', { name: '事件排查', exact: true }).click();
+  assert.equal(await page.locator('#systemEventPanel details').first().getByText('技术详情', { exact: true }).isVisible(), true);
+  await page.getByRole('tab', { name: '安全与 HTTP', exact: true }).click();
   assert.equal(await page.locator('#requestErrorPanel').getByText('GET /api/missing', { exact: true }).isVisible(), true);
   assert.equal(await page.locator('#requestErrorPanel').getByText(/weibo\.com\/ajax\/statuses\/repostTimeline · 429/).isVisible(), true);
-  assert.equal(await page.locator('#systemEventPanel details').getByText('技术详情', { exact: true }).isVisible(), true);
   const taxonomyText = await page.locator('#errorTaxonomyPanel').innerText();
   assert.match(taxonomyText, /微博抓取/);
   assert.match(taxonomyText, /错误码 scanner-probe/);
@@ -644,7 +477,7 @@ try {
   await loadMoreButton.press('Enter');
   await appendRequest;
   await page.waitForFunction(() => document.querySelectorAll('.record-row').length === 4);
-  assert.equal(await page.locator('.record-row[data-index="2"]').evaluate((row) => row === document.activeElement), true);
+  await page.waitForFunction(() => document.querySelector('.record-row[data-index="2"]') === document.activeElement);
   assert.equal(await page.getByText('4 条', { exact: false }).first().isVisible(), true);
   await searchInput.fill('分页取消');
   await page.waitForFunction(() => document.querySelectorAll('.record-row').length === 2);
@@ -793,6 +626,26 @@ try {
     path: fileURLToPath(new URL('admin-system-mobile.png', outputDir)),
     fullPage: true,
   });
+  for (const scheme of ['light', 'dark']) {
+    await page.emulateMedia({ colorScheme: scheme });
+    for (const width of [320, 768, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      for (const tab of ['总览', '记录', '反馈', 'Cookie', '系统']) {
+        await page.getByRole('tab', { name: tab, exact: true }).click();
+        assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, `${scheme} ${width}px ${tab} 横向溢出`);
+      }
+    }
+    await page.getByRole('tab', { name: '总览', exact: true }).click();
+    await page.waitForFunction(() => {
+      const selected = document.querySelector('.tab-button.active').getBoundingClientRect();
+      const indicator = document.querySelector('.tab-indicator').getBoundingClientRect();
+      return Math.abs(selected.left - indicator.left) < 3;
+    });
+    const colors = await page.locator('body').evaluate((element) => ({ color: getComputedStyle(element).color, background: getComputedStyle(element).backgroundColor }));
+    assert.equal(colors.background, scheme === 'dark' ? 'rgb(16, 16, 17)' : 'rgb(250, 251, 253)');
+    await page.screenshot({ path: fileURLToPath(new URL(`admin-overview-${scheme}.png`, outputDir)), fullPage: true });
+  }
+  assert.deepEqual(pageErrors, []);
   await context.close();
 } finally {
   await browser.close();

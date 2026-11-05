@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { hashAdminPassword } from '../src/lib/adminAuth.js';
-import { stopChildProcess } from './child-process.mjs';
+import { stopChildProcess, waitForChildExit } from './child-process.mjs';
 import { serverTestEnv } from './server-test-env.mjs';
 
 async function availablePort(host = '127.0.0.1') {
@@ -69,7 +69,7 @@ globalThis.fetch = async (input, options = {}) => {
     || url.hostname === 'weibo.cn'
     || url.hostname.endsWith('.weibo.cn')
   ) {
-    if (options.redirect !== 'error') {
+    if (!['error', 'manual'].includes(options.redirect)) {
       process.stdout.write('MOCK_REDIRECT_POLICY_FAILED\\n');
       throw new Error('微博请求未禁止重定向');
     }
@@ -186,16 +186,19 @@ if (launchReadyFile && launchReleaseFile && contextClosedFile) {
 const fetchGuard = pathToFileURL(fetchGuardFile).href;
 const cacheBulkDir = path.join(outputDir, 'runtime-cache', 'bulk');
 const cacheMarker = path.join(cacheBulkDir, 'entry-0000.cache');
-const staleCorruptBackup = path.join(outputDir, 'orphaned-state.json.corrupt-20260701000000-deadbeef');
-const freshCorruptBackup = path.join(outputDir, 'orphaned-state.json.corrupt-20260907000000-cafebabe');
+const backupStamp = (daysAgo) => new Date(Date.now() - daysAgo * 24 * 60 * 60_000)
+  .toISOString().replace(/\D/g, '').slice(0, 14);
+const staleBackupStamp = backupStamp(31);
+const staleCorruptBackup = path.join(outputDir, `orphaned-state.json.corrupt-${staleBackupStamp}-deadbeef`);
+const freshCorruptBackup = path.join(outputDir, `orphaned-state.json.corrupt-${backupStamp(1)}-cafebabe`);
 const cleanupFailureCorruptBackup = path.join(
   outputDir,
-  'cleanup-failure.json.corrupt-20260701000000-bad0cafe',
+  `cleanup-failure.json.corrupt-${staleBackupStamp}-bad0cafe`,
 );
 const oldActiveMetricsFile = path.join(outputDir, 'system-metrics.json');
 const bulkCorruptBackups = Array.from({ length: 120 }, (_, index) => path.join(
   outputDir,
-  `bulk-corrupt-${String(index).padStart(3, '0')}.json.corrupt-20260701000000-${index.toString(16).padStart(8, '0')}`,
+  `bulk-corrupt-${String(index).padStart(3, '0')}.json.corrupt-${staleBackupStamp}-${index.toString(16).padStart(8, '0')}`,
 ));
 await mkdir(cacheBulkDir, { recursive: true });
 await Promise.all(Array.from({ length: 1001 }, (_, index) => (
@@ -297,10 +300,10 @@ async function verifyShutdownBeforeListen() {
     );
     child.kill('SIGTERM');
     await writeFile(releaseFile, 'release', 'utf8');
-    const exit = await Promise.race([
-      new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))),
-      new Promise((_, reject) => setTimeout(() => reject(new Error('启动阶段停止测试未在 5 秒内退出')), 5000)),
-    ]);
+    const exit = await waitForChildExit(child, {
+      timeoutMs: 5000,
+      message: '启动阶段停止测试未在 5 秒内退出',
+    });
     assert.ok(exit.code === 0 || exit.signal === 'SIGTERM', targetOutput.join(''));
     assert.doesNotMatch(targetOutput.join(''), /Sameko Weibo Lottery running at/);
   } finally {
@@ -330,13 +333,10 @@ async function verifyProductionWithoutApiRefused() {
     });
 
     try {
-      const exit = await Promise.race([
-        new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))),
-        new Promise((_, reject) => setTimeout(
-          () => reject(new Error(`生产环境无 API_KEY 启动测试超时：${targetHost}`)),
-          15_000,
-        )),
-      ]);
+      const exit = await waitForChildExit(child, {
+        timeoutMs: 15_000,
+        message: `生产环境无 API_KEY 启动测试超时：${targetHost}`,
+      });
       assert.equal(exit.code, 1, targetOutput.join(''));
       assert.equal(exit.signal, null, targetOutput.join(''));
       assert.match(targetOutput.join(''), /Refusing to start in production without API_KEY/);
@@ -356,13 +356,10 @@ async function verifyRejectedStartupConfiguration(name, extraEnv, expectedMessag
   const child = spawnServer({ targetPort, targetOutputDir, targetOutput, extraEnv });
 
   try {
-    const exit = await Promise.race([
-      new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal }))),
-      new Promise((_, reject) => setTimeout(
-        () => reject(new Error(`无效启动配置测试超时：${name}`)),
-        15_000,
-      )),
-    ]);
+    const exit = await waitForChildExit(child, {
+      timeoutMs: 15_000,
+      message: `无效启动配置测试超时：${name}`,
+    });
     assert.equal(exit.code, 1, targetOutput.join(''));
     assert.equal(exit.signal, null, targetOutput.join(''));
     assert.match(targetOutput.join(''), expectedMessage);
@@ -672,7 +669,9 @@ try {
 
   const sameClientShared = await startJob('999999');
   assert.equal(sameClientShared.status, 202);
-  assert.ok((await sameClientShared.json()).cancelToken);
+  const sameClientSharedBody = await sameClientShared.json();
+  assert.ok(sameClientSharedBody.cancelToken);
+  assert.equal(sameClientSharedBody.jobId, hangingBody.jobId);
   const sameClientOverflow = await startJob('999999');
   assert.equal(sameClientOverflow.status, 429);
 
@@ -687,14 +686,33 @@ try {
   const overSubscribed = await startJob('999999', '203.0.113.11');
   assert.equal(overSubscribed.status, 429);
 
+  const invalidCancellation = await api(`/api/weibo/reposts/jobs/${hangingBody.jobId}`, {
+    method: 'DELETE',
+    headers: { 'x-job-cancel-token': hangingBody.readToken },
+  });
+  assert.equal(invalidCancellation.status, 403, '读取凭据不能用于取消任务');
+  const cancelledSubscriber = await api(`/api/weibo/reposts/jobs/${hangingBody.jobId}`, {
+    method: 'DELETE',
+    headers: { 'x-job-cancel-token': hangingBody.cancelToken },
+  });
+  assert.equal(cancelledSubscriber.status, 200);
+  assert.equal((await cancelledSubscriber.json()).detached, true);
+  const detachedRead = await api(`/api/weibo/reposts/jobs/${hangingBody.jobId}`, {
+    headers: { 'x-job-read-token': hangingBody.readToken },
+  });
+  assert.equal(detachedRead.status, 403, '已取消的订阅不能继续读取');
+  const remainingRead = await api(`/api/weibo/reposts/jobs/${hangingBody.jobId}`, {
+    headers: { 'x-job-read-token': sameClientSharedBody.readToken },
+  });
+  assert.equal(remainingRead.status, 200);
+  assert.equal((await remainingRead.json()).status, 'running', '一个页面取消不能中止其他页面共享的抓取');
+
   const startedShutdownAt = Date.now();
   server.kill('SIGTERM');
-  const exit = await Promise.race([
-    new Promise((resolve) => server.once('exit', (code, signal) => resolve({ code, signal }))),
-    new Promise((_, reject) => setTimeout(() => reject(new Error(
-      `服务未在 ${SHUTDOWN_TIMEOUT_MS / 1000} 秒内退出\n${output.join('')}`,
-    )), SHUTDOWN_TIMEOUT_MS)),
-  ]);
+  const exit = await waitForChildExit(server, {
+    timeoutMs: SHUTDOWN_TIMEOUT_MS,
+    message: () => `服务未在 ${SHUTDOWN_TIMEOUT_MS / 1000} 秒内退出\n${output.join('')}`,
+  });
   assert.ok(exit.code === 0 || exit.signal === 'SIGTERM');
   assert.ok(Date.now() - startedShutdownAt < SHUTDOWN_TIMEOUT_MS);
   if (process.platform !== 'win32') assert.match(output.join(''), /MOCK_FETCH_ABORTED/);

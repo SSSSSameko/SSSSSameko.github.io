@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { stopChildProcess } from './child-process.mjs';
+import { stopChildProcess, waitForChildExit } from './child-process.mjs';
 import { serverTestEnv } from './server-test-env.mjs';
 
 const rootDir = fileURLToPath(new URL('..', import.meta.url));
@@ -81,7 +81,7 @@ try {
   assert.doesNotMatch(adminHtml, /\/admin\/admin\.(?:css|js)/);
   assert.equal(admin.headers.get('x-robots-tag'), 'noindex, nofollow');
 
-  for (const asset of ['admin.js', 'admin.css', 'api-response.js', 'admin-status.js', 'diagnostics.js']) {
+  for (const asset of ['admin.js', 'admin.css', 'admin-export.js', 'admin-diagnostics.js', 'admin-diagnostics-view.js', 'api-response.js', 'admin-status.js', 'diagnostics.js']) {
     const response = await fetch(`${running.baseUrl}${customPath}/${asset}`);
     assert.equal(response.status, 200, `自定义后台路径应能加载 ${asset}`);
   }
@@ -108,13 +108,10 @@ try {
   failingChild.stdout.on('data', (chunk) => failingOutput.push(chunk.toString()));
   failingChild.stderr.on('data', (chunk) => failingOutput.push(chunk.toString()));
   try {
-    const exit = await Promise.race([
-      new Promise((resolve) => failingChild.once('exit', (code, signal) => resolve({ code, signal }))),
-      new Promise((_, reject) => setTimeout(
-        () => reject(new Error('非法 ADMIN_BASE_PATH 启动测试超时')),
-        15_000,
-      )),
-    ]);
+    const exit = await waitForChildExit(failingChild, {
+      timeoutMs: 15_000,
+      message: '非法 ADMIN_BASE_PATH 启动测试超时',
+    });
     assert.equal(exit.code, 1, failingOutput.join(''));
     assert.match(failingOutput.join(''), /ADMIN_BASE_PATH must be a path/);
   } finally {

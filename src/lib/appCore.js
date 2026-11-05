@@ -1,3 +1,5 @@
+import { knownDrawCount } from './repostResponse.js';
+
 const SOURCE_LABELS = { mobile: '微博公开转发', manual: '手动名单', official: '官方接口' };
 
 const PROVIDER_LABELS = {
@@ -91,13 +93,29 @@ export function buildFilterSummary({ keyword, mentionMin, uniqueByUser, excludeP
 
 export function candidateLoadWarning(meta) {
   if (!meta || meta.complete !== false) return '';
+  const total = knownDrawCount(meta.totalNumber);
+  const visible = knownDrawCount(meta.visibleNumber);
+  const range = total === null
+    ? `${visible === null ? '' : `已取得 ${visible} 条。`}上游总数未知，无法确认名单完整性，请核对后开奖。`
+    : visible !== null && visible < total
+      ? `已取得 ${visible} / ${total} 条，仍差 ${total - visible} 条。` : '';
+  if (Number(meta.identityUncertainCount) > 0) {
+    return `${range}部分转发缺少可核对的标识，无法确认跨渠道去重，请核对名单后开奖。`;
+  }
+  if (meta.stopReason === 'stable-small-gap') {
+    return `${range}两次核对未发现新增，已停止自动补抓；可重新载入重试。`;
+  }
+  if (['within-tolerance', 'large-list-tolerance'].includes(meta.stopReason)) {
+    return `${range}已达到补抓停止阈值，当前为部分名单，请核对后开奖。`;
+  }
   const warnings = Array.isArray(meta.warnings)
     ? [...new Set(meta.warnings.map((item) => String(item || '').trim()).filter(Boolean))]
     : [];
   const important = warnings.filter((message) => {
     return /失败|停止|上限|最多|风控|取消/.test(message);
   });
-  return important.slice(-2).join('；');
+  return [range, important.slice(-2).join('；')].filter(Boolean).join(' ')
+    || '当前无法确认名单完整性，请核对候选范围后开奖。';
 }
 
 export function candidateCutoffInfo(value, now = Date.now()) {

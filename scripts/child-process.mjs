@@ -2,6 +2,35 @@ function hasExited(child) {
   return !child || child.exitCode !== null || child.signalCode !== null;
 }
 
+export function waitForChildExit(child, { timeoutMs = 5000, message } = {}) {
+  if (hasExited(child)) return Promise.resolve({ code: child?.exitCode, signal: child?.signalCode });
+
+  return new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.removeListener('exit', onExit);
+      child.removeListener('error', onError);
+    };
+    const onExit = (code, signal) => {
+      cleanup();
+      resolve({ code, signal });
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+
+    child.once('exit', onExit);
+    child.once('error', onError);
+    timer = setTimeout(() => {
+      cleanup();
+      const description = typeof message === 'function' ? message() : message;
+      reject(new Error(description || `子进程 ${child.pid || '-'} 等待退出超时`));
+    }, timeoutMs);
+  });
+}
+
 function processGroupIsRunning(child) {
   if (process.platform === 'win32' || !child?.pid) return false;
   try {

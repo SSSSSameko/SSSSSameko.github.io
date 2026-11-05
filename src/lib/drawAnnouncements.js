@@ -54,7 +54,9 @@ function recordDetails(receipt) {
   return [
     label ? `开奖次数：${label}` : '',
     `开奖时间：${formatDateTime(receipt.drawnAt, { fallback: '时间未记录' })}`,
-    `候选范围：载入 ${receipt.candidateCount} 人 · 可抽 ${receipt.eligibleCount} 人`,
+    receipt.sourceMeta?.legacyCountsIncomplete
+      ? `候选范围：可抽 ${receipt.eligibleCount} 条 · 旧版记录未保存候选总数`
+      : `候选范围：载入 ${receipt.candidateCount} 条候选 · 可抽 ${receipt.eligibleCount} 条`,
     `筛选规则：${filterText}`,
     `随机规则：${DRAW_RANDOM_ALGORITHM}`,
   ].filter(Boolean);

@@ -178,7 +178,7 @@ function ManualSourceFields({ controller: c, sheet }) {
             onChange={c.importCandidateFile}
           />
         </label>
-        <button type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false })}>替换名单</button>
+        <button type="button" className="v3-primary-action" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false })}>替换名单</button>
         <button type="button" onClick={c.addManualNames}>追加</button>
       </div>
     </div>

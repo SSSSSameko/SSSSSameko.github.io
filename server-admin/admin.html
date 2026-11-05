@@ -4,7 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="robots" content="noindex,nofollow">
-  <meta name="theme-color" content="#f4f5f9">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#101011" media="(prefers-color-scheme: dark)">
   <title>微博转发抽奖助手后台</title>
   <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -28,6 +29,7 @@
         <span id="lastUpdated">等待刷新</span>
       </div>
       <div class="topbar-actions hidden" id="topbarActions">
+        <button class="refresh-mode" id="autoRefreshBtn" type="button" aria-pressed="true" title="每分钟自动刷新运行数据">自动刷新</button>
         <button class="icon-button" id="refreshBtn" type="button" aria-label="刷新数据" title="刷新数据">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8.1 8.1 0 0 0-14.9-4M4 5v5h5M4 13a8.1 8.1 0 0 0 14.9 4M20 19v-5h-5"/></svg>
         </button>
@@ -92,6 +94,7 @@
         </div>
 
         <section class="metric-grid" id="metricGrid" aria-label="核心运行指标"></section>
+        <section class="attention-strip" id="attentionPanel" aria-label="需要关注"></section>
 
         <section class="overview-grid">
           <article class="panel chart-panel">
@@ -258,9 +261,39 @@
             <p class="eyebrow">服务器诊断</p>
             <h1>系统状态</h1>
           </div>
-          <span class="badge neutral">每 5 分钟采样</span>
+          <span class="badge neutral" id="diagnosticWindow">近期诊断窗口</span>
         </div>
-        <section class="system-layout">
+        <div class="system-tabs" role="tablist" aria-label="诊断分区">
+          <button id="diagnostic-tab-events" type="button" role="tab" aria-selected="true" aria-controls="diagnostic-events" data-system-tab="events">事件排查</button>
+          <button id="diagnostic-tab-crawls" type="button" role="tab" aria-selected="false" aria-controls="diagnostic-crawls" tabindex="-1" data-system-tab="crawls">抓取过程</button>
+          <button id="diagnostic-tab-resources" type="button" role="tab" aria-selected="false" aria-controls="diagnostic-resources" tabindex="-1" data-system-tab="resources">服务资源</button>
+          <button id="diagnostic-tab-security" type="button" role="tab" aria-selected="false" aria-controls="diagnostic-security" tabindex="-1" data-system-tab="security">安全与 HTTP</button>
+        </div>
+        <section id="diagnostic-events" role="tabpanel" aria-labelledby="diagnostic-tab-events" data-system-view="events">
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">按问题定位</p><h2>最近操作与异常</h2></div><button class="secondary-button" id="copyDiagnosticsBtn" type="button">复制诊断摘要</button></div>
+            <p class="diagnostic-hint">仅搜索服务器保留的近期事件，历史告警不代表当前仍故障。复制摘要仅包含计数与抓取编号。</p>
+            <div class="diagnostic-filters">
+              <label class="diagnostic-search">关键词<input type="search" id="eventSearch" placeholder="错误、微博编号、抓取编号…" autocomplete="off"></label>
+              <label>级别<select id="eventLevel"><option value="">全部级别</option><option value="critical">严重</option><option value="error">错误</option><option value="warning">警告</option><option value="info">信息</option></select></label>
+              <label>分类<select id="eventCategory"><option value="">全部分类</option></select></label>
+              <label>时间<select id="eventHours"><option value="">全部保留时间</option><option value="1">近 1 小时</option><option value="24">近 24 小时</option><option value="168">近 7 天</option></select></label>
+            </div>
+            <div class="diagnostic-results"><span id="eventResults" role="status" aria-live="polite"></span><button class="link-button" id="clearEventFilters" type="button">清除筛选</button></div>
+            <div class="event-list expanded" id="systemEventPanel"></div>
+            <button class="secondary-button diagnostic-more" id="moreEventsBtn" type="button" hidden>显示更多事件</button>
+          </article>
+        </section>
+        <section id="diagnostic-crawls" role="tabpanel" aria-labelledby="diagnostic-tab-crawls" data-system-view="crawls" hidden>
+          <article class="panel">
+            <div class="panel-head"><div><p class="eyebrow">按任务追踪</p><h2>抓取过程</h2></div><span class="badge neutral" id="crawlCount">0 个任务</span></div>
+            <p class="diagnostic-hint">按抓取编号关联各渠道的返回、新增与重复条数。缺少最终事件时不推断成功，数量达到也不代表平台所有转发均可见。</p>
+            <label class="diagnostic-search">查找任务<input type="search" id="crawlSearch" placeholder="微博编号或完整抓取编号…" autocomplete="off"></label>
+            <div id="crawlList" class="crawl-list"></div>
+            <button class="secondary-button diagnostic-more" id="moreCrawlsBtn" type="button" hidden>显示更多任务</button>
+          </article>
+        </section>
+        <section id="diagnostic-resources" role="tabpanel" aria-labelledby="diagnostic-tab-resources" data-system-view="resources" hidden>
           <article class="panel">
             <div class="panel-head">
               <div>
@@ -270,15 +303,16 @@
             </div>
             <div class="diagnostic-box" id="systemPanel"></div>
           </article>
+        </section>
+        <section class="system-layout" id="diagnostic-security" role="tabpanel" aria-labelledby="diagnostic-tab-security" data-system-view="security" hidden>
           <article class="panel">
             <div class="panel-head">
               <div>
-                <p class="eyebrow">事件</p>
-                <h2>最近操作与异常</h2>
+                <p class="eyebrow">请求</p>
+                <h2>HTTP 与上游响应</h2>
               </div>
             </div>
             <div class="diagnostic-box" id="requestErrorPanel"></div>
-            <div class="event-list expanded" id="systemEventPanel"></div>
           </article>
           <article class="panel">
             <div class="panel-head">

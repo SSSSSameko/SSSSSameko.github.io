@@ -149,12 +149,13 @@ await writeFile(cookieStoreFile, '{not-json', 'utf8');
 await writeFile(loginStateFile, '[]', 'utf8');
 await writeFile(feedbackFile, '{not-json', 'utf8');
 await writeFile(systemMetricsFile, 'x'.repeat(2 * 1024 * 1024 + 1), 'utf8');
-await Promise.all([
-  '20260820000000-a0000001',
-  '20260821000000-a0000002',
-  '20260822000000-a0000003',
-  '20260823000000-a0000004',
-].map((suffix) => writeFile(`${feedbackFile}.corrupt-${suffix}`, '{old-corrupt', 'utf8')));
+// Keep these fixtures inside the retention window regardless of the run date.
+// Fixed calendar dates eventually test age expiry instead of the two-file cap.
+await Promise.all([4, 3, 2, 1].map((daysAgo, index) => {
+  const stamp = new Date(Date.now() - daysAgo * 24 * 60 * 60_000)
+    .toISOString().replace(/\D/g, '').slice(0, 14);
+  return writeFile(`${feedbackFile}.corrupt-${stamp}-a000000${index + 1}`, '{old-corrupt', 'utf8');
+}));
 await writeFile(jsonRecoveryGuardFile, `
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -684,13 +685,39 @@ try {
   const plainAsset = await requestWithAgent(`/${scriptAssetPath}`);
   assert.equal(plainAsset.status, 200);
   assert.equal(plainAsset.headers['content-encoding'], undefined);
+  assert.match(String(plainAsset.headers.vary || ''), /accept-encoding/i);
   assert.ok(plainAsset.headers.etag);
+
+  const preferredPlainAsset = await requestWithAgent(`/${scriptAssetPath}`, {
+    headers: { 'accept-encoding': 'identity;q=1, br;q=0.4, gzip;q=0.2' },
+  });
+  assert.equal(preferredPlainAsset.status, 200);
+  assert.equal(preferredPlainAsset.headers['content-encoding'], undefined);
+  assert.equal(preferredPlainAsset.body, plainAsset.body);
+
+  const wildcardGzipAsset = await requestWithAgent(`/${scriptAssetPath}`, {
+    headers: { 'accept-encoding': 'br;q=0, *;q=1' },
+  });
+  assert.equal(wildcardGzipAsset.headers['content-encoding'], 'gzip');
+
+  const unacceptableAsset = await requestWithAgent(`/${scriptAssetPath}`, {
+    headers: { 'accept-encoding': 'br;q=0, gzip;q=0, identity;q=0' },
+  });
+  assert.equal(unacceptableAsset.status, 406);
+  assert.equal(unacceptableAsset.body, '');
+  assert.match(String(unacceptableAsset.headers.vary || ''), /accept-encoding/i);
 
   const notModifiedAsset = await requestWithAgent(`/${scriptAssetPath}`, {
     headers: { 'if-none-match': String(plainAsset.headers.etag) },
   });
   assert.equal(notModifiedAsset.status, 304);
   assert.equal(notModifiedAsset.body, '');
+  assert.match(String(notModifiedAsset.headers.vary || ''), /accept-encoding/i);
+
+  const weakNotModifiedAsset = await requestWithAgent(`/${scriptAssetPath}`, {
+    headers: { 'if-none-match': `W/${String(plainAsset.headers.etag)}` },
+  });
+  assert.equal(weakNotModifiedAsset.status, 304);
 
   const headAsset = await requestWithAgent(`/${scriptAssetPath}`, { method: 'HEAD' });
   assert.equal(headAsset.status, 200);
@@ -706,8 +733,12 @@ try {
   const sourceConfigPath = path.resolve(fileURLToPath(new URL('..', import.meta.url)), 'static/config.js');
   const originalSourceConfig = await readFile(sourceConfigPath, 'utf8');
   try {
+    const fixedConfigTime = new Date(Date.now() - 60_000);
+    await utimes(sourceConfigPath, fixedConfigTime, fixedConfigTime);
+    await (await fetch(`${baseUrl}/config.js`)).arrayBuffer();
     const probe = '\n// runtime-config-source-probe\n';
     await writeFile(sourceConfigPath, `${originalSourceConfig}${probe}`, 'utf8');
+    await utimes(sourceConfigPath, fixedConfigTime, fixedConfigTime);
     const liveConfig = await fetch(`${baseUrl}/config.js`);
     const liveConfigText = await liveConfig.text();
     assert.ok(liveConfigText.includes('runtime-config-source-probe'), 'config.js 未下发源目录文件');
@@ -1539,6 +1570,11 @@ try {
   });
   assert.equal(drawDetail.status, 200);
   const storedDraw = (await drawDetail.json()).item;
+  assert.equal(storedDraw.totalCount, null);
+  assert.equal(storedDraw.eligibleCount, null);
+  assert.equal(storedDraw.sourceMeta.totalNumber, null);
+  assert.equal(storedDraw.sourceMeta.visibleNumber, null);
+  assert.equal(storedDraw.sourceMeta.rawVisibleNumber, null);
   const storedWinner = storedDraw.winners[0];
   assert.deepEqual(Object.keys(storedWinner).sort(), ['avatar', 'prizeName', 'screenName', 'uid']);
   assert.equal(storedDraw.audit.rules.filters.blocklistCount, 3);
@@ -1559,6 +1595,24 @@ try {
   const secondManualIdempotentBody = await secondManualIdempotent.json();
   assert.equal(secondManualIdempotentBody.duplicate, true);
   assert.equal(secondManualIdempotentBody.file, firstManualIdempotentBody.file);
+
+  // Offline results can be restored weeks later. Retrying must retain their identity.
+  const restoredDrawPayload = {
+    ...manualIdempotentPayload,
+    drawnAt: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+    audit: { seed: 'restored-result-seed', candidateDigest: 'restored-list' },
+  };
+  const restoredResponses = await Promise.all(Array.from({ length: 3 }, () => saveDraw(restoredDrawPayload)));
+  const restoredBodies = await Promise.all(restoredResponses.map(async (response) => {
+    assert.equal(response.status, 200);
+    return response.json();
+  }));
+  assert.equal(new Set(restoredBodies.map((body) => body.file)).size, 1);
+  assert.equal(restoredBodies.filter((body) => body.duplicate).length, 2);
+  const restoredDetail = await fetch(`${baseUrl}/api/admin/draws/${encodeURIComponent(restoredBodies[0].file)}`, {
+    headers: { cookie: sessionCookie },
+  });
+  assert.equal((await restoredDetail.json()).item.drawnAt, restoredDrawPayload.drawnAt);
 
   const canonicalStatusId = '900000000003';
   const canonicalDraw = await saveDraw({
@@ -1717,14 +1771,26 @@ try {
   assert.equal(duplicateWinnerAcrossPrizes.status, 400);
   assert.match((await duplicateWinnerAcrossPrizes.json()).error, /重复出现/);
 
+  const changedSourceTotal = await saveDraw({
+    source: 'mobile',
+    statusId: '992008',
+    totalCount: 2,
+    eligibleCount: 2,
+    sourceMeta: { totalNumber: 1, visibleNumber: 2, rawVisibleNumber: 2 },
+    winners: [{ uid: 'changed-source-winner', screenName: '边界测试' }],
+  });
+  assert.equal(changedSourceTotal.status, 200, 'an upstream counter can lag behind the collected list');
+  const changedSourceBody = await changedSourceTotal.json();
+  const changedSourceRecord = JSON.parse(await readFile(path.join(drawsDir, changedSourceBody.file), 'utf8'));
+  assert.equal(changedSourceRecord.sourceMeta.totalNumber, 1);
+  assert.equal(changedSourceRecord.sourceMeta.visibleNumber, 2);
   const invalidSourceCounts = await saveDraw({
-    source: 'manual',
-    statusUrl: 'https://weibo.com/123456/InvalidSourceCounts',
-    sourceMeta: { totalNumber: 1, visibleNumber: 2 },
+    source: 'mobile',
+    sourceMeta: { visibleNumber: 2, rawVisibleNumber: 1 },
     winners: [{ uid: 'invalid-source-winner', screenName: '边界测试' }],
   });
   assert.equal(invalidSourceCounts.status, 400);
-  assert.match((await invalidSourceCounts.json()).error, /来源可见数不能超过来源总数/);
+  assert.match((await invalidSourceCounts.json()).error, /来源原始可见数不能少于去重后的可见数/);
 
   const malformedWinner = await saveDraw({
     source: 'manual',
@@ -1735,6 +1801,10 @@ try {
   const firstLinkedPayload = {
     source: 'mobile',
     statusUrl: 'https://weibo.com/123456/LinkedDraw',
+    sourceMeta: { provider: 'cookie', providers: ['desktop-cookie'], totalNumber: 200,
+      visibleNumber: 160, rawVisibleNumber: 160, complete: false,
+      crawlId: 'fixture-crawl-trace', loadedAt: '2026-11-05T00:00:00.000Z',
+      stopReason: 'large-list-tolerance', missingCount: 40, tolerance: 40 },
     drawnAt: recentDrawnAt(),
     audit: { seed: 'linked-seed-1', candidateDigest: 'candidate-list-v1' },
     results: [{ prize: { name: '一等奖', count: 1 }, winners: [{ uid: 'linked-1', screenName: '甲' }] }],
@@ -1744,6 +1814,17 @@ try {
   const firstLinkedBody = await firstLinkedDraw.json();
   assert.equal(firstLinkedBody.drawNumber, 1);
   assert.equal(firstLinkedBody.drawCount, 1);
+  const linkedSource = JSON.parse(await readFile(path.join(drawsDir, firstLinkedBody.file), 'utf8')).sourceMeta;
+  assert.equal(linkedSource.crawlId, 'fixture-crawl-trace');
+  assert.equal(linkedSource.loadedAt, firstLinkedPayload.sourceMeta.loadedAt);
+  const linkedDetail = await fetch(`${baseUrl}/api/admin/draws/${encodeURIComponent(firstLinkedBody.file)}`, {
+    headers: { cookie: sessionCookie },
+  });
+  assert.equal((await linkedDetail.json()).item.sourceMeta.loadedAt, linkedSource.loadedAt);
+  assert.equal(linkedSource.stopReason, 'large-list-tolerance');
+  assert.equal(linkedSource.complete, false);
+  assert.equal(linkedSource.missingCount, 40);
+  assert.equal(linkedSource.tolerance, 40);
 
   const duplicateLinkedDraw = await saveDraw(firstLinkedPayload);
   assert.equal(duplicateLinkedDraw.status, 200);

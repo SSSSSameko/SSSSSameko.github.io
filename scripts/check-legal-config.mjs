@@ -23,7 +23,7 @@ try {
 
 const legal = sandbox.window.WEIBO_DRAW_LEGAL;
 // 这里只强制要求两项：运营者署名和一条有效的联系渠道。
-// 地址、托管商、机房区域、保存规则属于可自选披露内容，填写时才校验。
+// 其余字段在工程检查中可选、填写时才校验，不代表依法无需披露，也不验证事实真实性。
 const requiredFields = {
   operatorName: { label: 'operatorName（运营者名称或姓名）', maxLength: 240 },
   privacyContact: { label: 'privacyContact（有效隐私联系渠道）', maxLength: 240 },

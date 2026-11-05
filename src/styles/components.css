@@ -1310,54 +1310,6 @@ button {
   font-weight: 680;
 }
 
-/* Tab bar */
-
-.root-tabbar {
-  right: 10px;
-  bottom: var(--safe-bottom);
-  left: 10px;
-  height: 70px;
-  padding: 6px;
-  border-color: rgba(255, 255, 255, 0.94);
-  border-radius: 25px;
-  background: rgba(252, 253, 255, 0.82);
-  -webkit-backdrop-filter: saturate(160%) blur(20px);
-  backdrop-filter: saturate(160%) blur(20px);
-  box-shadow:
-    0 18px 44px rgba(43, 50, 64, 0.16),
-    0 2px 8px rgba(43, 50, 64, 0.04),
-    inset 0 1px 0 rgba(255, 255, 255, 0.98);
-}
-
-.root-tabbar .tab-highlight {
-  top: 5px;
-  bottom: 5px;
-  border: 0.5px solid rgba(255, 255, 255, 0.96);
-  border-radius: 19px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow:
-    0 7px 17px rgba(45, 53, 68, 0.09),
-    inset 0 1px 0 #fff;
-}
-
-.root-tabbar button {
-  min-height: 56px;
-  color: #585d68;
-  font-size: 11px;
-  font-weight: 560;
-  transition: color 180ms var(--ease-out);
-}
-
-.root-tabbar button svg {
-  width: 20px;
-  height: 20px;
-}
-
-.root-tabbar button.is-active {
-  color: var(--live-blue);
-  font-weight: 650;
-}
-
 /* Notices */
 
 .flow-notice {
@@ -4730,7 +4682,7 @@ button {
   }
 
   .draw-studio.is-empty .v3-text-action {
-    min-height: 38px;
+    min-height: 44px;
   }
 }
 
@@ -4867,7 +4819,7 @@ button {
   }
 
   .root-view[data-root-view="home"] .draw-studio.is-empty .v3-text-action {
-    min-height: 40px;
+    min-height: 44px;
   }
 }
 
@@ -5115,22 +5067,6 @@ button {
 }
 
 @media (prefers-color-scheme: dark) {
-  .root-tabbar {
-    border-color: rgba(255, 255, 255, 0.1);
-    background: rgba(18, 21, 27, 0.86);
-    box-shadow:
-      0 18px 42px rgba(0, 0, 0, 0.42),
-      inset 0 1px 0 rgba(255, 255, 255, 0.08);
-  }
-
-  .root-tabbar .tab-highlight {
-    border-color: rgba(255, 255, 255, 0.12);
-    background: #242a35;
-    box-shadow:
-      0 6px 14px rgba(0, 0, 0, 0.34),
-      inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  }
-
   .draw-studio {
     border-color: rgba(255, 255, 255, 0.1);
     background: rgba(22, 25, 32, 0.88);

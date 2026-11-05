@@ -205,14 +205,30 @@ assert.ok(installer.indexOf(swappedFlag, installer.indexOf(swapCommand)) > insta
 assert.match(installer, /Environment=PORT=\.\*\|Environment=PORT=\$\{health_port\}/);
 assert.doesNotMatch(installer, /current_link_replacement/);
 
-for (const asset of ['admin.html', 'admin.css', 'admin.js', 'admin-list-state.js']) {
+for (const asset of ['admin.html', 'admin.css', 'admin.js', 'admin-list-state.js', 'admin-export.js', 'admin-diagnostics-view.js']) {
   assert.match(installer, new RegExp(`server-admin/${asset.replace('.', '\\.')}\\b`));
+}
+for (const module of [
+  'server/http/static-assets.mjs',
+  'server/security/avatar-host-policy.mjs',
+  'server/storage/atomic-replace.mjs',
+  'server/weibo/candidate-collection.mjs',
+  'server/weibo/fallback-policy.mjs',
+  'server/weibo/timeline-parsers.mjs',
+  'server/weibo/response-policy.mjs',
+]) {
+  assert.ok(installer.includes(module), `Release staging must require ${module}`);
 }
 assert.match(installer, /src\/lib\/apiResponse\.js\b/);
 assert.match(installer, /src\/lib\/adminStatus\.js\b/);
 assert.match(installer, /src\/lib\/diagnostics\.js\b/);
+assert.ok(installer.includes('src/lib/adminDiagnostics.js'));
+assert.ok(installer.includes('request(`${adminBase}/admin-diagnostics.js`)'));
+assert.ok(installer.includes('request(`${adminBase}/admin-diagnostics-view.js`)'));
 assert.match(installer, /request\(`\$\{adminBase\}\/admin-status\.js`\)/);
 assert.match(installer, /request\(`\$\{adminBase\}\/diagnostics\.js`\)/);
+assert.match(installer, /request\(`\$\{adminBase\}\/admin-list-state\.js`\)/);
+assert.match(installer, /request\(`\$\{adminBase\}\/admin-export\.js`\)/);
 assert.match(installer, /ADMIN_BASE_PATH/);
 assert.match(installer, /admin_base_path/);
 
