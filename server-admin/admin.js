@@ -595,9 +595,11 @@ import {
       insufficient: '等待更多采样',
     }[trend.status] || '等待更多采样';
     els.memoryInsight.textContent = trendText;
-    els.memoryInsight.title = trendDeltaMb !== null
-      ? `${Math.abs(trendDeltaMb)} MB/小时`
-      : '';
+    els.memoryInsight.title = [
+      trend.since ? '仅分析本次启动后的样本' : '分析当前采样范围',
+      `${formatNumber(trend.sampleCount)} 个有效样本`,
+      trend.status !== 'insufficient' && trendDeltaMb !== null ? `${Math.abs(trendDeltaMb)} MB/小时` : '',
+    ].filter(Boolean).join(' · ');
     els.memoryInsight.classList.toggle('rising', trend.status === 'rising');
     if (samples.length < 2 || !memoryLimit) {
       els.memoryChart.innerHTML = '<div class="chart-empty">采样满 5 分钟后显示趋势</div>';

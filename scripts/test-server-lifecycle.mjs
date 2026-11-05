@@ -523,6 +523,12 @@ try {
   const preRestartCookie = (preRestartLogin.headers.get('set-cookie') || '').split(';')[0];
   assert.ok(preRestartCookie);
   await stopServer(server);
+  const previousSamples = JSON.parse(await readFile(oldActiveMetricsFile, 'utf8'));
+  await writeFile(oldActiveMetricsFile, JSON.stringify([
+    { at: new Date(Date.now() - 2 * 3_600_000).toISOString(), cgroupAnonMb: 300 },
+    { at: new Date(Date.now() - 3_600_000).toISOString(), cgroupAnonMb: 300 },
+    ...previousSamples,
+  ]), 'utf8');
   server = spawnServer();
   await waitUntil(async () => {
     try {
@@ -541,6 +547,13 @@ try {
       return false;
     }
   }, 15_000, () => `重启后的启动清理未完成\n${output.join('')}`);
+  const restartedSummary = await (await adminApi('/api/admin/summary')).json();
+  assert.equal(restartedSummary.system.memory.trend.since, restartedSummary.system.startedAt);
+  assert.equal(restartedSummary.system.memory.trend.status, 'insufficient');
+  assert.ok(restartedSummary.system.memory.trend.sampleCount <= 1,
+    '刚启动的进程不得将之前的内存样本用于当前趋势');
+  assert.ok(restartedSummary.system.memory.samples.some((sample) => sample.cgroupAnonMb === 300),
+    '历史内存图仍应保留重启前的采样');
   await assert.rejects(access(path.join(outputDir, retiredCacheName)), { code: 'ENOENT' });
   await assert.rejects(access(cleanupFailureCorruptBackup), { code: 'ENOENT' });
   const staleSessionAfterRestart = await api('/api/admin/session', {

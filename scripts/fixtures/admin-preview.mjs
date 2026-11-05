@@ -97,7 +97,7 @@ export const summary = {
       cgroupPeakMb: 420,
       cgroupAnonMb: 166,
       cgroupReclaimableMb: 72,
-      trend: { status: 'stable', perHourMb: 1.5 },
+      trend: { status: 'stable', perHourMb: 1.5, sampleCount: 24, since: '2026-11-05T00:00:00.000Z' },
       samples,
     },
     browser: {

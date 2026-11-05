@@ -1139,6 +1139,15 @@ try {
   });
   assert.equal(summary.status, 200, `${await summary.clone().text()}\n${output.join('')}`);
   const summaryBody = await summary.json();
+  assert.equal(summaryBody.system.memory.trend.since, summaryBody.system.startedAt);
+  if (!summaryBody.system.memory.cgroupAvailable) {
+    for (const key of ['cgroupCurrentMb', 'cgroupPeakMb', 'cgroupAnonMb', 'cgroupFileMb', 'cgroupKernelMb', 'cgroupReclaimableMb']) {
+      assert.equal(summaryBody.system.memory[key], null, `${key} 不可用时不能显示为零`);
+    }
+    assert.equal(summaryBody.system.memory.samples.at(-1).cgroupAnonMb, null);
+    assert.equal(summaryBody.system.memory.trend.status, 'insufficient');
+    assert.equal(summaryBody.system.memory.trend.sampleCount, 0);
+  }
   assert.ok((await readdir(authDir)).some((name) => name.startsWith('weibo-login-state.json.corrupt-')));
   assert.equal(summaryBody.system.runtime.avatarFetches, 0);
   assert.equal(summaryBody.system.runtime.runtimeCacheCleanup.removedCount, 1);

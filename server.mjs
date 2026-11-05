@@ -7260,10 +7260,10 @@ async function collectSystemSample(reason = 'interval') {
     reason,
     rssMb: bytesToMb(memory.rss),
     heapUsedMb: bytesToMb(memory.heapUsed),
-    cgroupCurrentMb: bytesToMb(cgroup?.current),
-    cgroupAnonMb: bytesToMb(cgroup?.anon),
-    cgroupFileMb: bytesToMb(cgroup?.file),
-    reclaimableMb: bytesToMb(cgroup?.reclaimable),
+    cgroupCurrentMb: cgroup ? bytesToMb(cgroup.current) : null,
+    cgroupAnonMb: cgroup ? bytesToMb(cgroup.anon) : null,
+    cgroupFileMb: cgroup ? bytesToMb(cgroup.file) : null,
+    reclaimableMb: cgroup ? bytesToMb(cgroup.reclaimable) : null,
     hostAvailableMb: bytesToMb(hostMemory.available),
     hostSlabMb: bytesToMb(hostMemory.slab),
     hostSlabUnreclaimableMb: bytesToMb(hostMemory.slabUnreclaimable),
@@ -7570,7 +7570,10 @@ async function adminSystemSummary() {
     edgeAccessLogDiagnostics(),
   ]);
   const recentSamples = memorySamples.slice(-288);
-  const memoryTrend = analyzeMemoryTrend(recentSamples.slice(-72));
+  const memoryTrend = {
+    ...analyzeMemoryTrend(recentSamples.slice(-72), 'cgroupAnonMb', { since: serverStartedAt }),
+    since: serverStartedAt,
+  };
   const now = Date.now();
   const nextRecycleAt = new Date(
     Date.parse(serverStartedAt) + serviceRecycleIntervalMs,
@@ -7608,12 +7611,12 @@ async function adminSystemSummary() {
       hostUsedMb: bytesToMb(hostMemory.used),
       hostUsedPercent: hostMemory.usedPercent,
       cgroupAvailable: Boolean(cgroupMemory),
-      cgroupCurrentMb: bytesToMb(cgroupMemory?.current),
-      cgroupPeakMb: bytesToMb(cgroupMemory?.peak),
-      cgroupAnonMb: bytesToMb(cgroupMemory?.anon),
-      cgroupFileMb: bytesToMb(cgroupMemory?.file),
-      cgroupKernelMb: bytesToMb(cgroupMemory?.kernel),
-      cgroupReclaimableMb: bytesToMb(cgroupMemory?.reclaimable),
+      cgroupCurrentMb: cgroupMemory ? bytesToMb(cgroupMemory.current) : null,
+      cgroupPeakMb: cgroupMemory ? bytesToMb(cgroupMemory.peak) : null,
+      cgroupAnonMb: cgroupMemory ? bytesToMb(cgroupMemory.anon) : null,
+      cgroupFileMb: cgroupMemory ? bytesToMb(cgroupMemory.file) : null,
+      cgroupKernelMb: cgroupMemory ? bytesToMb(cgroupMemory.kernel) : null,
+      cgroupReclaimableMb: cgroupMemory ? bytesToMb(cgroupMemory.reclaimable) : null,
       trend: memoryTrend,
       samples: recentSamples,
     },

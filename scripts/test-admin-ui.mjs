@@ -330,6 +330,7 @@ try {
   await cdp.send('Emulation.setEmulatedMedia', { media: '', features: [] });
   assert.equal(await page.locator('.metric-value').first().innerText(), '35.3%');
   assert.equal(await page.locator('.chart-scale').isVisible(), true);
+  assert.match(await page.locator('#memoryInsight').getAttribute('title'), /仅分析本次启动后的样本.*24 个有效样本/);
   assert.equal(await page.locator('#requestPanel').getByText('1 个共享任务', { exact: true }).isVisible(), true);
   assert.equal(await page.locator('#requestPanel').getByText(/1 \/ 2 个快照 · 时效 15 秒 · 累计合并 3 次/).isVisible(), true);
   assert.equal(await page.locator('#requestPanel').getByText(/1 运行 · 0 排队 · 3 暂存/).isVisible(), true);

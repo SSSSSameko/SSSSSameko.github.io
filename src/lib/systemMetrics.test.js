@@ -100,3 +100,30 @@ test('memory trend ignores cold-start growth after repeated keepalive runs plate
   assert.equal(summary.perHourMb, 0);
   assert.equal(summary.sampleCount, 4);
 });
+
+test('memory trend excludes previous process samples after a restart', () => {
+  const samples = [
+    { at: '2026-11-05T00:00:00Z', cgroupAnonMb: 300 },
+    { at: '2026-11-05T01:00:00Z', cgroupAnonMb: 300 },
+    { at: '2026-11-05T02:00:01Z', cgroupAnonMb: 20 },
+  ];
+  const options = { since: '2026-11-05T02:00:00Z' };
+  const startup = analyzeMemoryTrend(samples, 'cgroupAnonMb', options);
+  assert.equal(startup.status, 'insufficient');
+  assert.equal(startup.sampleCount, 1);
+  samples.push({ at: '2026-11-05T03:00:01Z', cgroupAnonMb: 50 });
+  const current = analyzeMemoryTrend(samples, 'cgroupAnonMb', options);
+  assert.equal(current.status, 'rising');
+  assert.equal(current.perHourMb, 30);
+  assert.equal(current.sampleCount, 2);
+});
+
+test('memory trend does not treat unavailable or malformed measurements as zero', () => {
+  const samples = [null, undefined, '', ' ', false, [], -1, Infinity, NaN].map((value, index) => ({
+    at: new Date(Date.UTC(2026, 10, 5, index)).toISOString(), cgroupAnonMb: value,
+  }));
+  assert.equal(analyzeMemoryTrend(samples).sampleCount, 0);
+  samples.push({ at: '2026-11-05T10:00:00Z', cgroupAnonMb: 0 });
+  assert.equal(analyzeMemoryTrend(samples).sampleCount, 1, 'a measured zero remains a valid sample');
+  assert.equal(analyzeMemoryTrend(samples).status, 'insufficient');
+});

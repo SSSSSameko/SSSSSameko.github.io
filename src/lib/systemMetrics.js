@@ -75,13 +75,16 @@ export function summarizeHostMemory(values = {}) {
   };
 }
 
-export function analyzeMemoryTrend(samples, field = 'cgroupAnonMb') {
+export function analyzeMemoryTrend(samples, field = 'cgroupAnonMb', { since = '' } = {}) {
+  const sinceMs = Date.parse(since);
   const points = (Array.isArray(samples) ? samples : [])
     .map((sample) => ({
       at: Date.parse(sample?.at || ''),
-      value: Number(sample?.[field]),
+      value: sample?.[field],
     }))
-    .filter((point) => Number.isFinite(point.at) && Number.isFinite(point.value));
+    .filter((point) => Number.isFinite(point.at) && Number.isFinite(point.value) && point.value >= 0
+      && (!Number.isFinite(sinceMs) || point.at >= sinceMs))
+    .sort((left, right) => left.at - right.at);
   if (points.length < 2) {
     return { status: 'insufficient', deltaMb: 0, perHourMb: 0, sampleCount: points.length };
   }
