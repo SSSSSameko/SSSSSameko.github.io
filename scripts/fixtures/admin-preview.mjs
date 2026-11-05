@@ -26,6 +26,7 @@ draws[0].statusUrl = 'javascript:alert(1)';
 draws[0].winners[0].screenName = '<img src=x onerror="window.__adminXss=1">';
 
 const samples = Array.from({ length: 24 }, (_, index) => ({
+  at: new Date(Date.now() - (23 - index) * 5 * 60_000).toISOString(),
   cgroupCurrentMb: 210 + index * 4,
   cgroupAnonMb: 120 + index * 2,
 }));

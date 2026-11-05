@@ -553,10 +553,10 @@ export default function DrawResultSheet({
         </div>
 
         <div className="receipt-actions">
-          <div className="receipt-actions-secondary">
+          <div className="receipt-actions-primary">
             <button
               type="button"
-              className="receipt-action-secondary"
+              className="receipt-action-primary"
               onClick={onSaveImage}
               disabled={isCapturing}
             >
@@ -567,6 +567,8 @@ export default function DrawResultSheet({
               <Copy />
               复制文案
             </button>
+          </div>
+          <div className="receipt-actions-secondary">
             {shareAvailable && (
               <button type="button" className="receipt-action-secondary" onClick={shareAnnouncement}>
                 <Share2 />

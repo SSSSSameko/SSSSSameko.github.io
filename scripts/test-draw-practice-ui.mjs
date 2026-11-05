@@ -23,14 +23,37 @@ try {
   await gotoUiPage(page, baseUrl);
   const currentStep = page.locator('.workspace-steps [aria-current="step"]');
   assert.match(await currentStep.innerText(), /载入名单/);
+  await page.getByRole('button', { name: '或手动导入候选名单' }).click();
+  const sourceSheet = page.getByRole('dialog', { name: '候选来源' });
+  const sourceInput = sourceSheet.getByRole('textbox', { name: '弹窗手动候选名单' });
+  await sourceInput.fill('小柚子\n森森\n月岛');
+  await sourceSheet.getByRole('button', { name: '替换名单', exact: true }).click();
+  const sourceNext = sourceSheet.getByRole('button', { name: '设置奖项并确认', exact: true });
+  await sourceNext.waitFor({ state: 'visible' });
+  await sourceInput.fill('小柚子\n森森\n月岛\n圆圆');
+  assert.equal(await sourceNext.count(), 0, '编辑来源后不可直接使用旧名单继续开奖');
+  await sourceSheet.getByRole('button', { name: '替换名单', exact: true }).click();
+  await sourceNext.click();
+  await sourceSheet.waitFor({ state: 'detached' });
+  const sourcePrizeSheet = page.getByRole('dialog', { name: '奖项设置' });
+  await sourcePrizeSheet.waitFor();
+  await page.waitForFunction(() => document.activeElement?.closest('[aria-label="奖项设置"]'));
+  await sourcePrizeSheet.getByRole('button', { name: '关闭奖项设置' }).click();
+  await sourcePrizeSheet.waitFor({ state: 'detached' });
+
   await page.locator('.root-tabbar button').filter({ hasText: '名单' }).click();
-  await page.getByRole('button', { name: '手动名单', exact: true }).click();
-  await page.getByRole('textbox', { name: '手动候选名单' }).fill('小柚子\n森森\n月岛\n圆圆');
+  await page.getByRole('button', { name: '收起来源', exact: true }).click();
+  assert.equal(await page.getByRole('textbox', { name: '手动候选名单', exact: true }).count(), 0);
+  await page.getByRole('button', { name: '编辑来源', exact: true }).click();
+  assert.equal(await page.getByRole('textbox', { name: '手动候选名单', exact: true }).inputValue(), '小柚子\n森森\n月岛\n圆圆', '收起来源不能清空输入');
+  await page.getByRole('textbox', { name: '手动候选名单', exact: true }).fill('小柚子\n森森');
+  assert.equal(await page.locator('.candidate-next-step').count(), 0, '名单页编辑后也必须重新载入');
+  await page.getByRole('textbox', { name: '手动候选名单', exact: true }).fill('小柚子\n森森\n月岛\n圆圆');
   await page.getByRole('button', { name: '替换名单', exact: true }).click();
 
-  await page.locator('.root-tabbar button').filter({ hasText: '抽奖' }).click();
   assert.match(await currentStep.innerText(), /确认奖项/);
   await page.getByRole('button', { name: /设置奖项并确认/ }).click();
+  assert.equal(await page.getByRole('tab', { name: '抽奖', exact: true, includeHidden: true }).getAttribute('aria-selected'), 'true', '从名单继续应返回开奖工作台');
   const prizeSheet = page.getByRole('dialog', { name: '奖项设置' });
   await prizeSheet.getByRole('button', { name: '确认奖项设置' }).click();
 

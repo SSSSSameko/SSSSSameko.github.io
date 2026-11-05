@@ -643,7 +643,7 @@ try {
       return Math.abs(selected.left - indicator.left) < 3;
     });
     const colors = await page.locator('body').evaluate((element) => ({ color: getComputedStyle(element).color, background: getComputedStyle(element).backgroundColor }));
-    assert.equal(colors.background, scheme === 'dark' ? 'rgb(16, 16, 17)' : 'rgb(250, 251, 253)');
+    assert.equal(colors.background, scheme === 'dark' ? 'rgb(16, 16, 17)' : 'rgb(255, 255, 255)');
     await page.screenshot({ path: fileURLToPath(new URL(`admin-overview-${scheme}.png`, outputDir)), fullPage: true });
   }
   assert.deepEqual(pageErrors, []);

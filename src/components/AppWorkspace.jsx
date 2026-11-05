@@ -134,6 +134,7 @@ export default function AppWorkspace({ controller: c }) {
   const [pageDirection, setPageDirection] = useState(1);
   const [candidateLimit, setCandidateLimit] = useState(CANDIDATE_PAGE_SIZE);
   const [selectedCandidateEntry, setSelectedCandidateEntry] = useState(null);
+  const [sourceFormCollapsed, setSourceFormCollapsed] = useState(false);
   const drawDeckRef = useRef(null);
   const drawSceneRef = useRef(null);
   const tabFrameRef = useRef(null);
@@ -266,6 +267,7 @@ export default function AppWorkspace({ controller: c }) {
     manual: '粘贴、填写或文件导入',
     official: '微博官方接口',
   }[c.source];
+  const sourceFormHidden = sourceFormCollapsed && c.candidateSourceReady && !c.isLoading;
   const primaryResult = c.results.find((item) => item.winners?.length);
   const primaryWinner = primaryResult?.winners?.[0];
   const stackOpen = Boolean(
@@ -390,6 +392,12 @@ export default function AppWorkspace({ controller: c }) {
     if (!nextTab) return;
     event.preventDefault();
     switchTab(nextTab, { focus: true });
+  };
+
+  const continueToDraw = () => {
+    if (c.isLoading || c.isDrawing) return;
+    switchTab('home');
+    c.requestDraw();
   };
 
   const confirmDraw = (close) => {
@@ -705,8 +713,8 @@ export default function AppWorkspace({ controller: c }) {
                         <span><small>开奖完成</small><strong>{c.drawCountText}</strong></span>
                       </div>
                       <div className="result-buttons">
-                        <button type="button" aria-label="设置并再次抽奖" title="设置并再次抽奖" onClick={() => c.requestDraw()}>{I.shuffle}</button>
-                        <button id="draw-result-trigger" type="button" aria-label="查看开奖结果" title="查看开奖结果" onClick={() => c.setSelectedReceipt(resultReceipt)}>{I.clock}</button>
+                        <button type="button" aria-label="设置并再次抽奖" onClick={() => c.requestDraw()}>{I.shuffle}<span>再次抽奖</span></button>
+                        <button id="draw-result-trigger" type="button" className="v3-primary-action" aria-label="查看开奖结果" onClick={() => c.setSelectedReceipt(resultReceipt)}>{I.clock}<span>查看结果</span></button>
                       </div>
                     </div>
                   </div>
@@ -791,8 +799,23 @@ export default function AppWorkspace({ controller: c }) {
             </header>
 
             <section className="content-section v3-source-section">
-              <SectionTitle title="载入名单" action={c.hasCandidates && c.source !== 'manual' ? '刷新' : ''} onAction={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: true })} />
-              <CandidateSourceForm controller={c} variant="page" />
+              <header className="section-header source-section-header">
+                <h2>{sourceFormHidden ? '名单来源' : '载入名单'}</h2>
+                <div>
+                  {c.hasCandidates && c.source !== 'manual' && (
+                    <button type="button" onClick={() => c.safeLoadCandidates({ jumpAfterLoad: false, forceRefresh: true })} disabled={c.isLoading}>刷新</button>
+                  )}
+                  {c.candidateSourceReady && (
+                    <button type="button" aria-controls="candidate-source-fields" aria-expanded={!sourceFormHidden} onClick={() => setSourceFormCollapsed(!sourceFormHidden)} disabled={c.isLoading}>
+                      {sourceFormHidden ? '编辑来源' : '收起来源'}{I.chevron}
+                    </button>
+                  )}
+                </div>
+              </header>
+              {sourceFormHidden && <p className="source-collapsed-summary">{sourceDetail} · 已载入 {c.loadedCandidateCount.toLocaleString()} 条</p>}
+              <div id="candidate-source-fields" hidden={sourceFormHidden}>
+                <CandidateSourceForm controller={c} variant="page" />
+              </div>
 
               <CandidateLoadProgress progress={c.progress} isLoading={c.isLoading} onCancel={c.cancelCandidateLoad} />
             </section>
@@ -809,6 +832,14 @@ export default function AppWorkspace({ controller: c }) {
 
             {c.hasCandidates && (
               <>
+                {c.candidateSourceReady && (
+                  <div className="candidate-next-step">
+                    <span><small>下一步</small><strong>{c.eligibleUserCount.toLocaleString()} 人可参与抽奖</strong></span>
+                    <button type="button" className="v3-primary-action" onClick={continueToDraw} disabled={c.isLoading || c.isDrawing}>
+                      {drawAction.icon}<span>{drawAction.title}</span>{I.chevron}
+                    </button>
+                  </div>
+                )}
                 <div className="search-field">
                   {I.users}
                   <input
@@ -999,7 +1030,7 @@ export default function AppWorkspace({ controller: c }) {
               <div className="grouped-list">
                 <AppListRow icon={I.clock} tone="coral" title="本机记录" detail={c.historyStorageAvailable ? `保存在当前浏览器的最近 ${DRAW_HISTORY_LIMIT} 条开奖记录` : '本机存储不可用，仅保留当前页面记录'} value={`${c.drawHistory.length} 条`} onClick={() => switchTab('history', { focus: true })} />
                 <AppListRow icon={I.badgeCheck} title="备用 Cookie" detail="服务器登录态失效时临时顶替" value={c.mobileCookie.trim() ? '已填写' : '未填写'} onClick={() => c.openSettings('cookie')} />
-                <AppListRow icon={I.refresh} tone="mint" title="后端连接" detail="候选载入、记录保存与头像服务" value={c.serviceStatusText} onClick={() => c.openSettings('backend')} />
+                <AppListRow icon={I.refresh} tone="mint" title="后端连接" detail="名单、开奖记录与头像服务" value={c.serviceStatusText} onClick={() => c.openSettings('backend')} />
               </div>
             </section>
 
@@ -1084,7 +1115,21 @@ export default function AppWorkspace({ controller: c }) {
           className="v3-editor-sheet v3-source-sheet"
           returnFocusId="candidate-source-row"
           footer={(close) => (
-            <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close()}>完成</button>
+            <div className="source-sheet-next">
+              {c.hasCandidates && (
+                <p>{c.candidateSourceReady
+                  ? `已载入 ${c.loadedCandidateCount.toLocaleString()} 条 · ${c.eligibleUserCount.toLocaleString()} 人可抽`
+                  : '来源内容已变更或尚未载入成功，请先重新载入。'}</p>
+              )}
+              <div className={c.candidateSourceReady ? 'source-sheet-actions has-next' : 'source-sheet-actions'}>
+                <button type="button" className={c.candidateSourceReady ? 'source-sheet-done' : 'flow-sheet-primary v3-primary-action'} onClick={() => close()}>完成</button>
+                {c.candidateSourceReady && (
+                  <button type="button" className="flow-sheet-primary v3-primary-action" onClick={() => close(continueToDraw)} disabled={c.isLoading || c.isDrawing}>
+                    {drawAction.icon}<span>{drawAction.title}</span>{I.chevron}
+                  </button>
+                )}
+              </div>
+            </div>
           )}
         >
           {() => <CandidateSourceForm controller={c} variant="sheet" />}

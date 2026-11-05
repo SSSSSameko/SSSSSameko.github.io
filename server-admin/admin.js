@@ -1,5 +1,5 @@
 import { listDisplayState } from './admin-list-state.js';
-import { formatDurationMs } from './admin-status.js';
+import { formatDurationMs, memoryChartSeries } from './admin-status.js';
 import { readJsonResponse } from './api-response.js';
 import { collectDrawRecords } from './admin-export.js';
 import { createDiagnosticsView, sourceEvidenceHtml } from './admin-diagnostics-view.js';
@@ -570,18 +570,6 @@ import {
     diagnosticsView.update(summary);
   }
 
-  function chartPoints(samples, field, plot, min, max) {
-    const range = Math.max(1, max - min);
-    return samples.map((sample, index) => {
-      const ratio = samples.length === 1 ? 0.5 : index / (samples.length - 1);
-      const x = plot.left + ratio * (plot.right - plot.left);
-      const rawValue = Number(sample[field] || 0);
-      const value = Math.max(min, Math.min(max, rawValue));
-      const y = plot.bottom - ((value - min) / range) * (plot.bottom - plot.top);
-      return `${Math.round(x * 10) / 10},${Math.round(y * 10) / 10}`;
-    }).join(' ');
-  }
-
   function renderMemoryChart(memory, service) {
     const samples = Array.isArray(memory.samples) ? memory.samples : [];
     const trend = memory.trend || {};
@@ -601,36 +589,40 @@ import {
       trend.status !== 'insufficient' && trendDeltaMb !== null ? `${Math.abs(trendDeltaMb)} MB/小时` : '',
     ].filter(Boolean).join(' · ');
     els.memoryInsight.classList.toggle('rising', trend.status === 'rising');
-    if (samples.length < 2 || !memoryLimit) {
-      els.memoryChart.innerHTML = '<div class="chart-empty">采样满 5 分钟后显示趋势</div>';
+    const chart = memoryChartSeries(samples, memoryLimit);
+    if (!chart.current.length && !chart.anonymous.length) {
+      els.memoryChart.innerHTML = '<div class="chart-empty">等待有效内存采样</div>';
       return;
     }
     const width = 720;
     const height = 190;
     const plot = { left: 72, right: width - 12, top: 14, bottom: height - 24 };
-    const percentageSamples = samples.map((sample) => ({
-      servicePercent: percentOf(sample.cgroupCurrentMb, memoryLimit),
-      anonymousPercent: percentOf(sample.cgroupAnonMb, memoryLimit),
-    }));
-    if (percentageSamples.some((sample) => sample.servicePercent === null || sample.anonymousPercent === null)) {
-      els.memoryChart.innerHTML = '<div class="chart-empty">等待有效内存采样</div>';
-      return;
-    }
-    const current = chartPoints(percentageSamples, 'servicePercent', plot, 0, 100);
-    const anon = chartPoints(percentageSamples, 'anonymousPercent', plot, 0, 100);
-    const area = `${plot.left},${plot.bottom} ${current} ${plot.right},${plot.bottom}`;
+    const seriesHtml = (segments, className, withArea = false) => segments.map((segment) => {
+      const points = segment.map((point) => ({
+        x: Math.round((plot.left + point.x * (plot.right - plot.left)) * 10) / 10,
+        y: Math.round((plot.bottom - Math.min(100, point.percent) / 100 * (plot.bottom - plot.top)) * 10) / 10,
+      }));
+      if (points.length === 1) return `<circle class="${className}" cx="${points[0].x}" cy="${points[0].y}" r="2.5"/>`;
+      const line = points.map(({ x, y }) => `${x},${y}`).join(' ');
+      const area = withArea ? `<polygon class="chart-area" points="${points[0].x},${plot.bottom} ${line} ${points.at(-1).x},${plot.bottom}"/>` : '';
+      return `${area}<polyline class="${className}" points="${line}"/>`;
+    }).join('');
+    const rangeText = `${formatDate(chart.from)} 至 ${formatDate(chart.to)}`;
+    const chartNote = chart.from === chart.to ? '当前仅有一个有效采样时刻' : chart.hasGaps ? '缺失数据或采样中断以断点显示' : '按实际采样时间显示';
     const grid = [100, 75, 50, 25, 0].map((value) => {
       const y = plot.bottom - (value / 100) * (plot.bottom - plot.top);
       return `<line class="chart-grid" x1="${plot.left}" x2="${plot.right}" y1="${y}" y2="${y}"/>`;
     }).join('');
     els.memoryChart.innerHTML = `
+      <div class="chart-plot">
       <div class="chart-scale" aria-hidden="true"><span>100%</span><span>75%</span><span>50%</span><span>25%</span><span>0%</span></div>
-      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="近 24 小时服务内存占上限比例">
+      <svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="服务内存占上限比例；${escapeHtml(rangeText)}；${chartNote}">
         ${grid}
-        <polygon class="chart-area" points="${area}"></polygon>
-        <polyline class="chart-line-current" points="${current}"></polyline>
-        <polyline class="chart-line-anon" points="${anon}"></polyline>
+        ${seriesHtml(chart.current, 'chart-line-current', true)}
+        ${seriesHtml(chart.anonymous, 'chart-line-anon')}
       </svg>
+      </div>
+      <div class="chart-caption"><span>${escapeHtml(rangeText)}</span><span>${chartNote}</span></div>
     `;
   }
 

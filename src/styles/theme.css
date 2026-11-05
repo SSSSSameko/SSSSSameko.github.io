@@ -65,8 +65,8 @@
   --studio-canvas: #ffffff;
   --studio-surface: #ffffff;
   --studio-raised: #ffffff;
-  --studio-muted: #f6f8fb;
-  --studio-stage: #f7faff;
+  --studio-muted: #f8f9fc;
+  --studio-stage: #fbfcfe;
   --studio-ink: #273345;
   --studio-secondary: #667386;
   --studio-line: #e7ecf2;
@@ -93,8 +93,8 @@
   --studio-button-radius: 999px;
   --studio-on-accent: #34435a;
   --studio-action-shadow: 0 2px 3px rgba(34, 62, 100, 0.04), 0 5px 12px rgba(34, 62, 100, 0.06);
-  --studio-shadow: 0 4px 18px rgba(34, 62, 100, 0.035);
-  --studio-object-shadow: 0 12px 28px rgba(34, 62, 100, 0.09), 0 2px 4px rgba(34, 62, 100, 0.025);
+  --studio-shadow: 0 2px 5px rgba(34, 62, 100, 0.025), 0 10px 28px rgba(34, 62, 100, 0.035);
+  --studio-object-shadow: 0 8px 24px rgba(34, 62, 100, 0.07), 0 2px 4px rgba(34, 62, 100, 0.025);
   --studio-floating-shadow: 0 6px 24px rgba(34, 62, 100, 0.08), 0 1px 4px rgba(34, 62, 100, 0.025);
   --studio-overlay: rgba(20, 20, 24, 0.3);
   --studio-selection: #ffffff;
@@ -103,10 +103,11 @@
   --sheet-glass: rgba(255, 255, 255, 0.98);
   --sheet-chrome: rgba(255, 255, 255, 0.94);
   --sheet-edge: rgba(255, 255, 255, 0.84);
-  --motion-sheet: 360ms;
+  --motion-sheet: 280ms;
   --studio-radius: 24px;
   --studio-control-radius: 16px;
   --studio-press: 120ms;
+  --motion-press: 120ms;
   --studio-transition: 220ms;
   --system-background: var(--studio-canvas);
   --content-background: var(--studio-surface);
@@ -531,6 +532,16 @@ button {
   background: var(--studio-muted);
   box-shadow: none;
 }
+.studio-app .search-field input {
+  background: transparent;
+  box-shadow: none;
+  border-radius: inherit;
+}
+.studio-app .search-field:focus-within {
+  border-color: var(--studio-accent);
+  background: var(--studio-surface);
+  box-shadow: 0 0 0 3px var(--studio-accent-soft);
+}
 
 .studio-app .v3-link-field {
   min-height: 48px;
@@ -708,9 +719,16 @@ button {
   font-weight: 600;
 }
 .studio-app .row-copy small {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  white-space: normal;
+  overflow-wrap: anywhere;
   margin-top: 4px;
   color: var(--studio-secondary);
   font-size: 12px;
+  line-height: 1.5;
+  font-weight: 450;
 }
 .studio-app ::selection { color: var(--studio-ink); background: var(--studio-blue-soft); }
 .studio-app :is(input, textarea) { caret-color: var(--studio-blue); }
@@ -860,7 +878,6 @@ button {
 .studio-app .history-list button:hover {
   background-color: var(--studio-accent-soft);
 }
-.studio-app .v3-source-form,
 .studio-app .history-summary > div,
 .studio-app .candidate-detail-identity,
 .studio-app .candidate-detail-facts,
@@ -869,6 +886,21 @@ button {
   border-radius: 16px;
   background: var(--studio-surface);
   box-shadow: none;
+}
+.studio-app .v3-source-form {
+  padding: 12px 0 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+.studio-app .v3-sheet-callout { background: var(--studio-muted); }
+.studio-app .v3-source-form .v3-textarea {
+  padding: 14px;
+  border-radius: var(--studio-control-radius);
+  background: var(--studio-surface);
 }
 
 /* Sheets share the same materials and sizing as the workspace. */
@@ -890,8 +922,8 @@ button {
 .studio-app .receipt-backdrop,
 .studio-app .v3-alert-backdrop {
   background: rgb(24 39 60 / calc(var(--sheet-scrim, 0.24) * var(--studio-scrim-strength)));
-  -webkit-backdrop-filter: blur(8px) saturate(110%);
-  backdrop-filter: blur(8px) saturate(110%);
+  -webkit-backdrop-filter: blur(5px);
+  backdrop-filter: blur(5px);
 }
 .studio-app .flow-sheet {
   border-radius: 24px 24px 0 0;
@@ -951,7 +983,7 @@ button {
 .studio-app .receipt-actions {
   border-color: var(--studio-line);
   background: var(--sheet-chrome);
-  box-shadow: none;
+  box-shadow: 0 -4px 16px rgba(34, 62, 100, 0.025);
 }
 .studio-app .flow-settings-list,
 .studio-app .flow-motion-setting,
@@ -978,9 +1010,9 @@ button {
 }
 .studio-app .v3-confirm-facts {
   overflow: hidden;
-  border: 1px solid var(--studio-line);
-  border-radius: 15px;
-  background: var(--studio-muted);
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 .studio-app .v3-confirm-facts > div {
   border-radius: 0;
@@ -1017,6 +1049,8 @@ button {
   .v3-empty-action,
   .v3-alert-dialog button:not(.is-destructive),
   .receipt-prize-controls button,
+  .source-sheet-done,
+  .result-buttons button:not(.v3-primary-action),
   .result-rail > header button
 ) {
   min-height: 44px;
@@ -1147,14 +1181,47 @@ button {
   color: var(--studio-warning);
 }
 .studio-app .v3-prize-item,
-.studio-app .receipt-summary,
 .studio-app .receipt-prize,
-.studio-app .receipt-audit,
 .studio-app .receipt-winner {
   border-color: var(--studio-line);
-  background: var(--studio-raised);
+  background: var(--studio-surface);
   box-shadow: none;
 }
+.studio-app .receipt-summary {
+  border-color: var(--studio-line);
+  background: var(--studio-surface);
+  box-shadow: var(--studio-shadow);
+}
+.studio-app .receipt-audit {
+  margin-top: 20px;
+  padding: 16px 2px 0;
+  border: 0;
+  border-top: 1px solid var(--studio-line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.studio-app .receipt-audit-method > span {
+  padding: 10px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.studio-app .v3-prize-confirm-summary {
+  gap: 0;
+  margin-block: 4px;
+}
+.studio-app .v3-prize-confirm-summary > span {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.studio-app .v3-prize-confirm-summary > span + span {
+  border-left: 1px solid var(--studio-line);
+}
+.studio-app .v3-prize-confirm-summary > span:first-child svg { color: var(--studio-blue); }
+.studio-app .v3-prize-confirm-summary > span:last-child svg { color: var(--studio-coral); }
 .studio-app .v3-stepper {
   border-color: var(--studio-line);
   border-radius: var(--studio-button-radius);
@@ -1200,6 +1267,91 @@ button {
   background: var(--studio-raised);
 }
 
+/* Keep the next action close to the information it uses. */
+.source-section-header > div { display: flex; align-items: center; gap: 12px; }
+.source-section-header button {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  color: var(--studio-accent);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 600;
+}
+.source-section-header button[aria-expanded='true'] svg { transform: rotate(-90deg); }
+.source-section-header button[aria-expanded='false'] svg { transform: rotate(90deg); }
+.source-collapsed-summary { margin: 0; color: var(--studio-secondary); font-size: 13px; line-height: 1.6; }
+.candidate-next-step {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+  padding-block: 8px 16px;
+  border-bottom: 1px solid var(--studio-line);
+}
+.candidate-next-step > span { display: grid; gap: 4px; }
+.candidate-next-step small { color: var(--studio-secondary); font-size: 11px; }
+.candidate-next-step strong { color: var(--studio-ink); font-size: 13px; font-weight: 600; }
+.candidate-next-step button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 10px 14px;
+  font-size: 12px;
+}
+.candidate-next-step button > svg:first-child { color: #b6573d; }
+.source-sheet-next > p {
+  margin: 0 0 10px;
+  text-align: center;
+  color: var(--studio-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.source-sheet-actions { display: grid; gap: 8px; }
+.source-sheet-actions.has-next { grid-template-columns: auto minmax(0, 1fr); }
+.source-sheet-done { min-width: 72px; padding-inline: 14px; }
+.studio-app .source-sheet-actions .flow-sheet-primary { gap: 7px; margin-top: 0; font-size: 13px; }
+.studio-app .draw-finished { flex-wrap: wrap; gap: 12px; }
+.studio-app .result-buttons { flex: 1 0 100%; gap: 8px; }
+.studio-app .result-buttons button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  gap: 8px;
+  width: auto;
+  min-height: 44px;
+  height: auto;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+.studio-app .result-buttons button svg { color: var(--studio-blue); }
+.studio-app .result-buttons button.v3-primary-action svg { color: #2868c7; }
+.studio-app .receipt-actions-primary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.studio-app .receipt-actions-secondary {
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 6px;
+}
+.studio-app .receipt-actions-secondary > .receipt-action-secondary:last-child:nth-child(odd) {
+  grid-column: auto;
+}
+.studio-app .receipt-actions-secondary button { gap: 5px; padding-inline: 5px; font-size: 12px; }
+.studio-app .receipt-actions-secondary svg { width: 16px; height: 16px; }
+.studio-app .receipt-action-primary > svg { color: #2868c7; }
+@media (min-width: 600px) {
+  .studio-app .result-buttons { flex: 0 1 auto; }
+}
+
 @media (hover: hover) and (pointer: fine) {
   .studio-app .navbar-actions button:hover {
     color: var(--studio-accent);
@@ -1228,12 +1380,12 @@ button {
 }
 .studio-app button:not([role='tab']):active:not(:disabled),
 .studio-app .v3-file-action:active {
-  opacity: 0.75;
+  opacity: 0.88;
 }
 .studio-app .v3-primary-action:active:not(:disabled),
 .studio-app .flow-sheet-primary:active:not(:disabled),
 .studio-app .receipt-actions button:active:not(:disabled) {
-  opacity: 0.75;
+  opacity: 0.88;
   transform: none;
 }
 
@@ -1248,7 +1400,7 @@ button {
   }
 }
 .studio-app:not([data-motion='reduced']) .workspace-heading {
-  animation: studio-heading-enter 480ms var(--ease-out) both;
+  animation: studio-heading-enter 240ms var(--ease-out) both;
 }
 
 @media (min-width: 900px) {

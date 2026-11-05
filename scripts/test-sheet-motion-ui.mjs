@@ -85,9 +85,11 @@ try {
     duration: getComputedStyle(element).transitionDuration,
   }));
   assert.match(material.blur, /blur\(24px\)/, '弹层应使用稳定的玻璃模糊');
-  assert.match(material.scrim, /blur\(8px\)/, '遮罩应轻柔模糊背景');
+  const backdropBlur = Number(material.scrim.match(/blur\(([\d.]+)px\)/)?.[1]);
+  assert.ok(backdropBlur > 0 && backdropBlur <= 8, '遮罩应保留轻微背景模糊，避免重度模糊');
   assert.ok(material.scrimAlpha > 0 && material.scrimAlpha < 0.16, '浅色遮罩应保留页面的明亮底色');
-  assert.match(material.duration, /0\.36s/, '弹层进场应使用统一时长');
+  const longestTransition = Math.max(...material.duration.split(',').map((value) => Number.parseFloat(value)));
+  assert.ok(longestTransition >= 0.2 && longestTransition <= 0.3, '弹层进场应在 200–300 毫秒内完成');
 
   const box = await grabber.boundingBox();
   assert.ok(box);

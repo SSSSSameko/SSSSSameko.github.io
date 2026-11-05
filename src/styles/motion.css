@@ -221,15 +221,11 @@ button:disabled {
 
 .root-navbar,
 .root-tabbar {
-  animation: chrome-enter 420ms var(--ease-out) both;
+  animation: chrome-enter 260ms var(--ease-out) both;
   transition:
     transform 300ms var(--ease-drawer),
     opacity 240ms var(--ease-out),
     box-shadow 260ms var(--ease-out);
-}
-
-.root-tabbar {
-  animation-delay: 50ms;
 }
 
 .root-view.is-active .root-scroll {
