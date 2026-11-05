@@ -77,6 +77,37 @@ export function verifyAdminSession(token, options = {}) {
   }
 }
 
+// Signing generations keep revoked sessions invalid even when the bounded
+// revocation store fills up. Rotation requires existing administrators to log in again.
+export function createAdminSessionRegistry({ username, secret, maxRevokedSessions = 1000 }) {
+  const revoked = new Map();
+  let signingSecret = `${secret}:${crypto.randomBytes(32).toString('hex')}`;
+  function prune(now) {
+    for (const [id, expiresAt] of revoked) {
+      if (expiresAt <= now) revoked.delete(id);
+    }
+  }
+  return {
+    create({ ttlMs, now = Date.now() } = {}) {
+      return createAdminSession({ username, secret: signingSecret, ttlMs, now });
+    },
+    verify(token, now = Date.now()) {
+      prune(now);
+      const session = verifyAdminSession(token, { username, secret: signingSecret, now });
+      return session && !revoked.has(session.jti) ? session : null;
+    },
+    revoke(session, now = Date.now()) {
+      prune(now);
+      if (session.exp > now) revoked.set(session.jti, session.exp);
+      if (revoked.size > maxRevokedSessions) {
+        signingSecret = `${secret}:${crypto.randomBytes(32).toString('hex')}`;
+        revoked.clear();
+      }
+    },
+    get revokedCount() { return revoked.size; },
+  };
+}
+
 export function parseCookieHeader(value) {
   const cookies = {};
   for (const part of String(value || '').split(';')) {

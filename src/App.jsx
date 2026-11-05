@@ -285,6 +285,7 @@ function App() {
   const repostLoadRef = useRef(null);
   const drawOperationRef = useRef(null);
   const drawSyncControllersRef = useRef(new Set());
+  const receiptRetryIdsRef = useRef(new Set());
   const drawHistoryMutationRevisionRef = useRef(0);
   const taskRevisionRef = useRef(0);
   const candidateLoadRevisionRef = useRef(0);
@@ -1952,32 +1953,57 @@ function App() {
 
   async function retrySaveReceipt(receiptInput) {
     const receipt = resolveReceipt(receiptInput);
+    if (receipt.recordState !== 'local' || receiptRetryIdsRef.current.has(receipt.id)
+      || syncingReceiptIds.has(receipt.id)) return null;
+    receiptRetryIdsRef.current.add(receipt.id);
+    const controller = new AbortController();
+    drawSyncControllersRef.current.add(controller);
+    setReceiptSyncing(receipt.id, true);
     const historyMutationRevision = drawHistoryMutationRevisionRef.current;
-    const saved = await saveResult({
-      silent: false,
-      updateCurrentTask: false,
-      source: receipt.source,
-      results: receipt.results,
-      statusId: receipt.statusId,
-      statusUrl: receipt.statusUrl,
-      sourceMeta: receipt.sourceMeta,
-      totalCount: receipt.candidateCount,
-      eligibleCount: receipt.eligibleCount,
-      audit: {
-        seed: receipt.seed,
-        drawnAt: receipt.drawnAt,
+    const taskRevision = taskRevisionRef.current;
+    try {
+      const saved = await saveResult({
+        silent: true,
+        throwOnError: true,
+        signal: controller.signal,
+        updateCurrentTask: false,
+        source: receipt.source,
+        results: receipt.results,
         statusId: receipt.statusId,
         statusUrl: receipt.statusUrl,
-        rules: receipt.rules,
-        candidateDigest: receipt.candidateDigest,
+        sourceMeta: receipt.sourceMeta,
+        totalCount: receipt.candidateCount,
         eligibleCount: receipt.eligibleCount,
-      },
-    });
-    if (!saved?.file) return;
-    const updated = await persistSavedReceipt(receipt, saved, historyMutationRevision);
-    if (!updated) return null;
-    setSelectedReceipt((current) => current?.id === receipt.id ? updated : current);
-    return updated;
+        audit: {
+          seed: receipt.seed,
+          drawnAt: receipt.drawnAt,
+          statusId: receipt.statusId,
+          statusUrl: receipt.statusUrl,
+          rules: receipt.rules,
+          candidateDigest: receipt.candidateDigest,
+          eligibleCount: receipt.eligibleCount,
+        },
+      });
+      if (!saved?.file) throw new Error('服务器没有返回开奖记录文件');
+      throwIfAborted(controller.signal);
+      const updated = await persistSavedReceipt(receipt, saved, historyMutationRevision);
+      if (!updated || controller.signal.aborted) return null;
+      setSelectedReceipt((current) => current?.id === receipt.id ? updated : current);
+      setPendingReceipt((current) => current?.id === receipt.id ? updated : current);
+      if (taskRevisionRef.current === taskRevision && receipt.source === source
+        && receipt.statusId && receipt.statusId === currentStatusId) {
+        acceptDrawCount(saved.drawCount);
+      }
+      showStatus('开奖记录已同步。', 'success');
+      return updated;
+    } catch (error) {
+      if (!controller.signal.aborted) showStatus(error.message, 'error');
+      return null;
+    } finally {
+      receiptRetryIdsRef.current.delete(receipt.id);
+      drawSyncControllersRef.current.delete(controller);
+      setReceiptSyncing(receipt.id, false);
+    }
   }
 
   async function createShareImage(receiptInput) {

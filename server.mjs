@@ -9,12 +9,11 @@ import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 import {
   adminSessionCookie,
-  createAdminSession,
+  createAdminSessionRegistry,
   createLoginLimiter,
   expiredAdminSessionCookie,
   parseCookieHeader,
   verifyAdminPassword,
-  verifyAdminSession,
 } from './src/lib/adminAuth.js';
 import {
   appendKeepaliveEvent,
@@ -356,7 +355,6 @@ const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleW
 const WEIBO_QR_LOGIN_URL = 'https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&url=https%3A%2F%2Fweibo.com%2F';
 const ADMIN_SESSION_COOKIE = 'sameko_admin_session';
 const COOKIE_CURRENT_PATH = '/v1/cookie/current';
-const MAX_REVOKED_ADMIN_SESSIONS = 1000;
 const jobs = new Map();
 const jobQueue = [];
 const rateLimitBuckets = new Map();
@@ -415,9 +413,8 @@ let profileCacheCleanupState = {
 };
 const adminLoginLimiter = createLoginLimiter({ maxAttempts: 5, windowMs: 15 * 60_000 });
 let adminPasswordChecksActive = 0;
-const revokedAdminSessions = new Map();
+const adminSessions = createAdminSessionRegistry({ username: adminUsername, secret: adminSessionSecret });
 const jsonFileOperations = new Map();
-let adminSessionNonce = crypto.randomBytes(32).toString('hex');
 const memorySamples = [];
 const runtimeEvents = [];
 const recentDiagnosticEvents = [];
@@ -678,10 +675,6 @@ function configuredAdminAccount() {
   );
 }
 
-function adminSessionSigningSecret() {
-  return `${adminSessionSecret}:${adminSessionNonce}`;
-}
-
 function requestCookieWriteKey(req) {
   const value = req.headers['x-cookie-write-key'];
   return Array.isArray(value) ? value[0] || '' : String(value || '');
@@ -689,24 +682,7 @@ function requestCookieWriteKey(req) {
 
 function requestAdminSession(req) {
   const token = parseCookieHeader(req.headers.cookie || '')[ADMIN_SESSION_COOKIE] || '';
-  const session = verifyAdminSession(token, {
-    username: adminUsername,
-    secret: adminSessionSigningSecret(),
-  });
-  if (!session) return null;
-  pruneRevokedAdminSessions();
-  return revokedAdminSessions.has(session.jti) ? null : session;
-}
-
-function pruneRevokedAdminSessions(now = Date.now()) {
-  for (const [sessionId, expiresAt] of revokedAdminSessions) {
-    if (expiresAt <= now) revokedAdminSessions.delete(sessionId);
-  }
-  while (revokedAdminSessions.size > MAX_REVOKED_ADMIN_SESSIONS) {
-    const oldestSessionId = revokedAdminSessions.keys().next().value;
-    if (!oldestSessionId) break;
-    revokedAdminSessions.delete(oldestSessionId);
-  }
+  return adminSessions.verify(token);
 }
 
 function authorizeAdminRequest(req) {
@@ -7638,7 +7614,7 @@ async function adminSystemSummary() {
       rateLimitBuckets: rateLimitBuckets.size,
       rateLimitEvictions,
       adminLoginBuckets: adminLoginLimiter.size(),
-      revokedAdminSessions: revokedAdminSessions.size,
+      revokedAdminSessions: adminSessions.revokedCount,
       avatarFetches: avatarFetchGate.active,
       avatarFetchQueue: avatarFetchGate.queued,
       drawBodyReads: drawBodyReadGate.active,
@@ -7828,9 +7804,7 @@ async function handleAdminLogin(req, res) {
   }
 
   adminLoginLimiter.clear(rateKey);
-  const created = createAdminSession({
-    username: adminUsername,
-    secret: adminSessionSigningSecret(),
+  const created = adminSessions.create({
     ttlMs: adminSessionTtlMs,
   });
   res.setHeader('set-cookie', adminSessionCookie(
@@ -7874,8 +7848,7 @@ async function handleAdminSession(req, res) {
 async function handleAdminLogout(req, res) {
   const session = req.adminAuth?.session;
   if (session) {
-    revokedAdminSessions.set(session.jti, session.exp);
-    pruneRevokedAdminSessions();
+    adminSessions.revoke(session);
   }
   await appendAdminEvent({
     category: 'auth',

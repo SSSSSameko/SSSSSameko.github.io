@@ -24,6 +24,7 @@ const scripts = [
   'test-large-list-ui.mjs',
   'test-tablist-keyboard-ui.mjs',
   'test-main-flow-guards-ui.mjs',
+  'test-receipt-retry-ui.mjs',
   'test-draw-receipt-ui.mjs',
   'test-draw-animation-ui.mjs',
   'test-draw-practice-ui.mjs',

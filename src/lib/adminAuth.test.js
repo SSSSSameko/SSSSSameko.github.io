@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   adminSessionCookie,
   createAdminSession,
+  createAdminSessionRegistry,
   createLoginLimiter,
   hashAdminPassword,
   parseCookieHeader,
@@ -46,6 +47,35 @@ test('admin sessions are signed, scoped and expire', () => {
     secret: 'test-session-secret',
     now: 62_000,
   }), null);
+});
+
+test('logged-out sessions stay invalid after revocation capacity is exhausted', () => {
+  const sessions = createAdminSessionRegistry({ username: 'operator', secret: 'test-secret' });
+  const oldest = sessions.create({ now: 1000 });
+  const active = sessions.create({ now: 1000 });
+  sessions.revoke(oldest.payload, 2000);
+  assert.equal(sessions.verify(oldest.token, 2000), null);
+  assert.ok(sessions.verify(active.token, 2000), 'ordinary logout must preserve other sessions');
+  for (let index = 0; index < 1000; index += 1) {
+    sessions.revoke(sessions.create({ now: 1000 }).payload, 2000);
+  }
+  assert.equal(sessions.verify(oldest.token, 2000), null, 'overflow must not reauthorize a logged-out cookie');
+  assert.equal(sessions.verify(active.token, 2000), null, 'overflow invalidates the previous signing generation');
+  assert.ok(sessions.revokedCount <= 1000);
+  assert.ok(sessions.verify(sessions.create({ now: 2000 }).token, 2000), 'new logins must still work');
+});
+
+test('expired revocations are reclaimed without invalidating active sessions', () => {
+  const sessions = createAdminSessionRegistry({ username: 'operator', secret: 'test-secret', maxRevokedSessions: 1 });
+  const expiring = sessions.create({ now: 1000, ttlMs: 60_000 });
+  const active = sessions.create({ now: 2000 });
+  sessions.revoke(expiring.payload, 2000);
+  sessions.revoke(sessions.create({ now: 62_000 }).payload, 62_000);
+  assert.equal(sessions.revokedCount, 1);
+  assert.ok(sessions.verify(active.token, 62_000));
+  assert.equal(sessions.verify(expiring.token, 62_000), null);
+  const restarted = createAdminSessionRegistry({ username: 'operator', secret: 'test-secret' });
+  assert.equal(restarted.verify(active.token, 62_000), null, 'a new process must invalidate previous sessions');
 });
 
 test('session cookies use secure browser defaults', () => {
