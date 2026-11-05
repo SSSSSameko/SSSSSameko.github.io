@@ -25,6 +25,7 @@ const scripts = [
   'test-tablist-keyboard-ui.mjs',
   'test-main-flow-guards-ui.mjs',
   'test-receipt-retry-ui.mjs',
+  'test-history-import-ui.mjs',
   'test-draw-receipt-ui.mjs',
   'test-draw-animation-ui.mjs',
   'test-draw-practice-ui.mjs',
@@ -32,6 +33,7 @@ const scripts = [
   'test-sheet-motion-ui.mjs',
   'test-feedback-ui.mjs',
   'test-admin-ui.mjs',
+  'test-admin-races-ui.mjs',
   'test-admin-diagnostics-ui.mjs',
 ];
 const SCRIPT_TIMEOUT_MS = 120_000;

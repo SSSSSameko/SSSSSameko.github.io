@@ -42,7 +42,7 @@ import {
     confirmOpener: null,
     confirmFocusFallback: 'records',
     loading: false,
-    loadingGeneration: 0,
+    refreshRequestId: 0,
     sessionGeneration: 0,
     summaryRequestId: 0,
     drawsRequestId: 0,
@@ -306,6 +306,7 @@ import {
 
   function cancelSessionRequests() {
     state.sessionGeneration += 1;
+    state.refreshRequestId += 1;
     state.summaryRequestId += 1;
     state.drawsRequestId += 1;
     state.feedbackRequestId += 1;
@@ -351,6 +352,7 @@ import {
     state.detailOpener = null;
     state.attemptsExpanded = false;
     state.pendingDeleteFeedbackId = '';
+    els.confirmDeleteBtn.disabled = false;
     state.loading = false;
     state.loginActive = false;
     state.loginPollInFlight = false;
@@ -1439,6 +1441,12 @@ import {
     state.loginPoller = null;
   }
 
+  function invalidateWeiboRequests() {
+    // Summaries and status polls both carry browser state from before a mutation.
+    state.summaryRequestId += 1;
+    stopLoginPolling();
+  }
+
   function pauseLoginPolling() {
     state.loginPollGeneration += 1;
     clearTimeout(state.loginPoller);
@@ -1470,8 +1478,10 @@ import {
 
   async function loadWeiboLoginStatus(showMessage = true, pollGeneration = null) {
     const generation = state.sessionGeneration;
+    const loginGeneration = state.loginPollGeneration;
     const data = await api('/api/admin/weibo-login/status');
     if (!isCurrentSession(generation)) return data;
+    if (loginGeneration !== state.loginPollGeneration) return data;
     if (pollGeneration !== null && pollGeneration !== state.loginPollGeneration) return data;
     renderWeiboLogin(data);
     if (state.summary) {
@@ -1485,6 +1495,7 @@ import {
 
   async function startWeiboLogin() {
     const generation = state.sessionGeneration;
+    invalidateWeiboRequests();
     try {
       els.startWeiboLoginBtn.disabled = true;
       showToast('正在打开微博扫码登录');
@@ -1493,6 +1504,7 @@ import {
         timeoutMs: WEIBO_OPERATION_TIMEOUT_MS,
       });
       if (!isCurrentSession(generation)) return;
+      invalidateWeiboRequests();
       renderWeiboLogin(data);
       if (state.summary) {
         state.summary.weiboLogin = data;
@@ -1511,10 +1523,11 @@ import {
 
   async function stopWeiboLogin() {
     const generation = state.sessionGeneration;
-    stopLoginPolling();
+    invalidateWeiboRequests();
     try {
       const data = await api('/api/admin/weibo-login/stop', { method: 'POST' });
       if (!isCurrentSession(generation)) return;
+      invalidateWeiboRequests();
       renderWeiboLogin(data);
       if (state.summary) {
         state.summary.weiboLogin = data;
@@ -1531,6 +1544,7 @@ import {
 
   async function refreshWeiboCookie() {
     const generation = state.sessionGeneration;
+    invalidateWeiboRequests();
     try {
       els.refreshWeiboCookieBtn.disabled = true;
       showToast('正在刷新服务器微博 Cookie');
@@ -1539,6 +1553,7 @@ import {
         timeoutMs: WEIBO_OPERATION_TIMEOUT_MS,
       });
       if (!isCurrentSession(generation)) return;
+      invalidateWeiboRequests();
       renderWeiboLogin(data);
       await loadSummary();
       if (!isCurrentSession(generation)) return;
@@ -1625,16 +1640,16 @@ import {
     renderFeedback();
   }
 
-  async function loadAll(showMessage = false) {
-    if (state.loading) return;
+  async function loadAll(showMessage = false, { force = false } = {}) {
+    if (state.loading && !force) return;
     state.loading = true;
     const generation = state.sessionGeneration;
-    state.loadingGeneration = generation;
+    const requestId = ++state.refreshRequestId;
     els.refreshBtn.disabled = true;
     els.loginMessage.textContent = '';
     try {
       const results = await Promise.allSettled([loadSummary(), loadDraws(), loadFeedback()]);
-      if (generation !== state.sessionGeneration) return;
+      if (generation !== state.sessionGeneration || requestId !== state.refreshRequestId) return;
       const errors = results
         .filter((result) => result.status === 'rejected')
         .map((result) => errorText(result.reason));
@@ -1657,7 +1672,7 @@ import {
         if (showMessage) showToast('后台数据已刷新');
       }
     } finally {
-      if (state.loadingGeneration === generation) {
+      if (generation === state.sessionGeneration && requestId === state.refreshRequestId) {
         state.loading = false;
         els.refreshBtn.disabled = !state.username;
       }
@@ -1770,6 +1785,7 @@ import {
   }
 
   async function confirmDelete() {
+    const generation = state.sessionGeneration;
     const file = state.pendingDeleteFile;
     const feedbackId = state.pendingDeleteFeedbackId;
     const fallback = state.confirmFocusFallback;
@@ -1778,22 +1794,41 @@ import {
     try {
       if (feedbackId) {
         await api(`/api/admin/feedback/${encodeURIComponent(feedbackId)}`, { method: 'DELETE' });
+        if (!isCurrentSession(generation)) return;
+        state.feedbackRequestId += 1;
+        state.feedback = state.feedback.filter((item) => item.id !== feedbackId);
+        renderFeedback();
       } else {
         await api(`/api/admin/draws/${encodeURIComponent(file)}`, { method: 'DELETE' });
+        if (!isCurrentSession(generation)) return;
+        state.drawsRequestId += 1;
+        state.drawsController?.abort();
+        state.draws = state.draws.filter((item) => item.file !== file);
+        state.detailCache.delete(file);
+        if (state.detailFile === file) {
+          state.detailRequestId += 1;
+          state.detailController?.abort();
+          state.detailFile = '';
+          state.detailLoading = false;
+        }
         if (state.selected?.file === file) {
           state.selected = null;
           state.detailOpen = false;
         }
+        renderDraws();
+        renderDetail();
       }
       const opener = closeDeleteConfirm({ restoreFocus: false });
       clearAlert('delete');
       showToast(feedbackId ? '反馈已删除' : '开奖记录已删除');
-      await loadAll();
+      await loadAll(false, { force: true });
+      if (!isCurrentSession(generation)) return;
       restoreConfirmFocus(opener, fallback);
     } catch (error) {
+      if (!isCurrentSession(generation)) return;
       showConfirmError(error);
     } finally {
-      els.confirmDeleteBtn.disabled = false;
+      if (isCurrentSession(generation)) els.confirmDeleteBtn.disabled = false;
     }
   }
 

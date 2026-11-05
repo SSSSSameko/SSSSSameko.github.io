@@ -20,6 +20,7 @@ export default function SettingsSheet({
   loadCookieStatus,
   exportHistoryBackup,
   historyImportInputRef,
+  isImportingHistory,
   importHistoryBackup,
   mobileCookie,
   motionPreference,
@@ -131,13 +132,13 @@ export default function SettingsSheet({
               </div>
               <em className="flow-settings-action-label is-neutral">导出</em>
             </button>
-            <button type="button" onClick={() => historyImportInputRef.current?.click()}>
+            <button type="button" onClick={() => historyImportInputRef.current?.click()} disabled={isImportingHistory} aria-busy={isImportingHistory}>
               <span>{I.archive}</span>
               <div>
                 <strong>恢复开奖记录</strong>
                 <small>合并本应用导出的记录备份，不覆盖现有记录</small>
               </div>
-              <em className="flow-settings-action-label is-neutral">选择文件</em>
+              <em className="flow-settings-action-label is-neutral">{isImportingHistory ? '正在读取备份' : '选择文件'}</em>
             </button>
             <input
               ref={historyImportInputRef}

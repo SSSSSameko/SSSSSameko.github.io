@@ -242,6 +242,7 @@ function App() {
   const [phase, setPhase] = useState('');
   const [initialDrawHistoryState] = useState(() => readDrawHistoryState());
   const [drawHistory, setDrawHistory] = useState(initialDrawHistoryState.items);
+  const [isImportingHistory, setIsImportingHistory] = useState(false);
   const [historyStorageAvailable, setHistoryStorageAvailable] = useState(initialDrawHistoryState.safeToPersist);
   const [historyQuery, setHistoryQuery] = useState('');
   const [selectedReceipt, setSelectedReceipt] = useState(null);
@@ -280,6 +281,7 @@ function App() {
   const candidateStatusInputRef = useRef(null);
   const sourceSheetStatusInputRef = useRef(null);
   const historyImportInputRef = useRef(null);
+  const historyImportBusyRef = useRef(false);
   const drawGuardRef = useRef(null);
   const drawTabLockRef = useRef(null);
   const repostLoadRef = useRef(null);
@@ -1392,7 +1394,6 @@ function App() {
     const drawCandidates = candidates;
     const drawEligible = eligible;
     const drawContext = { statusId: currentStatusId, statusUrl: currentStatusUrl, sourceMeta };
-    const taskRevision = taskRevisionRef.current;
     if (totalSlots > eligibleUserCount) {
       showStatus(`中奖总人数 ${totalSlots} 不能超过可抽人数 ${eligibleUserCount}。`, 'error');
       return;
@@ -1401,6 +1402,8 @@ function App() {
       showStatus('当前页面不是安全上下文（需要 HTTPS 或 localhost），浏览器已停用加密能力，无法开奖。请改用 https:// 或本机地址打开后重试。', 'error', { title: '无法开奖' });
       return;
     }
+    // A new draw also supersedes any backup import still reading or waiting for storage.
+    const taskRevision = ++taskRevisionRef.current;
     const controller = new AbortController();
     const { signal } = controller;
     drawOperationRef.current = controller;
@@ -1844,35 +1847,39 @@ function App() {
   }
 
   async function importHistoryBackup(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
+    const input = event.target;
+    const file = input.files?.[0];
+    if (!file || historyImportBusyRef.current) return;
+    if (refuseWhileBusy()) {
+      input.value = '';
+      return;
+    }
+    historyImportBusyRef.current = true;
+    setIsImportingHistory(true);
+    let historyMutationRevision = drawHistoryMutationRevisionRef.current;
+    const taskRevision = taskRevisionRef.current;
+    const isCurrentImport = () => mountedRef.current
+      && drawHistoryMutationRevisionRef.current === historyMutationRevision
+      && taskRevisionRef.current === taskRevision
+      && !drawStartRef.current && !candidateLoadStartRef.current;
     try {
       if (file.size > MAX_HISTORY_BACKUP_BYTES) throw new Error('备份文件不能超过 2 MB');
+      const text = await file.text();
+      if (!isCurrentImport()) return;
+      const imported = parseDrawHistoryBackup(text);
       if (drawSyncControllersRef.current.size > 0
         && !window.confirm('有开奖记录正在同步到服务器，导入备份会中断同步。确定继续吗？')) {
         return;
       }
-      const imported = parseDrawHistoryBackup(await file.text());
-      const historyMutationRevision = invalidateDrawHistoryMutations();
+      historyMutationRevision = invalidateDrawHistoryMutations();
       const stored = await mutateDrawHistory(
         window.localStorage,
-        (history) => mergeDrawHistory(history, imported),
+        (history) => {
+          if (!isCurrentImport()) throw DRAW_HISTORY_MUTATION_CANCELLED;
+          return mergeDrawHistory(history, imported);
+        },
       );
-      if (drawHistoryMutationRevisionRef.current !== historyMutationRevision) {
-        const latest = readDrawHistoryState(window.localStorage);
-        if (latest.safeToPersist) {
-          drawHistoryRef.current = latest.items;
-          setDrawHistory(latest.items);
-          if (currentStatusId) setHistoryUids(winnerIdsForStatus(latest.items, currentStatusId));
-          setHistoryStorageAvailable(true);
-          historyStorageErrorRef.current = false;
-        }
-        showStatus('开奖记录已在其它页面发生变化，当前显示最新本机记录；如导入结果缺失请重试。', 'neutral', {
-          popup: true,
-          title: '记录已更新',
-        });
-        return;
-      }
+      if (!isCurrentImport()) return;
       if (!stored.ok) throw new Error('本机存储空间不足，无法保存恢复后的开奖记录。');
       drawHistoryRef.current = stored.items;
       setDrawHistory(stored.items);
@@ -1886,9 +1893,13 @@ function App() {
         title: '记录已恢复',
       });
     } catch (error) {
-      showStatus(`记录恢复失败：${error.message}`, 'error');
+      if (error !== DRAW_HISTORY_MUTATION_CANCELLED && isCurrentImport()) {
+        showStatus(`记录恢复失败：${error.message}`, 'error');
+      }
     } finally {
-      event.target.value = '';
+      historyImportBusyRef.current = false;
+      if (mountedRef.current) setIsImportingHistory(false);
+      input.value = '';
     }
   }
 
@@ -2343,6 +2354,7 @@ function App() {
         candidateStatusInputRef,
         sourceSheetStatusInputRef,
         historyImportInputRef,
+        isImportingHistory,
         firstPrizeNameRef,
         setSource: changeSource,
         setAccessToken,

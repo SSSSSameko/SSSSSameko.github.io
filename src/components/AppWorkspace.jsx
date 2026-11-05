@@ -1266,6 +1266,7 @@ export default function AppWorkspace({ controller: c }) {
           drawHistory={c.drawHistory}
           exportHistoryBackup={c.exportHistoryBackup}
           historyImportInputRef={c.historyImportInputRef}
+          isImportingHistory={c.isImportingHistory}
           importHistoryBackup={c.importHistoryBackup}
           mobileCookie={c.mobileCookie}
           motionPreference={c.motionPreference}
